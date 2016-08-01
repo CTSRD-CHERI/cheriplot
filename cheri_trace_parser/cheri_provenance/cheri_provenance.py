@@ -1,6 +1,4 @@
 """
-copyright here
-
 
 Data structure that represents CHERI capabilities in memory.
 The pointers are organised in tree-like structures that express provenance
@@ -13,9 +11,14 @@ pointing to a memory region, probably more relevant in the hybrid ABI. It should
 definetely be considered for tag distribution in memory.
 """
 
+import pickle
+import logging
+
 from operator import attrgetter
 from io import StringIO
 from functools import reduce
+
+logger = logging.getLogger(__name__)
 
 # permission bits
 CAP_LOAD = 0x2
@@ -29,7 +32,7 @@ class CheriCapNode:
     Record a capability pointer
 
     This is both an element of the pointer provenance and memory trees
-    """
+    """     
 
     def __init__(self, cr=None):
         self.address = None
@@ -54,7 +57,17 @@ class CheriCapNode:
 
         # child nodes in an ordered list w.r.t. creation time
         self.children = []
+        self.parent = None
 
+    @property
+    def bound(self):
+        """
+        convenience property to get base + length
+        """
+        if (self.base is not None and self.length is not None):
+            return self.base + self.length
+        return None
+        
     def find_node(self, base, length):
         """
         Find node in the subtree with given base and length
@@ -66,22 +79,32 @@ class CheriCapNode:
             if base == self.base and length == self.length:
                 return self
             if (base < self.base or
-                self.base + self.length < base + length):
+                self.bound < base + length):
                 return None
         for child in self.children:
             node = child.find_node(base, length)
             if node:
                 return node
         return None
-        
-
+    
     def append(self, node):
         """
         Append node to the subtree, children are sorted
         by t_alloc
         """
         self.children.append(node)
+        node.parent = self
         self.children = sorted(self.children, key=attrgetter("t_alloc"))
+
+    def __iter__(self):
+       for child in self.children:
+           yield child
+           for nextchild in child:
+               yield nextchild
+
+    def __len__(self):
+        return reduce(lambda length,node: length + len(node),
+                      self.children, len(self.children))
 
     def __str__(self):
         return self.to_str()
@@ -94,7 +117,7 @@ class CheriCapNode:
         off = self.offset if self.offset is not None else 0
         pad = "    " * nest
         rwx = ["-", "-", "-"]
-        if self.permissions:
+        if self.permissions is not None:
             if self.permissions & CAP_LOAD:
                 rwx[0] = "r"
             if self.permissions & CAP_STORE:
@@ -103,7 +126,7 @@ class CheriCapNode:
                 rwx[2] = "x"
             if self.permissions == 0:
                 rwx = ["r", "w", "x"]
-        dump.write("%s[%u @ %x <- b:%x o:%x l:%x p:%x]" %
+        dump.write("%s[%u @ %x <- b:%x o:%x l:%x p:%s]" %
                    (pad, self.t_alloc, addr, base, off, leng, "".join(rwx)))
         dump.write("(\n")
         for child in self.children:
@@ -149,6 +172,7 @@ class CheriCapNode:
             child.check_duplicates(duplicates)
         return duplicates
 
+    
 class ProvenanceTree(CheriCapNode):
     """
     Tree that maps the provenance of capabilities, the root node is
@@ -156,11 +180,17 @@ class ProvenanceTree(CheriCapNode):
     CSetBounds or CFromPtr operations.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self):
         super(ProvenanceTree, self).__init__()
         # map memory address and list of CheriCapNodes at that address
         # for fast search
         self.address_map = {}
+
+    def append(self, node):
+        super(ProvenanceTree, self).append(node)
+        # the root of the tree is not a valid node
+        # (no capability associated with it)
+        node.parent = None
 
     def __str__(self):
         dump = StringIO()
@@ -170,3 +200,23 @@ class ProvenanceTree(CheriCapNode):
             dump.write(",\n")
         dump.write(")")
         return dump.getvalue()
+
+    
+class CachedProvenanceTree(ProvenanceTree):
+    """
+    Provenance tree that can save and restore itself
+    from a pickle file
+    """
+
+    def __init__(self):
+        super(CachedProvenanceTree, self).__init__()
+
+    def save(self, cache_file):
+        with open(cache_file, "wb+") as fd:
+            pickle.dump(self, fd, pickle.HIGHEST_PROTOCOL)
+        logger.info("Caching provenance tree as %s" % cache_file)
+
+    def load(self, cache_file):
+        with open(cache_file, "rb") as fd:
+            self.__dict__.update(pickle.load(fd).__dict__)
+        logger.info("Using cached provenance tree %s" % cache_file)

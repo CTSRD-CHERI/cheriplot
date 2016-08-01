@@ -2,11 +2,14 @@
 Parse a cheri trace to a pointer provenance tree
 """
 
+import sys
+import logging
+import pycheritrace.pycheritrace as pct
+
 from cheri_trace_parser.core.parser import TraceParser
 from .cheri_provenance import CheriCapNode
 
-import sys
-import pycheritrace.pycheritrace as pct
+logger = logging.getLogger(__name__)
 
 class PointerProvenanceParser(TraceParser):
 
@@ -104,7 +107,7 @@ class ProvenanceParserContext(object):
             cb = args.split(",")[1].strip().strip("$")
             rt = args.split(",")[2].strip().strip("$")
         except IndexError:
-            print("[csetbounds] Malformed disassebly", inst.name)
+            logger.error("[csetbounds] Malformed disassembly %s" % inst.name)
             raise
 
         try:
@@ -114,7 +117,7 @@ class ProvenanceParserContext(object):
             src_reg = int(cb[1:]) + 64
             bound_reg = int(rt)
         except:
-            print("[csetbounds] Error computing register indexes")
+            logger.error("[csetbounds] Error computing register indexes")
             raise
 
         try:
@@ -122,19 +125,22 @@ class ProvenanceParserContext(object):
             # because if the destination reg is the same as the source
             # the value has been overwritten at this point
             if not last_regs.valid_caps[src_reg - 64]:
-                print("[csetbounds] src from invalid cap %d" % src_reg)
+                logger.warning("[csetbounds] src from invalid cap %d" %
+                               src_reg)
             src_val = last_regs.cap_reg[src_reg - 64]
             if not regs.valid_gprs[bound_reg]:
-                print("[csetbounds] bound from invalid rt %d" % bound_reg)
+                logger.warning("[csetbounds] bound from invalid rt %d" %
+                               bound_reg)
             bound_val = regs.gpr[bound_reg]
             if not regs.valid_caps[dst_reg - 64]:
-                print("[csetbounds] dst from invalid rt %d" % bound_reg)
+                logger.warning("[csetbounds] dst from invalid rt %d" %
+                               bound_reg)
             dst_val = regs.cap_reg[dst_reg - 64]
         except IndexError:
-            print("[csetbounds] Malformed register index: "\
-                  "src(%d) bound(%d) val(%d)" % (src_reg - 64,
-                                                 bound_reg - 64,
-                                                 dst_reg - 64))
+            logger.error("[csetbounds] Malformed register index: "\
+                         "src(%d) bound(%d) val(%d)" % (src_reg - 64,
+                                                        bound_reg - 64,
+                                                        dst_reg - 64))
             raise
         
         node = CheriCapNode(dst_val)
@@ -146,7 +152,7 @@ class ProvenanceParserContext(object):
         try:
             parent = self.tree.find_node(src_val.base, src_val.length)
         except:
-            print("[csetbounds] Error in find_node")
+            logger.error("[csetbounds] Error in find_node")
             raise
         
         if parent == None:
@@ -161,7 +167,7 @@ class ProvenanceParserContext(object):
         try:
             parent.append(node)
         except:
-            print("[csetbounds] Error appending node")
+            logger.error("[csetbounds] Error appending node")
             raise
 
     def cfromptr(self, entry, regs, last_regs, instr):
