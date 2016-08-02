@@ -214,11 +214,10 @@ class ChunkGroup(Chunk):
         first_chunk = sub_chunks[0]
         for cnk in sub_chunks:
             curr_x_offset += cnk.start - first_chunk.start
-            logger.debug("curr_x_offset %d", curr_x_offset)
             total_size += cnk.make_lines(curr_x_offset, x_gap)
-        # merge lines
-        map(lambda cnk: self.lines.extend(cnk.lines), self.sub_chunks)
-        return curr_x_offset - x_offset
+            self.lines.extend(cnk.lines)
+        logger.debug("Rendered %d subchunks for %s" % (len(sub_chunks), self))
+        return self.size
 
     def add_subchunk(self, chunk):
         self.sub_chunks.append(chunk)
@@ -443,7 +442,6 @@ class PointerProvenancePlot:
                 xticks.append(xtick)
                 xlabels.append(xlabel)
             x_previous_chunks += size
-            
 
         # X goes from 0 to chunk_space + inter_chunk_space
         x_size = x_previous_chunks
@@ -456,6 +454,8 @@ class PointerProvenancePlot:
         #     logger.warning("Unexpected computed plot X size, "\
         #                    "found %d, expected %d" %
         #                    (x_size, expected_x_size))
+        # at least this should hold:
+        # assert x_size >= chunk_space
         logger.debug("Provenance plot X size: total: %d, "\
                      "inter-chunk-space: %d, chunk-space: %d" %
                      (x_size, inter_chunk_space, chunk_space))
