@@ -44,50 +44,6 @@ class Chunk:
     def size(self):
         return self.end - self.start
 
-    def _make_lines(self, x_offset, x_gap):
-        """
-        Prepare all the lines in the chunk and return the space
-        in the X axis taken by the chunk.
-        The x_gap is the size of a separation space between chunks,
-        this is given in case the chunk need to create multiple blocks
-        that are separated. It is not used in the simple case as the gap
-        is handled by ChunkGap
-        """
-        chunk_x = x_offset + x_gap
-        chunk_y = PointerProvenancePlot.scale_time(self.node.t_alloc)
-        line = lines.Line2D([chunk_x, chunk_x + self.size],
-                            [chunk_y, chunk_y])
-        logger.debug("Draw chunk line: from [%d, %d] to [%d, %d]" %
-                     (chunk_x, chunk_y, chunk_x + self.size, chunk_y))
-        self.lines.append(line)
-        # add vertical separators
-        line = lines.Line2D([chunk_x, chunk_x],
-                            [chunk_y, 0],
-                            linestyle="dotted",
-                            color="black")
-        self.lines.append(line)
-        line = lines.Line2D([chunk_x + self.size, chunk_x + self.size],
-                            [chunk_y, 0],
-                            linestyle="dotted",
-                            color="black")
-        self.lines.append(line)
-        # add lines for parent nodes
-        for parent in self:
-            chunk_y = PointerProvenancePlot.scale_time(parent.t_alloc)
-            line = lines.Line2D([chunk_x, chunk_x + self.size],
-                                [chunk_y, chunk_y])
-            logger.debug("Draw parent line: from [%d, %d] to [%d, %d]" %
-                         (chunk_x, chunk_y, chunk_x + self.size, chunk_y))
-            self.lines.append(line)
-            # # add dotted continuation line for the parent if parent
-            # # is not starting exactly at the same point as the chunk
-            # if parent.base < self.node.base:
-            #     gap_line = lines.Line2D([x_offset, chunk_x],
-            #                             [chunk_y, chunk_y],
-            #                             linestyle="dotted")
-            #     self.lines.append(gap_line)
-        return self.size + x_gap
-
     def make_lines(self, x_offset, x_gap):
         """
         Prepare all the lines in the chunk and return the space
@@ -113,23 +69,33 @@ class Chunk:
                             linestyle="dotted",
                             color="black")
         self.lines.append(line)
-        # add lines for parent nodes
+        logger.debug("Draw lines for chunk [0x%x, 0x%x] as [%d, %d]" %
+                     (self.start, self.end,
+                      chunk_x, chunk_x + self.size))
+        return self.size
+
+    def make_parent_lines(self, x_offset, x_gap):
+        """
+        Draw lines for parent nodes.
+        This is overloaded to draw longer lines in merged chunks
+        """
+        chunk_x = x_offset
         for parent in self:
             chunk_y = PointerProvenancePlot.scale_time(parent.t_alloc)
             line = lines.Line2D([chunk_x, chunk_x + self.size],
                                 [chunk_y, chunk_y])
             self.lines.append(line)
-        logger.debug("Draw %d lines for chunk [0x%x, 0x%x] as [%d, %d]" %
-                     (len(self.lines), self.start, self.end,
+        logger.debug("Draw parents for chunk [0x%x, 0x%x] as [%d, %d]" %
+                     (self.start, self.end,
                       chunk_x, chunk_x + self.size))
-        return self.size
+        return 0
 
     def make_xtick(self, x_offset, x_gap):
         """
         Generate the plot xtick and associated label
         for this chunk
         """
-        xtick = x_offset + x_gap
+        xtick = x_offset
         xlabel = "0x%x" % self.start
         return (xtick, xlabel)
 
@@ -152,6 +118,9 @@ class LargeChunk(Chunk):
         return 0 # XXX TO DO
 
     def make_lines(self, x_offset, x_gap):
+        return 0
+
+    def make_parent_lines(self, x_offset, x_gap):
         return 0
 
     def make_xtick(self, x_offset, x_gap):
@@ -190,7 +159,6 @@ class ChunkGroup(Chunk):
 
     @property
     def size(self):
-        logger.debug("group size %d %s" % (self.end - self.start, self.sub_chunks[0]))
         return self.end - self.start
 
     def make_lines(self, x_offset, x_gap):
@@ -208,21 +176,44 @@ class ChunkGroup(Chunk):
         only the offset and add the gap in another layer?
         (e.g. decorator pattern)
         """
-        total_size = 0
-        curr_x_offset = x_offset
         sub_chunks = sorted(self.sub_chunks, key=attrgetter("start"))
         first_chunk = sub_chunks[0]
         for cnk in sub_chunks:
-            curr_x_offset += cnk.start - first_chunk.start
-            total_size += cnk.make_lines(curr_x_offset, x_gap)
+            curr_x_offset = x_offset + cnk.start - first_chunk.start
+            cnk.make_lines(curr_x_offset, x_gap)
             self.lines.extend(cnk.lines)
         logger.debug("Rendered %d subchunks for %s" % (len(sub_chunks), self))
         return self.size
 
+    def make_parent_lines(self, x_offset, x_gap):
+        """
+        Draw lines for parent nodes that extend over the full
+        merged space.
+        
+        Some parents will be seen multiple times, plot these only once
+        """
+        chunk_x = x_offset
+        seen_parents = []
+        for parent in self:
+            if parent in seen_parents:
+                continue
+            seen_parents.append(parent)
+            parent_start = chunk_x + max(parent.base, self.start) - self.start
+            parent_end = parent_start + min(parent.bound, self.end) - self.start
+            logger.debug("parent: [%d, %d]" % (parent_start, parent_end))
+            parent_y = PointerProvenancePlot.scale_time(parent.t_alloc)
+            line = lines.Line2D([parent_start, parent_end],
+                                [parent_y, parent_y])
+            self.lines.append(line)
+        logger.debug("Draw group parents for chunk [0x%x, 0x%x] as [%d, %d]" %
+                     (self.start, self.end,
+                      chunk_x, chunk_x + self.size))
+        return 0
+
     def add_subchunk(self, chunk):
-        self.sub_chunks.append(chunk)
         logger.debug("Add to merged chunk [%x, %x] + [%x, %x]" %
                      (self.start, self.end, chunk.start, chunk.end))
+        self.sub_chunks.append(chunk)
         return self
 
     def __str__(self):
@@ -265,10 +256,16 @@ class ChunkGap(Chunk):
         chunk_x = x_offset + x_gap
         size = self.wrapped.make_lines(chunk_x, x_gap)
         # add lines for parent nodes
+        seen_parents = []
         for parent in self.wrapped:
+            if parent in seen_parents:
+                continue
+            seen_parents.append(parent)
             # add dotted continuation line for the parent if parent
             # is not starting exactly at the same point as the chunk
             if parent.base < self.wrapped.start:
+                logger.debug("Draw gap for %s -> parent [%x, %x]" %
+                             (self.wrapped, parent.base, parent.bound))
                 chunk_y = PointerProvenancePlot.scale_time(parent.t_alloc)
                 gap_line = lines.Line2D([x_offset, chunk_x],
                                         [chunk_y, chunk_y],
@@ -276,8 +273,11 @@ class ChunkGap(Chunk):
                 self.lines.append(gap_line)
         return size + x_gap
 
-    def make_xtick(self, *args):
-        return self.wrapped.make_xtick(*args)
+    def make_parent_lines(self, x_offset, x_gap):
+        return self.wrapped.make_parent_lines(x_offset + x_gap, x_gap)
+
+    def make_xtick(self, x_offset, x_gap):
+        return self.wrapped.make_xtick(x_offset + x_gap, x_gap)
 
     def add_subchunk(self, *args):
         return ChunkGap(self.wrapped.add_subchunk(*args))
@@ -305,6 +305,8 @@ class PointerProvenancePlot:
 
         self.large_chunk_size = 4 * 2**12
         """Large chunk detection threshold 4 pages"""
+        self.chunk_merge_size = 2**12
+        """Two chunks are closer than this treshold are merged"""
         self._caching = False
 
     def _get_cache_file(self):
@@ -386,21 +388,31 @@ class PointerProvenancePlot:
                 # iii) overlap with large chunks: ?
 
                 if not chunk.start in chunks:
-                    chunk = ChunkGap(chunk)
                     chunks[chunk.start] = chunk
                 elif chunks[chunk.start].end == chunk.end:
                     # see(i)
                     chunks[chunk.start] = chunks[chunk.start].add_subchunk(chunk)
                 else:
-                    # XXX TO DO (ii) and (iii) unsupported
+                    # XXX TO DO (iii) unsupported
                     logger.error("UNSUPPORTED CHUNK MERGE")
                     logger.warning("Skipping chunk")
                     # raise NotImplementedError("Unsupported chunk merge")
                 logger.debug("Processed chunk %s" % chunks[chunk.start])
 
         chunks = sorted(chunks.values(), key=attrgetter("start"))
-        # XXX chunks at this point must be non-overlapping,
-        # it may be worth adding an assertion for this?
+        # merge chunks that are closer than the chunk_merge_size,
+        # overlapping chunks can also be merged (see (ii))
+        merger = None
+        merged_chunks = []
+        for chunk in chunks:
+            if (merger and chunk.start - merger.end < self.chunk_merge_size):
+                logger.debug("Merging close chunks %s + %s" % (merger, chunk))
+                merger = merger.add_subchunk(chunk)
+            elif merger is None:
+                merger = chunk
+            else:
+                merged_chunks.append(ChunkGap(merger))
+                merger = None
         
         # XXX we should really show also duplicates that are not leaves
         # this is somewhat the same problem of detecting non-leaf nodes
@@ -408,7 +420,7 @@ class PointerProvenancePlot:
         # any of the nodes in there (e.g. root->[10, 50] and root->[20, 30]
         # see (ii) above.
         
-        return {"chunks": chunks,
+        return {"chunks": merged_chunks,
                 "time_max": time_max}
 
     def plot(self):
@@ -437,6 +449,7 @@ class PointerProvenancePlot:
         x_previous_chunks = 0
         for idx,chunk in enumerate(chunks):
             size = chunk.make_lines(x_previous_chunks, inter_chunk_space)
+            chunk.make_parent_lines(x_previous_chunks, inter_chunk_space)
             xtick, xlabel = chunk.make_xtick(x_previous_chunks, inter_chunk_space)
             if xtick is not None:
                 xticks.append(xtick)
