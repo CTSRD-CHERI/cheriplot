@@ -32,17 +32,24 @@ class Chunk:
 
     @property
     def start(self):
-        # XXX TO DO chunk extension
         return self.node.base
 
     @property
     def end(self):
-        # XXX TO DO chunk extension
         return self.node.bound
 
     @property
     def size(self):
         return self.end - self.start
+
+    @staticmethod
+    def set_line_color(node, line):
+        if node.origin == "csetbounds":
+            line.set_color("blue")
+        if node.origin == "cfromptr":
+            line.set_color("green")
+        if node.origin == "inferred":
+            line.set_color("red")
 
     def make_lines(self, x_offset, x_gap):
         """
@@ -57,6 +64,7 @@ class Chunk:
         chunk_y = PointerProvenancePlot.scale_time(self.node.t_alloc)
         line = lines.Line2D([chunk_x, chunk_x + self.size],
                             [chunk_y, chunk_y])
+        self.set_line_color(self.node, line)
         self.lines.append(line)
         # add vertical separators
         line = lines.Line2D([chunk_x, chunk_x],
@@ -84,6 +92,7 @@ class Chunk:
             chunk_y = PointerProvenancePlot.scale_time(parent.t_alloc)
             line = lines.Line2D([chunk_x, chunk_x + self.size],
                                 [chunk_y, chunk_y])
+            self.set_line_color(parent, line)
             self.lines.append(line)
         logger.debug("Draw parents for chunk [0x%x, 0x%x] as [%d, %d]" %
                      (self.start, self.end,
@@ -108,26 +117,30 @@ class Chunk:
         return "<Chunk start:0x%x end:0x%x>" % (self.start, self.end)
 
 
-class LargeChunk(Chunk):
+class ChunkSlice(Chunk):
+    """
+    A chunk that renders only a portion of the node attached to it
+    the start and end of the rendered part are given to the constructor
+    """
 
-    def __init__(self, *args):
-        super(LargeChunk, self).__init__(*args)
+    def __init__(self, node, start, end):
+        """
+        Start and end are relative to the node.base
+        """
+        super(ChunkSlice, self).__init__(node)
+        self.slice_start = self.node.base + start
+        self.slice_end = self.node.base + end
 
     @property
-    def size(self):
-        return 0 # XXX TO DO
+    def start(self):
+        return self.slice_start
+
+    @property
+    def end(self):
+        return self.slice_end
 
     def make_lines(self, x_offset, x_gap):
-        return 0
-
-    def make_parent_lines(self, x_offset, x_gap):
-        return 0
-
-    def make_xtick(self, x_offset, x_gap):
-        return (None, None)
-
-    def __str__(self):
-        return "<LargeChunk start:0x%x end:0x%x>" % (self.start, self.end)
+        pass
 
 
 class ChunkGroup(Chunk):
@@ -204,6 +217,7 @@ class ChunkGroup(Chunk):
             parent_y = PointerProvenancePlot.scale_time(parent.t_alloc)
             line = lines.Line2D([parent_start, parent_end],
                                 [parent_y, parent_y])
+            self.set_line_color(parent, line)
             self.lines.append(line)
         logger.debug("Draw group parents for chunk [0x%x, 0x%x] as [%d, %d]" %
                      (self.start, self.end,
@@ -218,6 +232,39 @@ class ChunkGroup(Chunk):
 
     def __str__(self):
         return "<ChunkGroup start:0x%x end:0x%x>" % (self.start, self.end)
+
+
+class LargeChunk(ChunkGroup):
+
+    def __init__(self, node):
+        start = ChunkSlice(node, 0, 2**12)
+        end = ChunkSlice(node, node.length - 2**12, node.length)
+        self.node = node
+        super(ChunkGroup, self).__init__([start, end])
+
+    def make_lines(self, x_offset, x_gap):
+        """
+        Large chunks are treated much like a parent when
+        overlapping, when rendered as non-grouped the chunk shows
+        the beginning page and the ending page separated by dotted
+        a dotted line.
+
+        XXX: assume that a large chunk is larger than 2 pages (of 4K)
+        """
+        assert self.size > 2**13, "LargeChunk is smaller than 2 pages"
+
+        
+        
+        return 0
+
+    def make_parent_lines(self, x_offset, x_gap):
+        return 0
+
+    def make_xtick(self, x_offset, x_gap):
+        return (None, None)
+
+    def __str__(self):
+        return "<LargeChunk start:0x%x end:0x%x>" % (self.start, self.end)
 
 
 class ChunkGap(Chunk):
@@ -304,7 +351,7 @@ class PointerProvenancePlot:
         """Provenance tree"""
 
         self.large_chunk_size = 4 * 2**12
-        """Large chunk detection threshold 4 pages"""
+        """Large chunk detection threshold 4 pages (must be >2 pages)"""
         self.chunk_merge_size = 2**12
         """Two chunks are closer than this treshold are merged"""
         self._caching = False
@@ -413,6 +460,9 @@ class PointerProvenancePlot:
             else:
                 merged_chunks.append(ChunkGap(merger))
                 merger = None
+        # append last merged chunk
+        if merger is not None:
+            merged_chunks.append(ChunkGap(merger))
         
         # XXX we should really show also duplicates that are not leaves
         # this is somewhat the same problem of detecting non-leaf nodes
@@ -433,6 +483,8 @@ class PointerProvenancePlot:
         chunk_info = self.get_chunks()
         chunks = chunk_info["chunks"]
         time_max = chunk_info["time_max"]
+
+        assert len(chunks) > 0, "No chunk returned"
 
         # generate lines for each chunk
         # first we need to extract the total size of the chunks to
