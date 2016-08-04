@@ -42,7 +42,7 @@ class PointerProvenanceParser(TraceParser):
             parts = inst.name.split("\t")
             opcode = parts[1]
 
-            # it would be useful if the first register set contained the full
+            # XXX it would be useful if the first register set contained the full
             # snapshot of the initial registers, we are missing stuff otherwise
             # in particular the root capability set
             # if idx == 0:
@@ -52,10 +52,14 @@ class PointerProvenanceParser(TraceParser):
                 try:
                     parser_ctx.csetbounds(entry, regs, ctx["last_regs"], inst)
                 except Exception as ex:
-                    print("[csetbounds] Error", ex)
+                    logger.error("Error parsing csetbounds: %s" % ex)
                     return True
             elif opcode == "cfromptr":
-                parser_ctx.cfromptr(entry, regs, ctx["last_regs"], inst)
+                try:
+                    parser_ctx.cfromptr(entry, regs, ctx["last_regs"], inst)
+                except Exception as ex:
+                    logger.error("Error parsing cfromptr: %s" % ex)
+                    return True
             elif opcode == "csc":
                 parser_ctx.csc(entry, regs, inst)
             elif opcode == "clc":
@@ -97,81 +101,91 @@ class ProvenanceParserContext(object):
                 node.length = cap.length
                 self.tree.append(node)
 
-    def csetbounds(self, entry, regs, last_regs, inst):
-
-        if last_regs is None:
-            last_regs = regs
+    def get_args3(self, inst):
         try:
             args = inst.name.split("\t")[2]
             cd = args.split(",")[0].strip().strip("$")
             cb = args.split(",")[1].strip().strip("$")
             rt = args.split(",")[2].strip().strip("$")
         except IndexError:
-            logger.error("[csetbounds] Malformed disassembly %s" % inst.name)
+            logger.error("Malformed disassembly %s" % inst.name)
             raise
+        return (cd, cb, rt)
 
+    def get_reg_value(self, regset, regname):
+        """
+        Get register value
+        """
         try:
-            dst_reg = inst.destination_register
-            # XXX do we need to -1 because $zero is not stored?
-            # destination_register seems not to be doing it
-            src_reg = int(cb[1:]) + 64
-            bound_reg = int(rt)
-        except:
-            logger.error("[csetbounds] Error computing register indexes")
-            raise
-
-        try:
-            # src is taken from the previous instruction's register set
-            # because if the destination reg is the same as the source
-            # the value has been overwritten at this point
-            if not last_regs.valid_caps[src_reg - 64]:
-                logger.warning("[csetbounds] src from invalid cap %d" %
-                               src_reg)
-            src_val = last_regs.cap_reg[src_reg - 64]
-            if not regs.valid_gprs[bound_reg]:
-                logger.warning("[csetbounds] bound from invalid rt %d" %
-                               bound_reg)
-            bound_val = regs.gpr[bound_reg]
-            if not regs.valid_caps[dst_reg - 64]:
-                logger.warning("[csetbounds] dst from invalid rt %d" %
-                               bound_reg)
-            dst_val = regs.cap_reg[dst_reg - 64]
+            if regname[0] == "c":
+                idx = int(regname[1:])
+                if not regset.valid_caps[idx]:
+                    logger.warning("Taking value of %s from "\
+                                   "invalid cap register" % regname)
+                return regset.cap_reg[idx]
+            else:
+                idx = int(regname)
+                if not regset.valid_gprs[idx]:
+                    logger.warning("Taking value of %s from "\
+                                   "invalid gpr register" % regname)
+                return regset.gpr[idx]
         except IndexError:
-            logger.error("[csetbounds] Malformed register index: "\
-                         "src(%d) bound(%d) val(%d)" % (src_reg - 64,
-                                                        bound_reg - 64,
-                                                        dst_reg - 64))
+            logger.error("Register index out of bounds for %s" % regname)
             raise
-        
-        node = CheriCapNode(dst_val)
-        # need to work more on the address.. we need to catch csc
-        node.address = None # entry.memory_address # XXX not quite the address I need here
+
+    def make_node(self, entry, src, dst):
+        node = CheriCapNode(dst)
+        # need to work more on the address..
+        # we need to catch csc mappings
+        # entry.memory_address # XXX not quite the address I need here
+        node.address = None
         node.t_alloc = entry.cycles
-        node.origin = "csetbounds"
         # find parent node, if no match then the tree is returned
         try:
-            parent = self.tree.find_node(src_val.base, src_val.length)
+            parent = self.tree.find_node(src.base, src.length)
         except:
-            logger.error("[csetbounds] Error in find_node")
+            logger.error("Error searching for parent node of %s" % node)
             raise
         
         if parent == None:
             # append source node first
-            srcnode = CheriCapNode(src_val)
+            srcnode = CheriCapNode(src)
             srcnode.addr = 0
             srcnode.origin = "inferred"
             srcnode.t_alloc = -2 # unknown
             self.tree.append(srcnode)
             parent = srcnode
+        parent.append(node)
+        return node
 
-        try:
-            parent.append(node)
-        except:
-            logger.error("[csetbounds] Error appending node")
-            raise
+    def parse_cap3_instr(self, entry, regs, last_regs, inst):
+        """
+        Generic parsing function for 3-operand capability instructions.
+        This is used both for csetbounds and cfromptr.
+        Returns the parsed node
+        """
+        if last_regs is None:
+            last_regs = regs
 
-    def cfromptr(self, entry, regs, last_regs, instr):
-        pass
+        cd, cb, rt = self.get_args3(inst)
+
+        # src is taken from the previous instruction's register set
+        # because if the destination reg is the same as the source
+        # the value has been overwritten at this point
+        src_val = self.get_reg_value(last_regs, cb)
+        dst_val = self.get_reg_value(regs, cd)
+
+        node = self.make_node(entry, src_val, dst_val)
+        return node
+
+    def csetbounds(self, entry, regs, last_regs, inst):
+        node = self.parse_cap3_instr(entry, regs, last_regs, inst)
+        node.origin = "csetbounds"
+
+    def cfromptr(self, entry, regs, last_regs, inst):
+        return
+        node = self.parse_cap3_instr(entry, regs, last_regs, inst)
+        node.origin = "cfromptr"
 
     def csc(self, entry, regs, instr):
         pass
