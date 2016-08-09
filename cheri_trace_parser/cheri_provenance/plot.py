@@ -5,7 +5,7 @@ import numpy as np
 import logging
 
 from matplotlib import pyplot as plt
-from matplotlib import lines, patches
+from matplotlib import lines, transforms, axes
 
 from itertools import repeat
 from functools import reduce
@@ -16,19 +16,415 @@ from .cheri_provenance import CachedProvenanceTree
 
 logger = logging.getLogger(__name__)
 
-class Chunk:
+class AddressSpaceAxes(axes.Axes):
+    """
+    XXX TO DO move the AddressSpaceCanvas here
+    This should be moved to a separate module as it is a reusable
+    Axes class for various plots involving considerations on
+    address-spaces
+    """
+    pass
+
+class AddressSpaceShrinkTransform(transforms.Transform):
+    """
+    Non-affine transform that shrinks a selected segment
+    of the address-space
+
+    When we have the omit range list we have a complete map
+    of which parts of the address-space we are not interested in.
+
+    The size of the shrunk segment (hole) is computed as a function of 
+    n_omit_ranges and its X coordinate is computed from the
+    cumulative X of the previous (known) segments and holes.
+
+    XXX this needs to be done for xticks as well
+    """
+
+    def __init__(self, range_list, *args, **kwargs):
+        super(AddressSpaceShrinkTransform, self).__init__(*args, **kwargs)
+        self.target_ranges = range_list
+        self._inverse = False
+
+        keep = [r for r in self.target_ranges if r.rtype == Range.T_KEEP]
+        size = reduce(lambda acc,r: acc + r.size
+                      if r.size < np.inf else acc, keep, 0)
+        self.omit_width = size / len(keep) * 20 / 100
+        """Width of an omitted range"""
+
+        self.has_inverse = True
+        self.is_separable = False
+        self.input_dims = 2
+        self.output_dims = 2
+
+    def get_x_offset(self, range_in):
+        """
+        Get the data X coordinate based on the omit/keep ranges
+        before the current range
+        """
+        x_offset = 0
+        # XXX may use a B-tree of precomputed offsets to speed up
+        for r in self.target_ranges:
+            if range_in in r:
+                if r.rtype == Range.T_KEEP:
+                    x_offset += range_in.start - r.start
+                    x_len = range_in.size
+                else:
+                    if (range_in.start == r.start and range_in.size == 0):
+                        # if not really overlapping
+                        # the length is 0, otherwise points such as
+                        # (x,x) with x exactly equal to the start of
+                        # the omit range and the end of the previous
+                        # keep range are shifted by omit_width when they
+                        # should not
+                        x_len = 0
+                    else:
+                        x_len = self.omit_width
+                break
+            else:
+                if r.rtype == Range.T_KEEP:
+                    x_offset += r.size
+                else:
+                    # T_OMIT
+                    x_offset += self.omit_width
+        return x_offset, x_len
+
+    def get_x_offset_inv(self, range_in):
+        """
+        Inverse of get_x_offset
+
+        Find the address range corresponding to the plot range
+        given by scanning all the target ranges
+        """
+        return range_in.start, 0
+    """
+    DISABLED WHY??
+        x_offset = 0
+        for r in self.target_ranges:
+            if r.rtype == Range.T_KEEP:
+                next_offset = x_offset + r.size
+            else:
+                # T_OMIT
+                next_offset = x_offset + self.omit_width                
+            if range_in in Range(0, next_offset):
+                # the plot offset correspond to something is the
+                # current range (r)
+                # XXX note: this is not accurate as there is no way of
+                # knowing the exact x coordinate once something is
+                # collapsed in an omit range.
+                # This is exact only when the size of omitted ranges
+                # match exactly the part of capabilities they contain
+                # e.g. there is no capability that ends halfway in an
+                # omit range.
+                # We don't care about this in the inverse for now.
+                return r.start, r.size
+            x_offset = next_offset
+        return x_offset, 0
+    """
+
+    def transform_x(self, datain_range):
+        """
+        Handle the X axis transformation
+        """
+        if self._inverse:
+            x_offset, x_len = self.get_x_offset_inv(datain_range)
+        else:
+            x_offset, x_len = self.get_x_offset(datain_range)
+        # logger.debug("{%s} %s %s %f" % ("OMIT" if datain_range.rtype == Range.T_OMIT else "KEEP",
+        #                                 self.target_ranges,
+        #                                 datain_range,
+        #                                 x_offset))
+        return x_offset, x_len
+
+    def transform_non_affine(self, datain):
+        """
+        The transform modifies only the X-axis, Y-axis is identity
+        """
+        if datain.shape == (2,2):
+            datain_range = Range(int(datain[0,0]), int(datain[1,0]))
+            x_offset, x_len = self.transform_x(datain_range)
+            return np.array([[x_offset, datain[0,1]],
+                             [x_offset + x_len, datain[1,1]]])
+        elif datain.shape == (1,2):
+            # single points are handles as lines of length 0
+            datain_range = Range(int(datain[0,0]), int(datain[0,0]))
+            x_offset, x_len = self.transform_x(datain_range)
+            return np.array([[x_offset, datain[0,1]]])
+        else:
+            logger.debug("skipping %s" % (datain.shape,))
+            return datain
+
+    def inverted(self):
+        asst = AddressSpaceShrinkTransform(self.target_ranges)
+        asst._inverse = not self._inverse
+        return asst
+
+class Range:
+
+    T_OMIT = 0
+    T_KEEP = 1
+    T_UNKN = -1
+
+    def __init__(self, start, end, rtype=-1):
+        self.start = start
+        self.end = end
+        self.rtype = rtype
+        """The type is used to distinguish omit and keep ranges"""
+
+    @property
+    def size(self):
+        return self.end - self.start
+
+    def __str__(self):
+        return "<Range [%x, %x]>" % (self.start, self.end)
+
+    def __repr__(self):
+        return str(self)
+
+    def __add__(self, other):
+        return Range(min(self.start, other.start), max(self.end, other.end))
+
+    def __contains__(self, target):
+        """
+        target can be a Range or a single address
+        """
+        try:
+            return self.start <= target.end and target.start < self.end
+        except:
+            return self.start <= addr and addr < self.end
+
+    def __str__(self):
+        start = "0x%x" if type(self.start) == int else "%s"
+        end = "0x%x" if type(self.end) == int else "%s"
+        if self.rtype == self.T_OMIT:
+            rtype = "OMIT"
+        elif self.rtype == self.T_KEEP:
+            rtype = "KEEP"
+        else:
+            rtype = "UNK"
+        fmt = "<Range s:" + start + " e:" + end + " t:%s>"
+        return fmt % (self.start, self.end, rtype)
+
+
+class RangeSet(list):
+
+    def __init__(self, *args):
+        super(RangeSet, self).__init__(*args)
+
+    def match_overlap(self, addr):
+        """
+        Return the list of ranges containing addr
+        """
+        range_ = Range(addr, addr)
+        return self.match_overlap_range(ranges, range_)
+
+    def match_overlap_range(self, target):
+        """
+        Return the list of ranges overlapping target
+        XXX one of the boundaries should not have <= or >=
+        otherwise we count that twice for adjacent ranges.
+        By convention range intervals are left-closed e.g.
+        [start, end)
+        """
+        overlaps = [r for r in self if (r.start <= target.end and
+                                        r.end > target.start)]
+        return RangeSet(overlaps)
+
+    def first_overlap_range(self, target):
+        """
+        Return the first range in the set that overlaps target
+        """
+        for r in self:
+            if (r.start <= target.end and r.end > target.start):
+                return r
+        return None
+
+class AddressSpaceCanvas:
+    """
+    Abstract representation of the address space where to draw
+
+    Elements are added to the canvas that handles the partial
+    rendering of the address range with gaps where the uninteresting
+    parts are.
+    The class never exposes actual plot coordinates, so the interface
+    consistently use memory addresses for the X axis and whatever
+    elements implement for the Y axis.
+    """
+
+    DEFAULT_OMIT = 0
+    """Default mode: omit all non-included addresses"""
+    DEFAULT_INCLUDE = 1
+    """Default mode: include all non-omitted addresses"""
+
+    def __init__(self, axes):
+        self.ax = axes
+        self.omit_filters = RangeSet()
+        """List of address ranges that are omitted"""
+        self.include_filters = RangeSet()
+        """List of address ranges that are included"""
+        self.mode = AddressSpaceCanvas.DEFAULT_INCLUDE
+        """
+        Control what to do with address ranges that are not in 
+        the omit or include list
+        """
+        self.elements = RangeSet()
+        """List of elements in the canvas, ordered by start address"""
+
+    def add_element(self, element):
+        self.elements.append(element)
+        self.elements.sort(key=attrgetter("start"))
+
+    def __iter__(self):
+        for elem in self.elements:
+            yield elem
+
+    def get_elements_at(self, addr):
+        return self.elements.match_overlap(addr)
+
+    def get_elements_in(self, addr_start, addr_end):
+        return self.elements.match_overlap_range(
+            Range(addr_start, addr_end))
+
+    def _filter(self, target_list, other_list, target_range):
+        """Generic omit or include"""
+        if len(other_list.match_overlap_range(target_range)):
+            raise ValueError("Range %s is present in another filter" %
+                             target_range)
+
+        existing_range = target_list.match_overlap_range(target_range)
+        assert len(existing_range) < 2, "Too many overlapping ranges"
+        try:
+            target_range = existing_range[0] + target_range
+        except IndexError:
+            pass
+        finally:
+            target_list.append(target_range)
+        # XXX may want to sort ranges
+    
+    def omit(self, addr_start, addr_end):
+        """
+        Add range to the omit list, if not on the include list
+        Use when canvas is in DEFAULT_KEEP mode
+        """
+        omit_range = Range(addr_start, addr_end)
+        self._filter(self.omit_filters, self.include_filters, omit_range)
+
+    def keep(self, addr_start, addr_end):
+        """
+        Add range to the keep list, if not on the omit list
+        Use when canvas is in DEFAULT_OMIT mode
+        """
+        incl_range = Range(addr_start, addr_end)
+        self._filter(self.include_filters, self.omit_filters, incl_range)
+
+    def set_default_mode(self, mode):
+        if (mode != self.DEFAULT_OMIT and
+            mode != self.DEFAULT_INCLUDE):
+            raise ValueError("Invalid mode %d" % mode)
+        self.mode = mode
+
+    def map_omit(self, map_range):
+        """
+        Map the omit and include lists on the given range.
+        The range is split in omit regions and include regions,
+        the omit regions are the ones to be shrunk in the plot
+        while the include regions are rendered normally.
+
+        Return a 2-tuple as (keep-list, omit-list) XXX we now return a single list, the type is encoded in the ranges
+        """
+        if self.mode == AddressSpaceCanvas.DEFAULT_INCLUDE:
+            logger.debug("Map omit regions on %s" % (map_range))
+            regions = self.omit_filters.match_overlap_range(map_range)
+            # type of mapped regions
+            rtype = Range.T_OMIT
+            # type of complement regions
+            c_rtype = Range.T_KEEP
+        else:
+            logger.debug("Map include regions on %s" % (map_range))
+            regions = self.include_filters.match_overlap_range(map_range)
+            # type of mapped regions
+            rtype = Range.T_KEEP
+            # type of complement regions
+            c_rtype = Range.T_OMIT
+
+        regions.sort(key=attrgetter("start"))
+        logger.debug("Found %d regions for %s: %s" % (len(regions), map_range, regions))
+        mapped = []
+        complement = []
+        start = None
+        for r in regions:
+            # r.start can not be after target.end so the
+            # mapped range start always in the target boundaries
+            # same applies for the r.end and target.end
+            start = max(map_range.start, r.start)
+            end = min(map_range.end, r.end)
+            m_range = Range(start, end, rtype)
+            # logger.debug("m_range %s" % m_range)
+            # regions are assumed to be sorted by start address
+            c_start = mapped[-1].end if len(mapped) else map_range.start
+            c_end = start
+            c_range = Range(c_start, c_end, c_rtype)
+            # logger.debug("c_range %s" % c_range)
+            if m_range.size > 0:
+                mapped.append(m_range)
+            if c_range.size > 0:
+                complement.append(c_range)
+        # add last block to complement if necessary
+        c_start = mapped[-1].end if len(mapped) else map_range.start
+        c_end = map_range.end
+        c_range = Range(c_start, c_end, c_rtype)
+        if c_range.size > 0:
+            complement.append(c_range)
+
+        logger.debug("Mapped: %s" % mapped)
+        logger.debug("Complement: %s" % complement)
+
+        ranges = RangeSet(mapped + complement)
+        # XXX may keep the lists separated to avoid the need to sort
+        ranges.sort(key=attrgetter("start"))
+        return ranges
+
+    def draw(self):
+        y_max = 0
+        x_max = 0
+        x_ticks = []
+        x_labels = []
+        
+        all_ranges = self.map_omit(Range(0, np.inf))
+        transAS = AddressSpaceShrinkTransform(all_ranges)        
+        self.ax.transData = transAS + self.ax.transData
+        
+        for e in self.elements:
+            # keep, omit = self.map_omit(e)
+            regions = self.map_omit(e)
+            logger.debug("Draw %s" % e)
+            for r in regions:
+                if r.rtype == Range.T_KEEP:
+                    e.draw(r.start, r.end, self.ax)
+                else:
+                    e.omit(r.start, r.end, self.ax)
+            y_max = max(y_max, e.y_value)
+            x_max = max(x_max, e.node.bound)
+        # set axis labels and ticks
+        # XXX move transform logic to overridden set_xticks
+        # XXX see TickLocator to see if it can be used insted
+        # of calling the transAS directly
+        for r in all_ranges:
+            if r.rtype == Range.T_KEEP:
+                x_tick_point = transAS.transform((r.start, 0))
+                x_ticks.append(x_tick_point[0])
+                x_labels.append("0x%x" % r.start)
+        x_tick_point = transAS.transform((x_max, 0))
+        x_ticks.append(x_tick_point[0] + transAS.omit_width)
+        x_labels.append("0x%x" % x_max)
+        self.ax.set_xticks(x_ticks)
+        self.ax.set_xticklabels(x_labels, rotation="vertical")
+        self.ax.set_ylim(-y_max / 100, y_max)
+
+
+class CapabilityRange:
 
     def __init__(self, node):
         self.node = node
-        """Leaf node that originated this chunk"""
-        self.lines = []
-        """Line2D instances representing data in this chunk"""
-
-    def __iter__(self):
-        parent = self.node.parent
-        while parent is not None:
-            yield parent
-            parent = parent.parent
 
     @property
     def start(self):
@@ -40,307 +436,134 @@ class Chunk:
 
     @property
     def size(self):
-        return self.end - self.start
+        return self.node.length
 
-    @staticmethod
-    def set_line_color(node, line):
-        if node.origin == "csetbounds":
-            line.set_color("blue")
-        if node.origin == "cfromptr":
-            line.set_color("green")
-        if node.origin == "inferred":
-            line.set_color("red")
-
-    def make_lines(self, x_offset, x_gap):
+    @property
+    def y_value(self):
+        return self.node.t_alloc / 10**6
+    
+    def draw(self, start, end, ax):
         """
-        Prepare all the lines in the chunk and return the space
-        in the X axis taken by the chunk.
-        The x_gap is the size of a separation space between chunks,
-        this is given in case the chunk need to create multiple blocks
-        that are separated. It is not used in the simple case as the gap
-        is handled by ChunkGap
+        Draw the interesting part of the element
         """
-        chunk_x = x_offset
-        chunk_y = PointerProvenancePlot.scale_time(self.node.t_alloc)
-        line = lines.Line2D([chunk_x, chunk_x + self.size],
-                            [chunk_y, chunk_y])
-        self.set_line_color(self.node, line)
-        self.lines.append(line)
+        logger.debug("Draw [0x%x, 0x%x] %d" % (start, end, self.node.t_alloc))
+        line = lines.Line2D([start, end],
+                            [self.y_value, self.y_value])
+        ax.add_line(line)
         # add vertical separators
-        line = lines.Line2D([chunk_x, chunk_x],
-                            [chunk_y, 0],
+        line = lines.Line2D([start, start],
+                            [self.y_value, 0],
                             linestyle="dotted",
                             color="black")
-        self.lines.append(line)
-        line = lines.Line2D([chunk_x + self.size, chunk_x + self.size],
-                            [chunk_y, 0],
+        ax.add_line(line)
+        line = lines.Line2D([end, end],
+                            [self.y_value, 0],
                             linestyle="dotted",
                             color="black")
-        self.lines.append(line)
-        logger.debug("Draw lines for chunk [0x%x, 0x%x] as [%d, %d]" %
-                     (self.start, self.end,
-                      chunk_x, chunk_x + self.size))
-        return self.size
+        ax.add_line(line)
 
-    def make_parent_lines(self, x_offset, x_gap):
+    def omit(self, start, end, ax):
         """
-        Draw lines for parent nodes.
-        This is overloaded to draw longer lines in merged chunks
+        Draw the pattern showing an omitted block
+        of the element
         """
-        chunk_x = x_offset
-        for parent in self:
-            chunk_y = PointerProvenancePlot.scale_time(parent.t_alloc)
-            line = lines.Line2D([chunk_x, chunk_x + self.size],
-                                [chunk_y, chunk_y])
-            self.set_line_color(parent, line)
-            self.lines.append(line)
-        logger.debug("Draw parents for chunk [0x%x, 0x%x] as [%d, %d]" %
-                     (self.start, self.end,
-                      chunk_x, chunk_x + self.size))
-        return 0
-
-    def make_xtick(self, x_offset, x_gap):
-        """
-        Generate the plot xtick and associated label
-        for this chunk
-        """
-        xtick = x_offset
-        xlabel = "0x%x" % self.start
-        return (xtick, xlabel)
-
-    def add_subchunk(self, chunk):
-        logger.debug("Creating merged chunk [%x, %x] + [%x, %x]" %
-                     (self.start, self.end, chunk.start, chunk.end))
-        return ChunkGroup([self, chunk])
+        logger.debug("Omit [0x%x, 0x%x] %d" % (start, end, self.node.t_alloc))
+        line = lines.Line2D([start, end],
+                            [self.y_value, self.y_value],
+                            linestyle="dotted")
+        ax.add_line(line)
 
     def __str__(self):
-        return "<Chunk start:0x%x end:0x%x>" % (self.start, self.end)
+        return "<CapRange start:0x%x end:0x%x>" % (self.start, self.end)
 
 
-class ChunkSlice(Chunk):
+class LeafCapOmitStrategy:
     """
-    A chunk that renders only a portion of the node attached to it
-    the start and end of the rendered part are given to the constructor
+    Generate address ranges that are displayed as shortened in the
+    address-space plot based on leaf capabilities found in the
+    provenance tree.
+    We only care about zones where capabilities without children
+    are allocated. If the allocations are spaced out more than
+    a given number of pages, the space in between is omitted
+    in the plot.
     """
 
-    def __init__(self, node, start, end):
+    def __init__(self):
+        self.ranges = RangeSet()
+        """List of ranges"""
+        self.size_limit = 2**12
+        """Minimum distance between omit ranges"""
+        self.split_size = 2 * self.size_limit
         """
-        Start and end are relative to the node.base
+        If single capability is larger than this,
+        the space in the middle is omitted
         """
-        super(ChunkSlice, self).__init__(node)
-        self.slice_start = self.node.base + start
-        self.slice_end = self.node.base + end
 
-    @property
-    def start(self):
-        return self.slice_start
-
-    @property
-    def end(self):
-        return self.slice_end
-
-    def make_lines(self, x_offset, x_gap):
-        pass
-
-
-class ChunkGroup(Chunk):
-
-    def __init__(self, chunks):
-        super(ChunkGroup, self).__init__(None)
-        self.sub_chunks = chunks
+        # In the beginning there was nothing
+        self.ranges.append(Range(0, np.inf, Range.T_OMIT))
 
     def __iter__(self):
-        for cnk in self.sub_chunks:
-            for parent in cnk:
-                yield parent
+        return iter(self.ranges)
 
-    @property
-    def start(self):
-        base = np.inf
-        for cnk in self.sub_chunks:
-            if cnk.start < base:
-                base = cnk.start
-        return base
-
-    @property
-    def end(self):
-        end = 0
-        for cnk in self.sub_chunks:
-            if cnk.end > end:
-                end = cnk.end
-        return end
-
-    @property
-    def size(self):
-        return self.end - self.start
-
-    def make_lines(self, x_offset, x_gap):
+    def _inspect_range(self, node_range):
+        overlap = self.ranges.match_overlap_range(node_range)
+        logger.debug("Mark %s -> %s" % (node_range, self.ranges))
+        for r in overlap:
+            # 4 possible situations for range (R)
+            # and node_range (NR):
+            # i) NR completely contained in R
+            # ii) R completely contained in NR
+            # iii) NR crosses the start or iv) the end of R
+            if (node_range.start >= r.start and node_range.end <= r.end):
+                # (i) split R
+                del self.ranges[self.ranges.index(r)]
+                r_left = Range(r.start, node_range.start, Range.T_OMIT)
+                r_right = Range(node_range.end, r.end, Range.T_OMIT)
+                if r_left.size >= self.size_limit:
+                    self.ranges.append(r_left)
+                if r_right.size >= self.size_limit:
+                    self.ranges.append(r_right)
+            elif (node_range.start <= r.start and node_range.end >= r.end):
+                # (ii) remove R
+                del self.ranges[self.ranges.index(r)]
+            elif node_range.start < r.start:
+                # (iii) resize range
+                r.start = node_range.end
+                if r.size < self.size_limit:
+                    del self.ranges[self.ranges.index(r)]
+            elif node_range.end > r.end:
+                # (iv) resize range
+                r.end = node_range.start
+                if r.size < self.size_limit:
+                    del self.ranges[self.ranges.index(r)]
+        logger.debug("New omit set %s" % self.ranges)
+    
+    def inspect(self, node):
         """
-        Make lines for a chunk group
-
-        The first chunk is generated normally, as we still need to
-        account for the gap between this chunk and the previous one.
-        Other chunks are rendered relative to the start of the first
-        chunk (in order of start address), in this case the gap is the
-        distance (delta address) between the first chunk and the
-        one being rendered.
-
-        XXX the notion of gap may be quite confusing, how about using
-        only the offset and add the gap in another layer?
-        (e.g. decorator pattern)
+        Inspect a CheriCapNode and update internal
+        set of ranges
         """
-        sub_chunks = sorted(self.sub_chunks, key=attrgetter("start"))
-        first_chunk = sub_chunks[0]
-        for cnk in sub_chunks:
-            curr_x_offset = x_offset + cnk.start - first_chunk.start
-            cnk.make_lines(curr_x_offset, x_gap)
-            self.lines.extend(cnk.lines)
-        logger.debug("Rendered %d subchunks for %s" % (len(sub_chunks), self))
-        return self.size
+        if len(node) != 0:
+            return
+        if node.length > self.split_size:
+            l_range = Range(node.base, node.base + self.size_limit,
+                            Range.T_KEEP)
+            r_range = Range(node.bound - self.size_limit, node.bound,
+                            Range.T_KEEP)
+            self._inspect_range(l_range)
+            self._inspect_range(r_range)
+        else:
+            self._inspect_range(Range(node.base, node.bound, Range.T_KEEP))
 
-    def make_parent_lines(self, x_offset, x_gap):
+    def add_ranges(self, canvas):
         """
-        Draw lines for parent nodes that extend over the full
-        merged space.
-        
-        Some parents will be seen multiple times, plot these only once
+        Apply the ranges to an AddressSpaceCanvas
         """
-        chunk_x = x_offset
-        seen_parents = []
-        for parent in self:
-            if parent in seen_parents:
-                continue
-            seen_parents.append(parent)
-            parent_start = chunk_x + max(parent.base, self.start) - self.start
-            parent_end = parent_start + min(parent.bound, self.end) - self.start
-            logger.debug("parent: [%d, %d]" % (parent_start, parent_end))
-            parent_y = PointerProvenancePlot.scale_time(parent.t_alloc)
-            line = lines.Line2D([parent_start, parent_end],
-                                [parent_y, parent_y])
-            self.set_line_color(parent, line)
-            self.lines.append(line)
-        logger.debug("Draw group parents for chunk [0x%x, 0x%x] as [%d, %d]" %
-                     (self.start, self.end,
-                      chunk_x, chunk_x + self.size))
-        return 0
-
-    def add_subchunk(self, chunk):
-        logger.debug("Add to merged chunk [%x, %x] + [%x, %x]" %
-                     (self.start, self.end, chunk.start, chunk.end))
-        self.sub_chunks.append(chunk)
-        return self
-
-    def __str__(self):
-        return "<ChunkGroup start:0x%x end:0x%x>" % (self.start, self.end)
-
-
-class LargeChunk(ChunkGroup):
-
-    def __init__(self, node):
-        start = ChunkSlice(node, 0, 2**12)
-        end = ChunkSlice(node, node.length - 2**12, node.length)
-        self.node = node
-        super(ChunkGroup, self).__init__([start, end])
-
-    def make_lines(self, x_offset, x_gap):
-        """
-        Large chunks are treated much like a parent when
-        overlapping, when rendered as non-grouped the chunk shows
-        the beginning page and the ending page separated by dotted
-        a dotted line.
-
-        XXX: assume that a large chunk is larger than 2 pages (of 4K)
-        """
-        assert self.size > 2**13, "LargeChunk is smaller than 2 pages"
-
-        
-        
-        return 0
-
-    def make_parent_lines(self, x_offset, x_gap):
-        return 0
-
-    def make_xtick(self, x_offset, x_gap):
-        return (None, None)
-
-    def __str__(self):
-        return "<LargeChunk start:0x%x end:0x%x>" % (self.start, self.end)
-
-
-class ChunkGap(Chunk):
-    """
-    Decorator that adds a gap before the wrapped chunk
-    Parent capabilities are shown in the gap as dotted lines
-    """
-
-    def __init__(self, chunk):
-        super(ChunkGap, self).__init__(None)
-        self.wrapped = chunk
-        self.lines = self.wrapped.lines
-
-    def __iter__(self):
-        for item in self.wrapped:
-            yield item
-
-    @property
-    def start(self):
-        return self.wrapped.start
-
-    @property
-    def end(self):
-        return self.wrapped.end
-
-    @property
-    def size(self):
-        return self.wrapped.size
-
-    def make_lines(self, x_offset, x_gap):
-        """
-        Prepare the lines and adds an inter-chunk separation
-        space. Capabilities that overflow the wrapped chunk boundaries
-        are represented as dotted lines in the gap space.
-        """
-        chunk_x = x_offset + x_gap
-        size = self.wrapped.make_lines(chunk_x, x_gap)
-        # add lines for parent nodes
-        seen_parents = []
-        for parent in self.wrapped:
-            if parent in seen_parents:
-                continue
-            seen_parents.append(parent)
-            # add dotted continuation line for the parent if parent
-            # is not starting exactly at the same point as the chunk
-            if parent.base < self.wrapped.start:
-                logger.debug("Draw gap for %s -> parent [%x, %x]" %
-                             (self.wrapped, parent.base, parent.bound))
-                chunk_y = PointerProvenancePlot.scale_time(parent.t_alloc)
-                gap_line = lines.Line2D([x_offset, chunk_x],
-                                        [chunk_y, chunk_y],
-                                        linestyle="dotted")
-                self.lines.append(gap_line)
-        return size + x_gap
-
-    def make_parent_lines(self, x_offset, x_gap):
-        return self.wrapped.make_parent_lines(x_offset + x_gap, x_gap)
-
-    def make_xtick(self, x_offset, x_gap):
-        return self.wrapped.make_xtick(x_offset + x_gap, x_gap)
-
-    def add_subchunk(self, *args):
-        return ChunkGap(self.wrapped.add_subchunk(*args))
-
-    def __str__(self):
-        return "<ChunkGap %s>" % str(self.wrapped)
+        for r in self.ranges:
+            canvas.omit(r.start, r.end)
 
 
 class PointerProvenancePlot:
-
-    @staticmethod
-    def scale_time(time):
-        """
-        Change time scale
-        """
-        return time / 10**6
 
     def __init__(self, tracefile):
         self.tracefile = tracefile
@@ -349,11 +572,12 @@ class PointerProvenancePlot:
         """Tracefile parser"""
         self.tree = None
         """Provenance tree"""
+        self.omit_strategy = LeafCapOmitStrategy()
+        """
+        Strategy object that decides which parts of the AS
+        are interesting
+        """
 
-        self.large_chunk_size = 4 * 2**12
-        """Large chunk detection threshold 4 pages (must be >2 pages)"""
-        self.chunk_merge_size = 2**12
-        """Two chunks are closer than this treshold are merged"""
         self._caching = False
 
     def _get_cache_file(self):
@@ -383,96 +607,6 @@ class PointerProvenancePlot:
         if len(errs) > 0:
             logger.warning("Inconsistent provenance tree: %s" % errs)
 
-    def get_chunks(self):
-        """
-        Split nodes in chunks of address-space to remove
-        uninteresting parts of the address-space.
-        Return a list of chunks and the maximum time found to
-        set the Y scale (this is to avoid walking the tree multiple
-        times).
-
-        Initially all leaves in the tree are chunks. The chunk
-        boundaries are extended to the parent capability bonudaries
-        if the parent leaf-space / blank-space ratio is higher than
-        a threshold (this is to make the plot more readable).
-        Finally capability start and end are inserted in chunks
-        so that they show up when plotting.
-        The chunk list is returned.
-
-        Large chunks are also split in two smaller start and end chunks
-        so that they do not take all the space. The large chunk 
-        threshold can be tuned.
-
-        XXXAM: this seems a space-partitioning problem
-        are kd-trees an option?
-        """
-        logger.debug("Isolate interesting chunks of Address Space")
-        # get leaves merging chunks referring to duplicate leaves
-        chunks = {}
-        time_max = 0
-        for child in self.tree:
-            if child.t_alloc > time_max:
-                time_max = child.t_alloc
-            if len(child) == 0:
-                if child.length > self.large_chunk_size:
-                    chunk = LargeChunk(child)
-                    logger.warning("LargeChunk not implemented")
-                    continue
-                else:
-                    chunk = Chunk(child)
-                logger.debug("Found chunk %s" % chunk)
-                # At this point we need to find if there is a chunk that
-                # already contains or partially contains the address
-                # range of the current chunk, if so a Group is created
-                # or the current chunk is appended to an existing Group.
-                # There are 3 situations to handle:
-                # i) duplicates: same start and end, match by start and
-                #  add to group.
-                # ii) non-exact overlap: happens when two capabilities
-                # share a portion of the address space but they are not
-                # parent-child, the overlap may or may not be complete.
-                # The Group can handle that but they have to be detected.
-                # iii) overlap with large chunks: ?
-
-                if not chunk.start in chunks:
-                    chunks[chunk.start] = chunk
-                elif chunks[chunk.start].end == chunk.end:
-                    # see(i)
-                    chunks[chunk.start] = chunks[chunk.start].add_subchunk(chunk)
-                else:
-                    # XXX TO DO (iii) unsupported
-                    logger.error("UNSUPPORTED CHUNK MERGE")
-                    logger.warning("Skipping chunk")
-                    # raise NotImplementedError("Unsupported chunk merge")
-                logger.debug("Processed chunk %s" % chunks[chunk.start])
-
-        chunks = sorted(chunks.values(), key=attrgetter("start"))
-        # merge chunks that are closer than the chunk_merge_size,
-        # overlapping chunks can also be merged (see (ii))
-        merger = None
-        merged_chunks = []
-        for chunk in chunks:
-            if (merger and chunk.start - merger.end < self.chunk_merge_size):
-                logger.debug("Merging close chunks %s + %s" % (merger, chunk))
-                merger = merger.add_subchunk(chunk)
-            elif merger is None:
-                merger = chunk
-            else:
-                merged_chunks.append(ChunkGap(merger))
-                merger = None
-        # append last merged chunk
-        if merger is not None:
-            merged_chunks.append(ChunkGap(merger))
-        
-        # XXX we should really show also duplicates that are not leaves
-        # this is somewhat the same problem of detecting non-leaf nodes
-        # that cover a part of the address space without being parents of
-        # any of the nodes in there (e.g. root->[10, 50] and root->[20, 30]
-        # see (ii) above.
-        
-        return {"chunks": merged_chunks,
-                "time_max": time_max}
-
     def plot(self):
         """
         Create the provenance plot and return the figure
@@ -480,66 +614,16 @@ class PointerProvenancePlot:
         fig = plt.figure()
         ax = fig.add_axes([0.05, 0.1, 0.9, 0.85,])
 
-        chunk_info = self.get_chunks()
-        chunks = chunk_info["chunks"]
-        time_max = chunk_info["time_max"]
-
-        assert len(chunks) > 0, "No chunk returned"
-
-        # generate lines for each chunk
-        # first we need to extract the total size of the chunks to
-        # determine the scale of the X axis.
-        chunk_space = reduce(lambda sz,chk: sz + chk.size, chunks, 0)
-        # inter-chunk-space is dynamically computed as 30% of the 
-        # average chunk size, this value is arbitrary.
-        # XXX: it may be desirable to make this xx% tunable
-        avg_chunk_size = chunk_space / len(chunks)
-        inter_chunk_space = avg_chunk_size * 30 / 100
-
-        xticks = [0]
-        xlabels = ["0x0"]
-        x_previous_chunks = 0
-        for idx,chunk in enumerate(chunks):
-            size = chunk.make_lines(x_previous_chunks, inter_chunk_space)
-            chunk.make_parent_lines(x_previous_chunks, inter_chunk_space)
-            xtick, xlabel = chunk.make_xtick(x_previous_chunks, inter_chunk_space)
-            if xtick is not None:
-                xticks.append(xtick)
-                xlabels.append(xlabel)
-            x_previous_chunks += size
-
-        # X goes from 0 to chunk_space + inter_chunk_space
-        x_size = x_previous_chunks
-        y_size = self.scale_time(time_max)
-        
-        # double check in case something goes wrong
-        # XXX not sure if the check is actually correct (the plot looks fine)
-        # expected_x_size = chunk_space + inter_chunk_space * (len(chunks) - 1)
-        # if (x_previous_chunks != expected_x_size):
-        #     logger.warning("Unexpected computed plot X size, "\
-        #                    "found %d, expected %d" %
-        #                    (x_size, expected_x_size))
-        # at least this should hold:
-        # assert x_size >= chunk_space
-        logger.debug("Provenance plot X size: total: %d, "\
-                     "inter-chunk-space: %d, chunk-space: %d" %
-                     (x_size, inter_chunk_space, chunk_space))
-        ax.set_xlim(0, x_size)
-        # allow for a 1% margin in the y direction to make things
-        # more readable
-        delta_y = y_size / 100
-        ax.set_ylim(-delta_y, y_size + delta_y)
-        # set xticks and labels
-        ax.set_xticks(xticks)
-        ax.set_xticklabels(xlabels, rotation="vertical")
-            
-        # render chunks
-        for idx,chunk in enumerate(chunks):
-            for line in chunk.lines:
-                ax.add_line(line)
+        canvas = AddressSpaceCanvas(ax)
+        for child in self.tree:
+            self.omit_strategy.inspect(child)
+            canvas.add_element(CapabilityRange(child))
+        self.omit_strategy.add_ranges(canvas)
+        canvas.draw()
+        ax.invert_yaxis()
         
         return fig
-
+    
     def show(self):
         """
         Show plot in a new window
@@ -548,5 +632,3 @@ class PointerProvenancePlot:
             self.build_tree()
         fig = self.plot()
         plt.show()
-        
-        

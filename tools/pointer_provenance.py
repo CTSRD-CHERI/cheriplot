@@ -45,5 +45,4 @@ if __name__ == "__main__":
         logger.debug(plot.tree)
     else:
         plot.show()
-        logger.debug(plot.tree)
 
