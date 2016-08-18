@@ -7,6 +7,7 @@ This script produces a poiner provenance plot from a cheri trace file
 import argparse as ap
 import sys
 import logging
+import cProfile
 
 from cheri_trace_parser.cheri_provenance import PointerProvenancePlot
 
@@ -22,8 +23,14 @@ if __name__ == "__main__":
     parser.add_argument("--log", help="Set logfile path")
     parser.add_argument("--tree", help="Dump tree to logging and exit",
                         action="store_true")
+    parser.add_argument("--profile",
+                        help="Run in profiler (disable verbose output)",
+                        action="store_true")
 
     args = parser.parse_args()
+
+    if args.profile:
+        args.verbose = False
 
     logging_args = {}
     if args.verbose:
@@ -44,5 +51,8 @@ if __name__ == "__main__":
         plot.build_tree()
         logger.debug(plot.tree)
     else:
-        plot.show()
+        if args.profile:
+            cProfile.run("plot.build_figure()")
+        else:
+            plot.show()
 

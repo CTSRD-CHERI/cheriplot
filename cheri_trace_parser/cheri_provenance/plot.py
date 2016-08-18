@@ -623,12 +623,20 @@ class PointerProvenancePlot:
         ax.invert_yaxis()
         
         return fig
+
+    def build_figure(self):
+        """
+        Build the plot without showing it
+        """
+        if self.tree is None:
+            self.build_tree()
+        fig = self.plot()
     
     def show(self):
         """
         Show plot in a new window
         """
-        if self.tree is None:
-            self.build_tree()
-        fig = self.plot()
+        self.build_figure()
         plt.show()
+
+    

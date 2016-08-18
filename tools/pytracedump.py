@@ -3,35 +3,40 @@ import sys
 
 from cheri_trace_parser.core.parser import TraceParser
 
-import pycheritrace.pycheritrace as pct
+import pycheritrace as pct
 import argparse
 
 class PyDumpParser(TraceParser):
 
-    def __init__(self, *args):
+    def __init__(self, find, *args):
         super(PyDumpParser, self).__init__(*args)
         self.dump_registers = False
+        self.find_instr = find
 
     def enable_regdump(self, enable):
         self.dump_registers = enable
 
     def parse(self, start, end):
 
-        context = {
+        ctx = {
             "dis": pct.disassembler(),
-            "kernel_mode": False
+            "kernel_mode": False,
+            "find": self.find_instr,
         }
 
-        def _scan(ctx, entry, regs, idx):
+        def _scan(entry, regs, idx):
             dis = ctx["dis"]
+            inst = dis.disassemble(entry.inst)
+            if (ctx["find"] is not None and
+                ctx["find"] != inst.name.strip().split("\t")[0]):
+                return False
+            
             if ctx["kernel_mode"] != entry.is_kernel():
                 if entry.is_kernel():
                     print("Enter kernel mode {%d}" % (entry.cycles))
                 else:
                     print("Enter user mode {%d}" % (entry.cycles))
                 ctx["kernel_mode"] = entry.is_kernel()
-
-            inst = dis.disassemble(entry.inst)
             
             # dump instr
             print("{%d} 0x%x" % (entry.cycles, entry.pc),
@@ -55,7 +60,7 @@ class PyDumpParser(TraceParser):
                           (regs.valid_gprs[idx],
                            idx,
                            regs.gpr[idx]))
-                for idx in range(0,31):
+                for idx in range(0,32):
                     print("[%d] $%d = b:%x o:%x l:%x" %
                           (regs.valid_caps[idx],
                            idx,
@@ -64,7 +69,7 @@ class PyDumpParser(TraceParser):
                            regs.cap_reg[idx].length))
             return False
         
-        self.scan_detail(_scan, start, end, context=context)
+        self.trace.scan(_scan, start, end)
 
 if __name__ == "__main__":
 
@@ -79,9 +84,10 @@ if __name__ == "__main__":
                     action="store_true")
     ap.add_argument("-r", "--regs", help="Dump register content",
                     action="store_true")
+    ap.add_argument("-f", "--find", help="Find instruction occurrences")
     args = ap.parse_args()
-    
-    pdp = PyDumpParser(args.trace)
+
+    pdp = PyDumpParser(args.find, args.trace)
 
     pdp.enable_regdump(args.regs)
     if (args.info):

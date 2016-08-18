@@ -3,8 +3,11 @@ Parse a cheri trace to a pointer provenance tree
 """
 
 import sys
+import os
 import logging
-import pycheritrace.pycheritrace as pct
+import pycheritrace as pct
+
+from functools import reduce
 
 from cheri_trace_parser.core.parser import TraceParser
 from .cheri_provenance import CheriCapNode
@@ -17,16 +20,17 @@ class PointerProvenanceParser(TraceParser):
 
     def parse(self, tree, start=None, end=None):
 
-        context = {
+        ctx = {
             "ctx": ProvenanceParserContext(tree),
             "dis": pct.disassembler(),
             "last_regs": None,
             "totalsize": len(self),
             "current": 0,
             "progress": 0,
+            "regs_valid": False,
         }
 
-        def _scan(ctx, entry, regs, idx):
+        def _scan(entry, regs, idx):
             parser_ctx = ctx["ctx"]
             dis = ctx["dis"]
             
@@ -47,6 +51,8 @@ class PointerProvenanceParser(TraceParser):
             # in particular the root capability set
             # if idx == 0:
             #     parser_ctx.scan_root_cap(regs)
+            if not ctx["regs_valid"]:
+                ctx["regs_valid"] = parser_ctx.scan_regset_init(regs)
             
             if opcode == "csetbounds":
                 try:
@@ -54,7 +60,7 @@ class PointerProvenanceParser(TraceParser):
                 except Exception as ex:
                     logger.error("Error parsing csetbounds: %s" % ex)
                     return True
-            elif opcode == "cfromptr":
+            elif (opcode == "cfromptr" and ctx["regs_valid"]):
                 try:
                     parser_ctx.cfromptr(entry, regs, ctx["last_regs"], inst)
                 except Exception as ex:
@@ -67,7 +73,7 @@ class PointerProvenanceParser(TraceParser):
             ctx["last_regs"] = regs
             return False
         
-        self.scan_detail(_scan, context=context)
+        self.trace.scan(_scan, 0, len(self))
         
 class ProvenanceParserContext(object):
 
@@ -100,6 +106,14 @@ class ProvenanceParserContext(object):
                 node.offset = cap.offset
                 node.length = cap.length
                 self.tree.append(node)
+
+    def scan_regset_init(self, regset):
+        all_valid = True
+        for v in range(0,27):
+            all_valid = regset.valid_caps[v]
+            if not all_valid:
+                break
+        return all_valid
 
     def get_args3(self, inst):
         try:
