@@ -10,71 +10,60 @@ import pycheritrace as pct
 from functools import reduce
 
 from cheri_trace_parser.core.parser import TraceParser
+from cheri_trace_parser.utils import ProgressPrinter
 from .cheri_provenance import CheriCapNode
 
 logger = logging.getLogger(__name__)
 
 class PointerProvenanceParser(TraceParser):
 
-    VERBOSE = True
+    def __init__(self, *args, **kwargs):
+        super(PointerProvenanceParser, self).__init__(*args, **kwargs)
+        # context
+        self.parser_context = None
+        self.dis = pct.disassembler()
+        self.progress = ProgressPrinter(len(self), desc="Scanning trace")
+        self.last_regs = None
+        self.regs_valid = False
 
     def parse(self, tree, start=None, end=None):
 
-        ctx = {
-            "ctx": ProvenanceParserContext(tree),
-            "dis": pct.disassembler(),
-            "last_regs": None,
-            "totalsize": len(self),
-            "current": 0,
-            "progress": 0,
-            "regs_valid": False,
-        }
+        self.parser_context = ProvenanceParserContext(tree)
 
         def _scan(entry, regs, idx):
-            parser_ctx = ctx["ctx"]
-            dis = ctx["dis"]
-            
-            if PointerProvenanceParser.VERBOSE:
-                ctx["current"] += 1
-                progress = int(ctx["current"] * 100 / ctx["totalsize"])
-                if (progress != ctx["progress"]):
-                    ctx["progress"] = progress
-                    sys.stdout.write("\rScanning trace [%d%%]" % progress)
-                    sys.stdout.flush()
 
-            inst = dis.disassemble(entry.inst)
+            self.progress.advance()
+            inst = self.dis.disassemble(entry.inst)
             parts = inst.name.split("\t")
             opcode = parts[1]
 
-            # XXX it would be useful if the first register set contained the full
-            # snapshot of the initial registers, we are missing stuff otherwise
-            # in particular the root capability set
-            # if idx == 0:
-            #     parser_ctx.scan_root_cap(regs)
-            if not ctx["regs_valid"]:
-                ctx["regs_valid"] = parser_ctx.scan_regset_init(regs)
-            
             if opcode == "csetbounds":
                 try:
-                    parser_ctx.csetbounds(entry, regs, ctx["last_regs"], inst)
+                    self.parser_context.csetbounds(entry, regs, self.last_regs, inst)
                 except Exception as ex:
-                    logger.error("Error parsing csetbounds: %s" % ex)
+                    logger.error("Error parsing csetbounds: %s", ex)
                     return True
-            elif (opcode == "cfromptr" and ctx["regs_valid"]):
+            elif (opcode == "cfromptr" and self.regs_valid):
                 try:
-                    parser_ctx.cfromptr(entry, regs, ctx["last_regs"], inst)
+                    self.parser_context.cfromptr(entry, regs, self.last_regs, inst)
                 except Exception as ex:
-                    logger.error("Error parsing cfromptr: %s" % ex)
+                    logger.error("Error parsing cfromptr: %s", ex)
                     return True
             elif opcode == "csc":
-                parser_ctx.csc(entry, regs, inst)
+                self.parser_context.csc(entry, regs, inst)
             elif opcode == "clc":
-                parser_ctx.clc(entry, regs, inst)
-            ctx["last_regs"] = regs
+                self.parser_context.clc(entry, regs, inst)
+            elif (opcode == "eret" and not self.regs_valid):
+                if not self.regs_valid:
+                    self.parser_context.scan_root_cap(regs)
+                self.regs_valid = True
+
+            self.last_regs = regs
             return False
-        
+
         self.trace.scan(_scan, 0, len(self))
-        
+        self.progress.finish()
+
 class ProvenanceParserContext(object):
 
     class RegisterSet(object):
@@ -87,33 +76,41 @@ class ProvenanceParserContext(object):
         the correct CapNode to add as parent for a new node,
         the latter allows us to set the CapNode.address for
         a newly allocated capability
-
-        XXX: before this experiment with just base and bound matching
         """
-        pass
+        def __init__(self):
+            self.reg_nodes = np.array(32, dtype=object)
+            """CheriCapNode associated with each register"""
+            self.memory_map = None
+            """CheriCapNodes stored in memory"""
+
+        def __getitem__(self, idx):
+            return self.reg_nodes[idx]
+
+        def load(self, idx, node):
+            self.reg_nodes[idx] = node
+
+        def move(self, from_idx, to_idx):
+            pass
 
     def __init__(self, tree):
         self.tree = tree
+        self.regset = self.RegisterSet()
 
     def scan_root_cap(self, regs):
         # initialize root capability registers
-        for cap,idx in enumerate(regs.cap_reg):
-            if regs.valid_caps[idx] and cap.valid:
-                node = CheriCapNode()
+        logger.debug("Scan initial register set")
+        for idx in range(0, 32):
+            cap = regs.cap_reg[idx]
+            valid = regs.valid_caps[idx]
+            if valid:
+                node = CheriCapNode(cap)
                 node.t_alloc = 0
-                node.addr = None
-                node.base = cap.base
-                node.offset = cap.offset
-                node.length = cap.length
+                node.address = None
                 self.tree.append(node)
-
-    def scan_regset_init(self, regset):
-        all_valid = True
-        for v in range(0,27):
-            all_valid = regset.valid_caps[v]
-            if not all_valid:
-                break
-        return all_valid
+                self.load(idx, node)
+                logger.debug("c%d %s", idx, node)
+            else:
+                logger.warning("c%d not in initial set", idx)
 
     def get_args3(self, inst):
         try:
@@ -122,7 +119,7 @@ class ProvenanceParserContext(object):
             cb = args.split(",")[1].strip().strip("$")
             rt = args.split(",")[2].strip().strip("$")
         except IndexError:
-            logger.error("Malformed disassembly %s" % inst.name)
+            logger.error("Malformed disassembly %s", inst.name)
             raise
         return (cd, cb, rt)
 
@@ -135,40 +132,47 @@ class ProvenanceParserContext(object):
                 idx = int(regname[1:])
                 if not regset.valid_caps[idx]:
                     logger.warning("Taking value of %s from "\
-                                   "invalid cap register" % regname)
+                                   "invalid cap register", regname)
                 return regset.cap_reg[idx]
             else:
                 idx = int(regname)
                 if not regset.valid_gprs[idx]:
                     logger.warning("Taking value of %s from "\
-                                   "invalid gpr register" % regname)
+                                   "invalid gpr register", regname)
                 return regset.gpr[idx]
         except IndexError:
-            logger.error("Register index out of bounds for %s" % regname)
+            logger.error("Register index out of bounds for %s", regname)
             raise
 
-    def make_node(self, entry, src, dst):
+    def get_cap_index(self, regname):
+        if regname[0] != "c":
+            return -1
+        return int(regname[1:])
+
+    def make_node(self, entry, inst, src, dst):
         node = CheriCapNode(dst)
         # need to work more on the address..
         # we need to catch csc mappings
         # entry.memory_address # XXX not quite the address I need here
         node.address = None
         node.t_alloc = entry.cycles
+        node.pc = entry.pc
+        node.is_kernel = entry.is_kernel()
         # find parent node, if no match then the tree is returned
         try:
-            parent = self.tree.find_node(src.base, src.length)
+            cd, cb, rt = self.get_args3(inst)
+            idx = self.get_cap_index(cb)
+            parent = self.regset[idx]
+            # parent = self.tree.find_node(src.base, src.length)
         except:
-            logger.error("Error searching for parent node of %s" % node)
+            logger.error("Error searching for parent node of %s", node)
             raise
-        
+
         if parent == None:
-            # append source node first
-            srcnode = CheriCapNode(src)
-            srcnode.addr = 0
-            srcnode.origin = "inferred"
-            srcnode.t_alloc = -2 # unknown
-            self.tree.append(srcnode)
-            parent = srcnode
+            logger.error("Missing parent c%d [%x, %x]",
+                         entry.capreg_number(), src.base, src.length)
+            raise Exception("Missing parent for %s [%x, %x]" %
+                            (node, src.base, src.length))
         parent.append(node)
         return node
 
@@ -189,20 +193,25 @@ class ProvenanceParserContext(object):
         src_val = self.get_reg_value(last_regs, cb)
         dst_val = self.get_reg_value(regs, cd)
 
-        node = self.make_node(entry, src_val, dst_val)
+        node = self.make_node(entry, inst, src_val, dst_val)
         return node
+
+    def update_regs(self, entry, regs, last_regs, inst):
+
+        pass
 
     def csetbounds(self, entry, regs, last_regs, inst):
         node = self.parse_cap3_instr(entry, regs, last_regs, inst)
-        node.origin = "csetbounds"
+        node.origin = CheriCapNode.C_SETBOUNDS
 
     def cfromptr(self, entry, regs, last_regs, inst):
-        return
         node = self.parse_cap3_instr(entry, regs, last_regs, inst)
-        node.origin = "cfromptr"
+        node.origin = CheriCapNode.C_FROMPTR
 
     def csc(self, entry, regs, instr):
         pass
 
     def clc(self, entry, regs, instr):
+        # first look for clc c0, sth
+        # or csetdefault
         pass

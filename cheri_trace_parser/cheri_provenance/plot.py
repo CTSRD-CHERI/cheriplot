@@ -1,8 +1,10 @@
 """
 Plot representation of a CHERI pointer provenance tree
 """
+
 import numpy as np
 import logging
+import sys
 
 from matplotlib import pyplot as plt
 from matplotlib import lines, transforms, axes
@@ -11,8 +13,9 @@ from itertools import repeat
 from functools import reduce
 from operator import attrgetter
 
+from cheri_trace_parser.utils import ProgressPrinter
 from .parser import PointerProvenanceParser
-from .cheri_provenance import CachedProvenanceTree
+from .cheri_provenance import CachedProvenanceTree, CheriCapNode
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +107,7 @@ class AddressSpaceShrinkTransform(transforms.Transform):
                 next_offset = x_offset + r.size
             else:
                 # T_OMIT
-                next_offset = x_offset + self.omit_width                
+                next_offset = x_offset + self.omit_width
             if range_in in Range(0, next_offset):
                 # the plot offset correspond to something is the
                 # current range (r)
@@ -129,10 +132,10 @@ class AddressSpaceShrinkTransform(transforms.Transform):
             x_offset, x_len = self.get_x_offset_inv(datain_range)
         else:
             x_offset, x_len = self.get_x_offset(datain_range)
-        # logger.debug("{%s} %s %s %f" % ("OMIT" if datain_range.rtype == Range.T_OMIT else "KEEP",
+        # logger.debug("{%s} %s %s %f", "OMIT" if datain_range.rtype == Range.T_OMIT else "KEEP",
         #                                 self.target_ranges,
         #                                 datain_range,
-        #                                 x_offset))
+        #                                 x_offset)
         return x_offset, x_len
 
     def transform_non_affine(self, datain):
@@ -150,7 +153,7 @@ class AddressSpaceShrinkTransform(transforms.Transform):
             x_offset, x_len = self.transform_x(datain_range)
             return np.array([[x_offset, datain[0,1]]])
         else:
-            logger.debug("skipping %s" % (datain.shape,))
+            logger.debug("skipping %s", datain.shape)
             return datain
 
     def inverted(self):
@@ -271,7 +274,7 @@ class AddressSpaceCanvas:
 
     def add_element(self, element):
         self.elements.append(element)
-        self.elements.sort(key=attrgetter("start"))
+        # self.elements.sort(key=attrgetter("start"))
 
     def __iter__(self):
         for elem in self.elements:
@@ -332,14 +335,14 @@ class AddressSpaceCanvas:
         Return a 2-tuple as (keep-list, omit-list) XXX we now return a single list, the type is encoded in the ranges
         """
         if self.mode == AddressSpaceCanvas.DEFAULT_INCLUDE:
-            logger.debug("Map omit regions on %s" % (map_range))
+            logger.debug("Map omit regions on %s", map_range)
             regions = self.omit_filters.match_overlap_range(map_range)
             # type of mapped regions
             rtype = Range.T_OMIT
             # type of complement regions
             c_rtype = Range.T_KEEP
         else:
-            logger.debug("Map include regions on %s" % (map_range))
+            logger.debug("Map include regions on %s", map_range)
             regions = self.include_filters.match_overlap_range(map_range)
             # type of mapped regions
             rtype = Range.T_KEEP
@@ -347,7 +350,7 @@ class AddressSpaceCanvas:
             c_rtype = Range.T_OMIT
 
         regions.sort(key=attrgetter("start"))
-        logger.debug("Found %d regions for %s: %s" % (len(regions), map_range, regions))
+        logger.debug("Found %d regions for %s: %s", len(regions), map_range, regions)
         mapped = []
         complement = []
         start = None
@@ -358,12 +361,12 @@ class AddressSpaceCanvas:
             start = max(map_range.start, r.start)
             end = min(map_range.end, r.end)
             m_range = Range(start, end, rtype)
-            # logger.debug("m_range %s" % m_range)
+            # logger.debug("m_range %s", m_range)
             # regions are assumed to be sorted by start address
             c_start = mapped[-1].end if len(mapped) else map_range.start
             c_end = start
             c_range = Range(c_start, c_end, c_rtype)
-            # logger.debug("c_range %s" % c_range)
+            # logger.debug("c_range %s", c_range)
             if m_range.size > 0:
                 mapped.append(m_range)
             if c_range.size > 0:
@@ -375,8 +378,8 @@ class AddressSpaceCanvas:
         if c_range.size > 0:
             complement.append(c_range)
 
-        logger.debug("Mapped: %s" % mapped)
-        logger.debug("Complement: %s" % complement)
+        logger.debug("Mapped: %s", mapped)
+        logger.debug("Complement: %s", complement)
 
         ranges = RangeSet(mapped + complement)
         # XXX may keep the lists separated to avoid the need to sort
@@ -388,15 +391,19 @@ class AddressSpaceCanvas:
         x_max = 0
         x_ticks = []
         x_labels = []
-        
+        draw_progress = ProgressPrinter(len(self.elements), desc="Draw nodes")
+        # XXX do we really need this? maybe not
+        self.elements.sort(key=attrgetter("start"))
+
         all_ranges = self.map_omit(Range(0, np.inf))
-        transAS = AddressSpaceShrinkTransform(all_ranges)        
+        transAS = AddressSpaceShrinkTransform(all_ranges)
         self.ax.transData = transAS + self.ax.transData
-        
+
         for e in self.elements:
+            draw_progress.advance()
             # keep, omit = self.map_omit(e)
             regions = self.map_omit(e)
-            logger.debug("Draw %s" % e)
+            logger.debug("Draw %s", e)
             for r in regions:
                 if r.rtype == Range.T_KEEP:
                     e.draw(r.start, r.end, self.ax)
@@ -404,6 +411,7 @@ class AddressSpaceCanvas:
                     e.omit(r.start, r.end, self.ax)
             y_max = max(y_max, e.y_value)
             x_max = max(x_max, e.node.bound)
+        draw_progress.finish()
         # set axis labels and ticks
         # XXX move transform logic to overridden set_xticks
         # XXX see TickLocator to see if it can be used insted
@@ -441,12 +449,12 @@ class CapabilityRange:
     @property
     def y_value(self):
         return self.node.t_alloc / 10**6
-    
+
     def draw(self, start, end, ax):
         """
         Draw the interesting part of the element
         """
-        logger.debug("Draw [0x%x, 0x%x] %d" % (start, end, self.node.t_alloc))
+        logger.debug("Draw [0x%x, 0x%x] %d", start, end, self.node.t_alloc)
         line = lines.Line2D([start, end],
                             [self.y_value, self.y_value])
         ax.add_line(line)
@@ -467,7 +475,7 @@ class CapabilityRange:
         Draw the pattern showing an omitted block
         of the element
         """
-        logger.debug("Omit [0x%x, 0x%x] %d" % (start, end, self.node.t_alloc))
+        logger.debug("Omit [0x%x, 0x%x] %d", start, end, self.node.t_alloc)
         line = lines.Line2D([start, end],
                             [self.y_value, self.y_value],
                             linestyle="dotted")
@@ -507,7 +515,7 @@ class LeafCapOmitStrategy:
 
     def _inspect_range(self, node_range):
         overlap = self.ranges.match_overlap_range(node_range)
-        logger.debug("Mark %s -> %s" % (node_range, self.ranges))
+        logger.debug("Mark %s -> %s", node_range, self.ranges)
         for r in overlap:
             # 4 possible situations for range (R)
             # and node_range (NR):
@@ -536,8 +544,8 @@ class LeafCapOmitStrategy:
                 r.end = node_range.start
                 if r.size < self.size_limit:
                     del self.ranges[self.ranges.index(r)]
-        logger.debug("New omit set %s" % self.ranges)
-    
+        logger.debug("New omit set %s", self.ranges)
+
     def inspect(self, node):
         """
         Inspect a CheriCapNode and update internal
@@ -590,7 +598,7 @@ class PointerProvenancePlot:
         """
         Build the provenance tree
         """
-        logger.debug("Generating provenance tree for %s" % self.tracefile)
+        logger.debug("Generating provenance tree for %s", self.tracefile)
         self.tree = CachedProvenanceTree()
         if self._caching:
             fname = self._get_cache_file()
@@ -605,23 +613,56 @@ class PointerProvenancePlot:
         errs = []
         self.tree.check_consistency(errs)
         if len(errs) > 0:
-            logger.warning("Inconsistent provenance tree: %s" % errs)
+            logger.warning("Inconsistent provenance tree: %s", errs)
+
+        def remove_nodes(node):
+            """
+            remove null capabilities
+            remove operations in kernel mode
+            """
+            if (node.offset >= 0xFFFFFFFF0000000 or
+                (node.length == 0 and node.base == 0)):
+                # XXX should we only check the length?
+                node.selfremove()
+        self.tree.visit(remove_nodes)
+
+        def merge_setbounds(node):
+            """
+            merge cfromptr -> csetbounds subtrees
+            """
+            if (node.parent.origin == CheriCapNode.C_FROMPTR and
+                node.origin == CheriCapNode.C_SETBOUNDS and
+                len(node.parent.children) == 1):
+                logger.debug("cfromptr -> csetbounds")
+                # the child must be unique to avoid complex logic
+                # when merging, it may be desirable to do so with
+                # more complex traces
+                node.origin = CheriCapNode.C_PTR_SETBOUNDS
+                grandpa = node.parent.parent
+                node.parent.selfremove()
+                grandpa.append(node)
+        self.tree.visit(merge_setbounds)
 
     def plot(self):
         """
         Create the provenance plot and return the figure
         """
+        tree_progress = ProgressPrinter(len(self.tree), desc="Adding nodes")
         fig = plt.figure()
         ax = fig.add_axes([0.05, 0.1, 0.9, 0.85,])
 
         canvas = AddressSpaceCanvas(ax)
+        # XXX may want to do this in parallel or reduce the
+        # time spent in the omit strategy?
         for child in self.tree:
+            tree_progress.advance()
             self.omit_strategy.inspect(child)
             canvas.add_element(CapabilityRange(child))
+        tree_progress.finish()
+
         self.omit_strategy.add_ranges(canvas)
         canvas.draw()
         ax.invert_yaxis()
-        
         return fig
 
     def build_figure(self):
@@ -631,12 +672,10 @@ class PointerProvenancePlot:
         if self.tree is None:
             self.build_tree()
         fig = self.plot()
-    
+
     def show(self):
         """
         Show plot in a new window
         """
         self.build_figure()
         plt.show()
-
-    

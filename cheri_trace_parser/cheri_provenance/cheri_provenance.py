@@ -32,7 +32,13 @@ class CheriCapNode:
     Record a capability pointer
 
     This is both an element of the pointer provenance and memory trees
-    """     
+    """
+
+    # instruction that was parsed to create the node
+    UNKNOWN = -1
+    C_SETBOUNDS = 1
+    C_FROMPTR = 2
+    C_PTR_SETBOUNDS = 3
 
     def __init__(self, cr=None):
         self.address = None
@@ -40,22 +46,23 @@ class CheriCapNode:
         self.length = None
         self.offset = None
         self.permissions = None
-        self.origin = "unknown"
-        
+        self.origin = self.UNKNOWN
+        self.valid = False
+        self.pc = None
+        self.is_kernel = False
+
         if cr:
             self.base = cr.base
             self.length = cr.length
             self.offset = cr.offset
             self.permissions = cr.permissions
-        
+            self.valid = cr.valid
+
         # allocation and deallocation time (if any)
-        # XXX: allocation is taken after CSetBounds even when
-        # the capability is not written to memory yet
-        # (in fact it may never be)
         self.t_alloc = -1
         self.t_free = -1
 
-        # child nodes in an ordered list w.r.t. creation time
+        # child nodes list
         self.children = []
         self.parent = None
 
@@ -67,7 +74,7 @@ class CheriCapNode:
         if (self.base is not None and self.length is not None):
             return self.base + self.length
         return None
-        
+
     def find_node(self, base, length):
         """
         Find node in the subtree with given base and length
@@ -75,7 +82,6 @@ class CheriCapNode:
         if (self.base is not None and
             self.length is not None and
             self.offset is not None):
-            
             if base == self.base and length == self.length:
                 return self
             if (base < self.base or
@@ -83,10 +89,16 @@ class CheriCapNode:
                 return None
         for child in self.children:
             node = child.find_node(base, length)
-            if node:
+            if node is not None:
                 return node
         return None
-    
+
+    def remove(self, node):
+        self.children.remove(node)
+
+    def selfremove(self):
+        self.parent.remove(self)
+
     def append(self, node):
         """
         Append node to the subtree, children are sorted
@@ -94,13 +106,19 @@ class CheriCapNode:
         """
         self.children.append(node)
         node.parent = self
-        self.children = sorted(self.children, key=attrgetter("t_alloc"))
 
     def __iter__(self):
-       for child in self.children:
+       for child in self.children[:]:
            yield child
            for nextchild in child:
                yield nextchild
+
+    def __bool__(self):
+        """
+        This prevent calling __len__ when doing boolean comparisons,
+        since it is expensive
+        """
+        return True
 
     def __len__(self):
         return reduce(lambda length,node: length + len(node),
@@ -108,6 +126,15 @@ class CheriCapNode:
 
     def __str__(self):
         return self.to_str()
+
+    def visit(self, cbk):
+        """
+        Visit the subtree with a callback
+        The callback is invoked for each node to make
+        transformations
+        """
+        for n in self:
+            cbk(n)
 
     def to_str(self, nest=0):
         dump = StringIO()
@@ -172,7 +199,7 @@ class CheriCapNode:
             child.check_duplicates(duplicates)
         return duplicates
 
-    
+
 class ProvenanceTree(CheriCapNode):
     """
     Tree that maps the provenance of capabilities, the root node is
@@ -186,11 +213,11 @@ class ProvenanceTree(CheriCapNode):
         # for fast search
         self.address_map = {}
 
-    def append(self, node):
-        super(ProvenanceTree, self).append(node)
-        # the root of the tree is not a valid node
-        # (no capability associated with it)
-        node.parent = None
+    # def append(self, node):
+    #     super(ProvenanceTree, self).append(node)
+    #     # the root of the tree is not a valid node
+    #     # (no capability associated with it)
+    #     node.parent = None
 
     def __str__(self):
         dump = StringIO()
@@ -201,7 +228,7 @@ class ProvenanceTree(CheriCapNode):
         dump.write(")")
         return dump.getvalue()
 
-    
+
 class CachedProvenanceTree(ProvenanceTree):
     """
     Provenance tree that can save and restore itself
@@ -214,9 +241,9 @@ class CachedProvenanceTree(ProvenanceTree):
     def save(self, cache_file):
         with open(cache_file, "wb+") as fd:
             pickle.dump(self, fd, pickle.HIGHEST_PROTOCOL)
-        logger.info("Caching provenance tree as %s" % cache_file)
+        logger.info("Caching provenance tree as %s", cache_file)
 
     def load(self, cache_file):
         with open(cache_file, "rb") as fd:
             self.__dict__.update(pickle.load(fd).__dict__)
-        logger.info("Using cached provenance tree %s" % cache_file)
+        logger.info("Using cached provenance tree %s", cache_file)
