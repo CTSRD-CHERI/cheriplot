@@ -1,3 +1,6 @@
+"""
+Python version of cheritrace tracedump tool
+"""
 
 import sys
 
@@ -12,63 +15,77 @@ class PyDumpParser(TraceParser):
         super(PyDumpParser, self).__init__(*args)
         self.dump_registers = False
         self.find_instr = find
+        self.dis = pct.disassembler()
+        self.kernel_mode = False
 
     def enable_regdump(self, enable):
         self.dump_registers = enable
 
+    def repr_register(self, entry):
+        if (entry.gpr_number() != -1):
+            return "$%d" % entry.gpr_number()
+        elif (entry.capreg_number() != -1):
+            return "$c%d" % entry.capreg_number()
+
+    def dump_regs(self, entry, regs):
+        if not self.dump_registers:
+            return
+
+        for idx in range(0,31):
+            print("[%d] $%d = %x" %
+                  (regs.valid_gprs[idx],
+                   idx,
+                   regs.gpr[idx]))
+        for idx in range(0,32):
+            print("[%d] $c%d = b:%x o:%x l:%x" %
+                  (regs.valid_caps[idx],
+                   idx,
+                   regs.cap_reg[idx].base,
+                   regs.cap_reg[idx].offset,
+                   regs.cap_reg[idx].length))
+
+    def dump_instr(self, entry, regs, idx):
+        inst = self.dis.disassemble(entry.inst)
+
+        print("{%d} 0x%x" % (entry.cycles, entry.pc),
+              inst.name,
+              "[ld:%d st:%d]" % (entry.is_load, entry.is_store))
+
+        # dump read/write
+        reg_str = self.repr_register(entry)
+        if entry.is_load:
+            print("%s = [%x]" % (reg_str, entry.memory_address))
+        elif entry.is_store:
+            print("[%x] = %s" % (entry.memory_address, reg_str))
+
+        if (entry.gpr_number() != -1):
+            print("$%d = %x" % (entry.gpr_number(), entry.reg_value_gp()))
+        elif (entry.capreg_number() != -1):
+            cap = entry.reg_value_cap()
+            print("$c%d = b:%x o:%x l:%x" %
+                  (entry.capreg_number(), cap.base,
+                   cap.offset, cap.length))
+
     def parse(self, start, end):
 
-        ctx = {
-            "dis": pct.disassembler(),
-            "kernel_mode": False,
-            "find": self.find_instr,
-        }
-
         def _scan(entry, regs, idx):
-            dis = ctx["dis"]
-            inst = dis.disassemble(entry.inst)
-            if (ctx["find"] is not None and
-                ctx["find"] != inst.name.strip().split("\t")[0]):
+            inst = self.dis.disassemble(entry.inst)
+            if (self.find_instr is not None and
+                self.find_instr != inst.name.strip().split("\t")[0]):
                 return False
-            
-            if ctx["kernel_mode"] != entry.is_kernel():
+
+            if self.kernel_mode != entry.is_kernel():
                 if entry.is_kernel():
                     print("Enter kernel mode {%d}" % (entry.cycles))
                 else:
                     print("Enter user mode {%d}" % (entry.cycles))
-                ctx["kernel_mode"] = entry.is_kernel()
-            
+                self.kernel_mode = entry.is_kernel()
+
             # dump instr
-            print("{%d} 0x%x" % (entry.cycles, entry.pc),
-                  inst.name,
-                  "[l:%d s:%d]" % (entry.is_load, entry.is_store))
-            # dump read/write
-            print("$%d = [%x]" % (entry.register_number(),
-                                  entry.memory_address))
-            if self.dump_registers:
-                #dump regs
-                if (entry.gpr_number() != -1):
-                    print("$%d = %x" % (entry.gpr_number(), entry.reg_value.gp))
-                elif (entry.capreg_number() != -1):
-                    print("$c%d = b:%x o:%x l:%x" %
-                          (entry.capreg_number(),
-                           entry.reg_value.cap.base,
-                           entry.reg_value.cap.offset,
-                           entry.reg_value.cap.length))
-                for idx in range(0,31):
-                    print("[%d] $%d = %x" %
-                          (regs.valid_gprs[idx],
-                           idx,
-                           regs.gpr[idx]))
-                for idx in range(0,32):
-                    print("[%d] $%d = b:%x o:%x l:%x" %
-                          (regs.valid_caps[idx],
-                           idx,
-                           regs.cap_reg[idx].base,
-                           regs.cap_reg[idx].offset,
-                           regs.cap_reg[idx].length))
+            self.dump_instr(entry, regs, idx)
+            self.dump_regs(entry, regs)
             return False
-        
+
         self.trace.scan(_scan, start, end)
 
 if __name__ == "__main__":

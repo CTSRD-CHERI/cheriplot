@@ -8,6 +8,7 @@ import argparse as ap
 import sys
 import logging
 import cProfile
+import pstats
 
 from cheri_trace_parser.cheri_provenance import PointerProvenancePlot
 
@@ -47,12 +48,25 @@ if __name__ == "__main__":
     if args.cache:
         plot.set_caching(True)
 
-    if args.tree:
-        plot.build_tree()
-        logger.debug(plot.tree)
-    else:
-        if args.profile:
-            cProfile.run("plot.build_figure()")
+    try:
+        if args.tree:
+            if args.profile:
+                cProfile.run("plot.build_tree()", "run_stats")
+            else:
+                plot.build_tree()
+                logger.debug("Provenance tree:")
+                logger.debug(plot.tree)
+                # XXX inefficient, make tree.__str__ handle this
+                # logger.debug("Tree size: %d" % len(plot.tree))
         else:
-            plot.show()
-
+            if args.profile:
+                cProfile.run("plot.build_figure()", "run_stats")
+            else:
+                plot.show()
+    finally:
+        # print profiling results
+        if args.profile:
+            p = pstats.Stats("run_stats")
+            p.strip_dirs()
+            p.sort_stats("cumulative")
+            p.print_stats()
