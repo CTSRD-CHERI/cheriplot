@@ -633,7 +633,6 @@ class PointerProvenancePlot:
             if (node.parent.origin == CheriCapNode.C_FROMPTR and
                 node.origin == CheriCapNode.C_SETBOUNDS and
                 len(node.parent.children) == 1):
-                logger.debug("cfromptr -> csetbounds")
                 # the child must be unique to avoid complex logic
                 # when merging, it may be desirable to do so with
                 # more complex traces

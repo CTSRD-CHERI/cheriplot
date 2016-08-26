@@ -151,10 +151,9 @@ class CheriCapNode:
                 rwx[1] = "w"
             if self.permissions & CAP_EXEC:
                 rwx[2] = "x"
-            if self.permissions == 0:
-                rwx = ["r", "w", "x"]
-        dump.write("%s[%u @ %x <- b:%x o:%x l:%x p:%s]" %
-                   (pad, self.t_alloc, addr, base, off, leng, "".join(rwx)))
+        dump.write("%s[%u @ %x <- b:%x o:%x l:%x p:%s from:%d]" %
+                   (pad, self.t_alloc, addr, base, off, leng, "".join(rwx),
+                    self.origin))
         dump.write("(\n")
         for child in self.children:
             dump.write(child.to_str(nest + 1))
