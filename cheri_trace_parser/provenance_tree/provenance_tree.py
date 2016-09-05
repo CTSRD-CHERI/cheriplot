@@ -41,7 +41,7 @@ class CheriCapNode:
     C_PTR_SETBOUNDS = 3
 
     def __init__(self, cr=None):
-        self.address = None
+        self.address = {}
         self.base = None
         self.length = None
         self.offset = None
@@ -138,7 +138,7 @@ class CheriCapNode:
 
     def to_str(self, nest=0):
         dump = StringIO()
-        addr = self.address if self.address is not None else 0
+        addr = self.address if self.address is not None else {}
         base = self.base if self.base is not None else 0
         leng = self.length if self.length is not None else 0
         off = self.offset if self.offset is not None else 0
@@ -151,7 +151,7 @@ class CheriCapNode:
                 rwx[1] = "w"
             if self.permissions & CAP_EXEC:
                 rwx[2] = "x"
-        dump.write("%s[%u @ %x <- b:%x o:%x l:%x p:%s from:%d]" %
+        dump.write("%s[%u @ %s <- b:%x o:%x l:%x p:%s from:%d]" %
                    (pad, self.t_alloc, addr, base, off, leng, "".join(rwx),
                     self.origin))
         dump.write("(\n")
@@ -208,15 +208,6 @@ class ProvenanceTree(CheriCapNode):
 
     def __init__(self):
         super(ProvenanceTree, self).__init__()
-        # map memory address and list of CheriCapNodes at that address
-        # for fast search
-        self.address_map = {}
-
-    # def append(self, node):
-    #     super(ProvenanceTree, self).append(node)
-    #     # the root of the tree is not a valid node
-    #     # (no capability associated with it)
-    #     node.parent = None
 
     def __str__(self):
         dump = StringIO()

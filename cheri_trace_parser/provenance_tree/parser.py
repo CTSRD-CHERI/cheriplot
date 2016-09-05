@@ -13,7 +13,7 @@ from functools import reduce
 
 from cheri_trace_parser.core.parser import TraceParser
 from cheri_trace_parser.utils import ProgressPrinter
-from .cheri_provenance import CheriCapNode
+from .provenance_tree import CheriCapNode
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,6 @@ class ProvenanceParserContext(object):
     def make_root_node(self, idx, cap):
         node = CheriCapNode(cap)
         node.t_alloc = 0
-        node.address = None
         self.tree.append(node)
         self.regset.load(idx, node)
         return node
@@ -214,17 +213,12 @@ class ProvenanceParserContext(object):
 
     def make_node(self, entry, cap_inst, src, dst):
         node = CheriCapNode(dst)
-        # need to work more on the address..
-        # we need to catch csc mappings
-        # entry.memory_address # XXX not quite the address I need here
-        node.address = None
         node.t_alloc = entry.cycles
         node.pc = entry.pc
         node.is_kernel = entry.is_kernel()
         # find parent node, if no match then the tree is returned
         try:
             parent = self.regset[cap_inst.cb.cap_index]
-            # parent = self.tree.find_node(src.base, src.length)
         except:
             logger.error("Error searching for parent node of %s", node)
             raise
@@ -288,7 +282,8 @@ class ProvenanceParserContext(object):
             # seen the content of this register yet
             cap_instr = self.CapInstr(entry, regs, self.regset, instr)
             logger.warning("Found %s value (missing in initial set)", cap_instr.cd.name)
-            pass
+        self.regset.memory_map[entry.memory_address] = node # XXX do we need memory_map?
+        node.address[entry.cycles] = entry.memory_address
         # node.address = entry.memory_address # node.address should really be a list
 
     def clc(self, entry, regs, last_regs, instr):
@@ -307,4 +302,5 @@ class ProvenanceParserContext(object):
             node = self.make_root_node(cd, cap_instr.cd.value)
             logger.warning("Found %s value (missing in initial set) %s",
                            cap_instr.cd.name, node)
+        self.regset.memory_map[entry.memory_address] = node
             

@@ -10,7 +10,7 @@ import logging
 import cProfile
 import pstats
 
-from cheri_trace_parser.cheri_provenance import PointerProvenancePlot
+from cheri_trace_parser.plot import PointerProvenancePlot
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,9 @@ if __name__ == "__main__":
                         action="store_true")
     parser.add_argument("--profile",
                         help="Run in profiler (disable verbose output)",
+                        action="store_true")
+    parser.add_argument("--split-plot",
+                        help="Generate different plot for each root capability",
                         action="store_true")
 
     args = parser.parse_args()
@@ -61,6 +64,8 @@ if __name__ == "__main__":
         else:
             if args.profile:
                 cProfile.run("plot.build_figure()", "run_stats")
+            elif args.split_plot:
+                plot.show_multiple()
             else:
                 plot.show()
     finally:
