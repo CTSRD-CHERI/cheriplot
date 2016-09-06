@@ -13,14 +13,14 @@ from cheri_trace_parser.utils import ProgressPrinter
 
 logger = logging.getLogger(__name__)
 
-class AddressSpaceAxes(axes.Axes):
-    """
-    XXX TO DO move the AddressSpaceCanvas here
-    This should be moved to a separate module as it is a reusable
-    Axes class for various plots involving considerations on
-    address-spaces
-    """
-    pass
+# class AddressSpaceAxes(axes.Axes):
+#     """
+#     XXX TO DO move the AddressSpaceCanvas here as it the
+#     way matplotlib works
+#     Axes class for various plots involving considerations on
+#     address-spaces
+#     """
+#     pass
 
 class AddressSpaceShrinkTransform(transforms.Transform):
     """
@@ -414,3 +414,4 @@ class AddressSpaceCanvas:
         self.ax.set_xticks(x_ticks)
         self.ax.set_xticklabels(x_labels, rotation="vertical")
         self.ax.set_ylim(-y_max / 100, y_max)
+        self.ax.set_xlim(x_ticks[0], x_ticks[-1])
