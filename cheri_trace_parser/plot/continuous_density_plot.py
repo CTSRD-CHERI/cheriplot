@@ -1,0 +1,128 @@
+"""
+Same as the pointer density plot but show the amount of allocations
+vs address-space in a continuous way. The single allocation is not
+given in terms of single dot but is cumulative over the address that
+it occupies.
+"""
+
+import numpy as np
+import logging
+from matplotlib import pyplot as plt
+
+from cheri_trace_parser.utils import ProgressPrinter
+from cheri_trace_parser.core import AddressSpaceCanvas, RangeSet, Range
+from cheri_trace_parser.provenance_tree import (
+    PointerProvenanceParser, CachedProvenanceTree, CheriCapNode)
+
+logger = logging.getLogger(__name__)
+
+class ContinuousPointerDensityPlot:
+
+    def __init__(self, tracefile):
+        self.tracefile = tracefile
+        """Tracefile path"""
+        self.parser = PointerProvenanceParser(tracefile)
+        """Tracefile parser"""
+        self.tree = None
+        """Provenance tree"""
+
+        # XXX we may want to do this later
+        # self.omit_strategy = PageBoundaryOmitStrategy()
+        # """
+        # Strategy object that decides which parts of the AS
+        # are interesting
+        # """
+
+        self._caching = False
+
+    def _get_cache_file(self):
+        return self.tracefile + ".cache"
+
+    def set_caching(self, state):
+        self._caching = state
+
+    def build_tree(self):
+        """
+        Build the provenance tree
+        """
+        logger.debug("Generating provenance tree for %s", self.tracefile)
+        self.tree = CachedProvenanceTree()
+        if self._caching:
+            fname = self._get_cache_file()
+            try:
+                self.tree.load(fname)
+            except IOError:
+                logger.debug("No cached tree found %s", fname)
+                self.parser.parse(self.tree)
+                self.tree.save(self._get_cache_file())
+        else:
+            self.parser.parse(self.tree)
+
+        errs = []
+        self.tree.check_consistency(errs)
+        if len(errs) > 0:
+            logger.warning("Inconsistent provenance tree: %s", errs)
+
+
+    def plot(self, radix=None):
+        """
+        Create density plot
+
+        radix: a root node to use instead of the full tree
+        """
+
+        tree_size = len(self.tree)
+        # (addr, num_allocations)
+        addresses = {}
+        page_use = {}
+        
+        # address reuse metric
+        # num_allocations vs address
+        # linearly and in 4k chunks
+        tree_progress = ProgressPrinter(len(self.tree), desc="Fetching addresses")
+        for child in self.tree:
+            for time, addr in child.address.items():                
+                try:                
+                    addresses[addr] += 1
+                except KeyError:
+                    addresses[addr] = 1
+                page_addr = addr & (~0xfff)
+                try:
+                    page_use[page_addr] += 1
+                except KeyError:
+                    page_use[page_addr] = 1
+            tree_progress.advance()
+        tree_progress.finish()
+
+        # time vs address
+        # address working set over time
+
+        fig = plt.figure()
+        ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,])
+        ax.set_ylabel("Number of pointers stored")
+        ax.set_xlabel("Virtual address")
+        ax.set_yscale("log")
+        ax.set_xlim(0, 0xffffffffffffffff)
+        # ax.set_ylim(0, )
+        data = np.array(sorted(page_use.items(), key=lambda i: i[0]))
+        ax.vlines(data[:,0], [1]*len(data[:,0]), data[:,1], color="b")
+        
+
+        
+        # ax.invert_yaxis()
+        return fig
+
+    def build_figure(self):
+        """
+        Build the plot without showing it
+        """
+        if self.tree is None:
+            self.build_tree()
+        fig = self.plot()
+
+    def show(self):
+        """
+        Show plot in a new window
+        """
+        self.build_figure()
+        plt.show()
