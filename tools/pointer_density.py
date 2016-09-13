@@ -10,7 +10,8 @@ import logging
 import cProfile
 import pstats
 
-from cheri_trace_parser.plot import PointerDensityPlot
+from cheri_trace_parser.plot import (PointerDensityPlot,
+                                     ContinuousPointerDensityPlot)
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +22,17 @@ if __name__ == "__main__":
                         action="store_true")
     parser.add_argument("-v", "--verbose", help="Show debug output",
                         action="store_true")
+    parser.add_argument("-o", "--outfile", help="Save plot to file")
     parser.add_argument("--log", help="Set logfile path")
     parser.add_argument("--tree", help="Dump tree to logging and exit",
                         action="store_true")
     parser.add_argument("--profile",
                         help="Run in profiler (disable verbose output)",
                         action="store_true")
+    parser.add_argument("plot_type", help="Valid choices are:"
+                        "lt (pointers location vs time), "
+                        "ln (pointers location vs number of pointers stored), "
+                        "lpn (same as lp but with page granularity)")
 
     args = parser.parse_args()
 
@@ -44,7 +50,14 @@ if __name__ == "__main__":
 
     logging.basicConfig(**logging_args)
 
-    plot = PointerDensityPlot(args.trace)
+    if args.plot_type == "lt":
+        plot = PointerDensityPlot(args.trace)
+    elif args.plot_type == "ln":
+        plot = ContinuousPointerDensityPlot(args.trace)
+    else:
+        print("Invalid plot type")
+        quit()
+    
     if args.cache:
         plot.set_caching(True)
 
@@ -61,8 +74,10 @@ if __name__ == "__main__":
         else:
             if args.profile:
                 cProfile.run("plot.build_figure()", "run_stats")
-            else:
+            elif args.outfile is None:
                 plot.show()
+            else:
+                plot.save(args.outfile)
     finally:
         # print profiling results
         if args.profile:

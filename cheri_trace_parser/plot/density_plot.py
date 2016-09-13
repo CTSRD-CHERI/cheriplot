@@ -107,7 +107,8 @@ class CapabilityDot:
     (where it is stored)
     """
 
-    STACK_COLOR = "b"
+    GENERIC_COLOR = "b"
+    STACK_COLOR = "y"
     HEAP_COLOR = "r"
     CODE_COLOR = "g"
 
@@ -236,3 +237,10 @@ class PointerDensityPlot:
         """
         self.build_figure()
         plt.show()
+
+    def save(self, path):
+        """
+        Save plot to file
+        """
+        self.build_figure()
+        plt.savefig(path)
