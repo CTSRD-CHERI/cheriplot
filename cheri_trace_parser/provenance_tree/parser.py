@@ -37,6 +37,9 @@ class PointerProvenanceParser(TraceParser):
             self.progress.advance()
             inst = self.dis.disassemble(entry.inst)
             parts = inst.name.split("\t")
+            if len(parts) < 2:
+                # logger.warning("Unrecognized instruction format %s at %s", inst.name, entry.cycles)
+                return False
             opcode = parts[1]
 
             if self.regs_valid:
