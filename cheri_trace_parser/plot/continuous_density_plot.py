@@ -10,7 +10,7 @@ import logging
 from matplotlib import pyplot as plt
 
 from cheri_trace_parser.utils import ProgressPrinter
-from cheri_trace_parser.core import AddressSpaceCanvas, RangeSet, Range
+from cheri_trace_parser.core import AddressSpaceCanvas, RangeSet, Range, AddressSpaceAxes
 from cheri_trace_parser.provenance_tree import (
     PointerProvenanceParser, CachedProvenanceTree, CheriCapNode)
 
@@ -37,6 +37,9 @@ class ContinuousPointerDensityPlot:
 
     def _get_cache_file(self):
         return self.tracefile + ".cache"
+
+    def _get_plot_file(self):
+        return self.tracefile + ".png"
 
     def set_caching(self, state):
         self._caching = state
@@ -70,11 +73,11 @@ class ContinuousPointerDensityPlot:
 
         radix: a root node to use instead of the full tree
         """
-
         tree_size = len(self.tree)
         # (addr, num_allocations)
         addresses = {}
         page_use = {}
+        page_size = 2**12
         
         # address reuse metric
         # num_allocations vs address
@@ -97,19 +100,33 @@ class ContinuousPointerDensityPlot:
         # time vs address
         # address working set over time
 
-        fig = plt.figure()
-        ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,])
+        fig = plt.figure(figsize=(15,10)) # 25,20
+        ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,], projection="custom_addrspace")
         ax.set_ylabel("Number of pointers stored")
         ax.set_xlabel("Virtual address")
         ax.set_yscale("log")
-        ax.set_xlim(0, 0xffffffffffffffff)
         # ax.set_ylim(0, )
         data = np.array(sorted(page_use.items(), key=lambda i: i[0]))
+        # ignore empty address-space chunks
+        prev_addr = data[0]
+        omit_ranges = []
+        first_tick = data[0][0]
+        ticks = [first_tick]
+        labels = ["0x%x" % int(first_tick)]
+        for addr in data:
+            logger.debug("DATA 0x%x (%d)", int(addr[0]), addr[0])
+            if addr[0] - prev_addr[0] > 2**12:
+                omit_ranges.append([prev_addr[0] + page_size, addr[0]])
+                ticks.append(addr[0])
+                labels.append("0x%x" % int(addr[0]))
+            prev_addr = addr
+        ax.set_omit_ranges(omit_ranges)
+        # ax.set_xticks(ticks)
+        # ax.set_xticklabels(labels, rotation="vertical")
+        ax.set_xlim(first_tick - page_size, data[-1][0] + page_size)
         ax.vlines(data[:,0], [1]*len(data[:,0]), data[:,1], color="b")
         
-
-        
-        # ax.invert_yaxis()
+        # fig.savefig(self._get_plot_file())
         return fig
 
     def build_figure(self):

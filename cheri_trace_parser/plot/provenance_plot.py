@@ -182,6 +182,9 @@ class PointerProvenancePlot:
     def _get_cache_file(self):
         return self.tracefile + ".cache"
 
+    def _get_plot_file(self):
+        return self.tracefile + ".png"
+
     def set_caching(self, state):
         self._caching = state
 
