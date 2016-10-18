@@ -63,7 +63,7 @@ if __name__ == "__main__":
                 # logger.debug("Tree size: %d" % len(plot.tree))
         else:
             if args.profile:
-                cProfile.run("plot.build_figure()", "run_stats")
+                cProfile.run("plot.show()", "run_stats")
             elif args.split_plot:
                 plot.show_multiple()
             else:
