@@ -10,7 +10,7 @@ import logging
 from matplotlib import pyplot as plt
 
 from cheri_trace_parser.utils import ProgressPrinter
-from cheri_trace_parser.core import AddressSpaceCanvas, RangeSet, Range, AddressSpaceAxes
+from cheri_trace_parser.core import RangeSet, Range
 from cheri_trace_parser.provenance_tree import (
     PointerProvenanceParser, CachedProvenanceTree, CheriCapNode)
 
@@ -100,7 +100,7 @@ class ContinuousPointerDensityPlot:
         # time vs address
         # address working set over time
 
-        fig = plt.figure(figsize=(15,10)) # 25,20
+        fig = plt.figure(figsize=(15,10))
         ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,], projection="custom_addrspace")
         ax.set_ylabel("Number of pointers stored")
         ax.set_xlabel("Virtual address")

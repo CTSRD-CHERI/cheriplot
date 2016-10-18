@@ -4,80 +4,24 @@ Plot representation of a CHERI pointer provenance tree
 
 import numpy as np
 import logging
-import sys
 
 from matplotlib import pyplot as plt
-from matplotlib import lines, transforms, axes
-
-from itertools import repeat
-from functools import reduce
-from operator import attrgetter
+from matplotlib import lines, collections, transforms
 
 from cheri_trace_parser.utils import ProgressPrinter
-from cheri_trace_parser.core import AddressSpaceCanvas, RangeSet, Range
+from cheri_trace_parser.core import RangeSet, Range
 from cheri_trace_parser.provenance_tree import (
     PointerProvenanceParser, CachedProvenanceTree, CheriCapNode)
 
 logger = logging.getLogger(__name__)
 
-class CapabilityRange:
-
-    def __init__(self, node):
-        self.node = node
-
-    @property
-    def start(self):
-        return self.node.base
-
-    @property
-    def end(self):
-        return self.node.bound
-
-    @property
-    def size(self):
-        return self.node.length
-
-    @property
-    def y_value(self):
-        return self.node.t_alloc / 10**6
-
-    def draw(self, start, end, ax):
-        """
-        Draw the interesting part of the element
-        """
-        logger.debug("Draw [0x%x, 0x%x] %d", start, end, self.node.t_alloc)
-        line = lines.Line2D([start, end],
-                            [self.y_value, self.y_value])
-        ax.add_line(line)
-        # add vertical separators
-        line = lines.Line2D([start, start],
-                            [self.y_value, 0],
-                            linestyle="dotted",
-                            color="black")
-        ax.add_line(line)
-        line = lines.Line2D([end, end],
-                            [self.y_value, 0],
-                            linestyle="dotted",
-                            color="black")
-        ax.add_line(line)
-
-    def omit(self, start, end, ax):
-        """
-        Draw the pattern showing an omitted block
-        of the element
-        """
-        logger.debug("Omit [0x%x, 0x%x] %d", start, end, self.node.t_alloc)
-        line = lines.Line2D([start, end],
-                            [self.y_value, self.y_value],
-                            linestyle="dotted")
-        ax.add_line(line)
-
-    def __str__(self):
-        return "<CapRange start:0x%x end:0x%x>" % (self.start, self.end)
-
-
-class LeafCapOmitStrategy:
+class LeafCapPatchGenerator:
     """
+    The patch generator build the matplotlib patches for each
+    capability node and generates the ranges of address-space in
+    which we are not interested.
+
+
     Generate address ranges that are displayed as shortened in the
     address-space plot based on leaf capabilities found in the
     provenance tree.
@@ -89,22 +33,33 @@ class LeafCapOmitStrategy:
 
     def __init__(self):
         self.ranges = RangeSet()
-        """List of ranges"""
+        """List of uninteresting ranges of address-space"""
         self.size_limit = 2**12
-        """Minimum distance between omit ranges"""
+        """Minimum distance between omitted address-space ranges"""
         self.split_size = 2 * self.size_limit
         """
-        If single capability is larger than this,
-        the space in the middle is omitted
+        Capability length threshold to trigger the omission of
+        the middle portion of the capability range.
         """
-
-        # In the beginning there was nothing
+        self._omit_collection = np.empty((1,2,2))
+        """Collection of elements in omit ranges"""
+        self._keep_collection = np.empty((1,2,2))
+        """Collection of elements in keep ranges"""
+        self._bbox = transforms.Bbox.from_bounds(0, 0, 0, 0)
+        """Bounding box of the artists in the collections"""
+        self.y_unit = 10**-6
+        """
+        Unit on the y-axis 
+        XXX may set it in the axis unit?
+        """
+        
+        # omit everything if there is nothing to show
         self.ranges.append(Range(0, np.inf, Range.T_OMIT))
 
     def __iter__(self):
         return iter(self.ranges)
 
-    def _inspect_range(self, node_range):
+    def _update_regions(self, node_range):
         overlap = self.ranges.match_overlap_range(node_range)
         logger.debug("Mark %s -> %s", node_range, self.ranges)
         for r in overlap:
@@ -137,32 +92,84 @@ class LeafCapOmitStrategy:
                     del self.ranges[self.ranges.index(r)]
         logger.debug("New omit set %s", self.ranges)
 
+    def _build_patch(self, node_range, **kwargs):
+        """
+        Build patch for the given range and type and add it
+        to the patch collection for drawing
+        """
+        y = kwargs["y"]
+        line = [[(node_range.start, y), (node_range.end, y)]]
+        if node_range.rtype == Range.T_KEEP:
+            self._keep_collection = np.append(self._keep_collection, line, axis=0)
+        elif node_range.rtype == Range.T_OMIT:
+            self._omit_collection = np.append(self._omit_collection, line, axis=0)
+        else:
+            raise ValueError("Invalid range type %s" % node_range.rtype)
+
     def inspect(self, node):
         """
         Inspect a CheriCapNode and update internal
         set of ranges
         """
         if len(node) != 0:
+            # not a leaf in the provenance tree
             return
+        
+        node_y = node.t_alloc * self.y_unit
+        node_box = transforms.Bbox.from_extents(node.base, node_y,
+                                                node.bound, node_y)
+        self._bbox = transforms.Bbox.union([self._bbox, node_box])
         if node.length > self.split_size:
             l_range = Range(node.base, node.base + self.size_limit,
                             Range.T_KEEP)
             r_range = Range(node.bound - self.size_limit, node.bound,
                             Range.T_KEEP)
-            self._inspect_range(l_range)
-            self._inspect_range(r_range)
+            omit_range = Range(node.base + self.size_limit,
+                               node.bound - self.size_limit,
+                               Range.T_OMIT)
+            self._update_regions(l_range)
+            self._update_regions(r_range)
+            self._build_patch(l_range, y=node_y)
+            self._build_patch(r_range, y=node_y)
+            self._build_patch(omit_range, y=node_y)
         else:
-            self._inspect_range(Range(node.base, node.bound, Range.T_KEEP))
+            keep_range = Range(node.base, node.bound, Range.T_KEEP)
+            self._update_regions(keep_range)
+            self._build_patch(keep_range, y=node_y)
+            
 
-    def add_ranges(self, canvas):
+    def get_omit_ranges(self):
         """
-        Apply the ranges to an AddressSpaceCanvas
+        Return an array of address ranges that do not contain
+        interesting data evaluated by :meth:inspect
         """
-        for r in self.ranges:
-            canvas.omit(r.start, r.end)
+        return [[r.start, r.end] for r in self.ranges]
+
+    def get_patches(self):
+        """
+        Return a list of patches to draw for the data
+        evaluated by :meth:inspect
+        """
+        omit_patch = collections.LineCollection(self._omit_collection,
+                                                linestyle="dotted")
+        keep_patch = collections.LineCollection(self._keep_collection,
+                                                linestyle="solid")
+        logger.debug("omit segments %s", omit_patch.get_segments())
+        logger.debug("keep segments %s", keep_patch.get_segments())
+        return [omit_patch, keep_patch]
+
+    def get_bbox(self):
+        """
+        Return the bounding box of the data produced
+        """
+        return self._bbox
 
 
 class PointerProvenancePlot:
+    """
+    XXX: the logic for tree caching/generation should go elsewhere,
+    there should be only plotting stuff here
+    """
 
     def __init__(self, tracefile):
         self.tracefile = tracefile
@@ -171,14 +178,14 @@ class PointerProvenancePlot:
         """Tracefile parser"""
         self.tree = None
         """Provenance tree"""
-        self.omit_strategy = LeafCapOmitStrategy()
+        self.omit_strategy = LeafCapPatchGenerator()
         """
         Strategy object that decides which parts of the AS
         are interesting
         """
 
         self._caching = False
-
+        
     def _get_cache_file(self):
         return self.tracefile + ".cache"
 
@@ -209,7 +216,9 @@ class PointerProvenancePlot:
         if len(errs) > 0:
             logger.warning("Inconsistent provenance tree: %s", errs)
 
-        logger.debug("Total nodes %d", len(self.tree))
+        num_nodes = len(self.tree)
+        logger.debug("Total nodes %d", num_nodes)
+        progress = ProgressPrinter(num_nodes, desc="Remove kernel nodes")
         def remove_nodes(node):
             """
             remove null capabilities
@@ -219,9 +228,13 @@ class PointerProvenancePlot:
                 (node.length == 0 and node.base == 0)):
                 # XXX should we only check the length?
                 node.selfremove()
+            progress.advance()
         self.tree.visit(remove_nodes)
-        logger.debug("Filtered kernel nodes, remaining %d", len(self.tree))
-
+        progress.finish()
+        
+        num_nodes = len(self.tree)
+        logger.debug("Filtered kernel nodes, remaining %d", num_nodes)
+        progress = ProgressPrinter(num_nodes, desc="Merge (cfromptr + csetbounds) sequences")
         def merge_setbounds(node):
             """
             merge cfromptr -> csetbounds subtrees
@@ -236,7 +249,9 @@ class PointerProvenancePlot:
                 grandpa = node.parent.parent
                 node.parent.selfremove()
                 grandpa.append(node)
+            progress.advance()
         self.tree.visit(merge_setbounds)
+        progress.finish()
 
     def plot(self, radix=None):
         """
@@ -249,22 +264,30 @@ class PointerProvenancePlot:
             tree = self.tree
         else:
             tree = radix
-        tree_progress = ProgressPrinter(len(tree), desc="Adding nodes")
-        fig = plt.figure()
-        ax = fig.add_axes([0.05, 0.1, 0.9, 0.85,])
+        fig = plt.figure(figsize=(15,10))
+        ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
+                          projection="custom_addrspace")
+        ax.invert_yaxis()
 
-        canvas = AddressSpaceCanvas(ax)
         # XXX may want to do this in parallel or reduce the
         # time spent in the omit strategy?
+        tree_progress = ProgressPrinter(len(tree), desc="Adding nodes")
         for child in tree:
-            tree_progress.advance()
             self.omit_strategy.inspect(child)
-            canvas.add_element(CapabilityRange(child))
+            tree_progress.advance()
         tree_progress.finish()
 
-        self.omit_strategy.add_ranges(canvas)
-        canvas.draw()
-        ax.invert_yaxis()
+        for collection in self.omit_strategy.get_patches():
+            ax.add_collection(collection)
+        ax.set_omit_ranges(self.omit_strategy.get_omit_ranges())
+
+        view_box = self.omit_strategy.get_bbox()
+        logger.debug("X limits: (%d, %d)", view_box.xmin, view_box.xmax)
+        ax.set_xlim(view_box.xmin, view_box.xmax)
+        logger.debug("Y limits: (%d, %d)", view_box.ymin, view_box.ymax)
+        ax.set_ylim(view_box.ymin, view_box.ymax)
+
+        logger.debug("Plot build completed")
         return fig
 
     def build_figure(self):

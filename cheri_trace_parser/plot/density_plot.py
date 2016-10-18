@@ -14,7 +14,7 @@ from functools import reduce
 from operator import attrgetter
 
 from cheri_trace_parser.utils import ProgressPrinter
-from cheri_trace_parser.core import AddressSpaceCanvas, RangeSet, Range
+from cheri_trace_parser.core import RangeSet, Range
 from cheri_trace_parser.provenance_tree import (
     PointerProvenanceParser, CachedProvenanceTree, CheriCapNode)
 
