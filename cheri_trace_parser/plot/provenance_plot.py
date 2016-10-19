@@ -267,7 +267,6 @@ class PointerProvenancePlot:
         fig = plt.figure(figsize=(15,10))
         ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
                           projection="custom_addrspace")
-        ax.invert_yaxis()
 
         # XXX may want to do this in parallel or reduce the
         # time spent in the omit strategy?
@@ -285,7 +284,8 @@ class PointerProvenancePlot:
         logger.debug("X limits: (%d, %d)", view_box.xmin, view_box.xmax)
         ax.set_xlim(view_box.xmin, view_box.xmax)
         logger.debug("Y limits: (%d, %d)", view_box.ymin, view_box.ymax)
-        ax.set_ylim(view_box.ymin, view_box.ymax)
+        ax.set_ylim(view_box.ymin, view_box.ymax * 1.02)
+        ax.invert_yaxis()
 
         logger.debug("Plot build completed")
         return fig
