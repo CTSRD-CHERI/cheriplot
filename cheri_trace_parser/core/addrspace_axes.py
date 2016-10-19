@@ -91,14 +91,14 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         x_inverse = 0
         x_current = 0
         for r in self.target_ranges:
-            if r.rtype == Range.T_KEEP:                
+            if r.rtype == Range.T_KEEP:
                 if x > x_current + r.size:
                     x_current += r.size
                     x_inverse += r.size
                 else:
                     x_inverse += x - x_current
                     break
-            else:
+            elif r.rtype == Range.T_OMIT:
                 scaled_size = r.size * self.omit_scale
                 if x > x_current + scaled_size:
                     x_current += scaled_size
@@ -106,6 +106,9 @@ class AddressSpaceCollapseTransform(transforms.Transform):
                 else:
                     x_inverse += (x - x_current) / self.omit_scale
                     break
+            else:
+                logger.error("The range %s must have a valid type", r)
+                raise ValueError("Unexpected range in transform %s", r)
         return x_inverse
 
     def transform_x(self, x):
@@ -131,7 +134,9 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         return dataout
 
     def inverted(self):
-        trans = AddressSpaceCollapseTransform(self.target_ranges)
+        trans = AddressSpaceCollapseTransform()
+        trans.target_ranges = self.target_ranges
+        trans.omit_scale = self.omit_scale
         trans._inverse = not self._inverse
         return trans
 
@@ -386,25 +391,6 @@ class AddressSpaceAxes(axes.Axes):
                          Range(r[0], r[1], Range.T_OMIT))
         all_ranges = self._map_omit(Range(0, np.inf))
         self.xaxis.get_transform().update_range(all_ranges)
-        
-    ## interactive panning and zoom
-
-    def can_zoom(self):
-        # XXX unsupported yet
-        return False
-
-    def can_pan(self):
-        # XXX unsupported yet
-        return False
-
-    # def start_pan(self, x, y, button):
-    #     pass
-
-    # def end_pan(self):
-    #     pass
-
-    # def drag_pan(self, button, key, x, y):
-    #     pass
 
 register_projection(AddressSpaceAxes)
 
