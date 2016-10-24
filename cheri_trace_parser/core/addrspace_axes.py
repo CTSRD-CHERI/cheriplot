@@ -72,15 +72,18 @@ class AddressSpaceCollapseTransform(transforms.Transform):
                            if r.size < np.inf else acc, keep, 0)
         omit_size = reduce(lambda acc,r: acc + r.size
                            if r.size < np.inf else acc, omit, 0)
-        # we want the omitted ranges to take up 5% of the keep ranges
-        # in size
-        # scale = <percent_of_keep_size_to_take> * sum(keep) / sum(omit)
-        self.omit_scale = 0.05 * keep_size / omit_size
+        if omit_size != 0:
+            # we want the omitted ranges to take up 5% of the keep ranges
+            # in size
+            # scale = <percent_of_keep_size_to_take> * sum(keep) / sum(omit)
+            self.omit_scale = 0.05 * keep_size / omit_size
 
     def get_x(self, x):
         """
         Get the data X coordinate based on the omit/keep ranges
         """
+        if x < 0:
+            return x
         x_offset = 0
         for r in self.target_ranges:
             if x in r:
@@ -93,7 +96,7 @@ class AddressSpaceCollapseTransform(transforms.Transform):
                     x_offset += r.size
                 else:
                     # T_OMIT
-                    x_offset += r.size * self.omit_scale # self.omit_width
+                    x_offset += r.size * self.omit_scale
         return x_offset
 
 
@@ -246,6 +249,8 @@ class AddressSpaceAxes(axes.Axes):
     """
     Axes class for various plots involving considerations on
     address-spaces
+
+    XXX constrain panning in the address range [0, 0xff..ff]
     """
 
     name = "custom_addrspace"
@@ -400,7 +405,6 @@ class AddressSpaceAxes(axes.Axes):
         that are displayed normally.
 
         Accept an Nx2 array in the form [[r_start, r_end], ...]
-        XXX: make this accept and use a numpy array
         """
         for r in ranges:
             self._filter(self.omit_filters, self.include_filters,
