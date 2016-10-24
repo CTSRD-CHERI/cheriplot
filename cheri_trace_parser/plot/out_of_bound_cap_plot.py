@@ -12,250 +12,217 @@ hardware and materials distributed under this License is distributed on
 an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 express or implied.  See the License for the specific language governing
 permissions and limitations under the License.
-
-
-Plot density of pointers (capabilities) in memory
 """
 
 import numpy as np
 import logging
-import sys
+import pickle
 
 from matplotlib import pyplot as plt
-from matplotlib import lines, transforms, axes
-
-from itertools import repeat
-from functools import reduce
-from operator import attrgetter
+from matplotlib.collections import LineCollection, PathCollection
+from matplotlib.markers import MarkerStyle
+from matplotlib.transforms import Bbox, IdentityTransform
+from matplotlib.colors import colorConverter
 
 from cheri_trace_parser.utils import ProgressPrinter
-from cheri_trace_parser.core import RangeSet, Range
-from cheri_trace_parser.provenance_tree import (
-    PointerProvenanceParser, CachedProvenanceTree, CheriCapNode)
+from cheri_trace_parser.core import RangeSet, Range, CallbackTraceParser
+from cheri_trace_parser.plot import Plot, PatchBuilder
 
 logger = logging.getLogger(__name__)
 
 
-class PageBoundaryOmitStrategy:
+class OutOfBoundParser(CallbackTraceParser):
     """
-    Generate address ranges that are displayed as shortened in the
-    address-space plot based on leaf capabilities found in the
-    provenance tree.
-    We only care about the pages that contain some pointers, ranges
-    are kept in chunks of 4K depending on whether there is at least
-    one capability pointer stored inside
+    Scan the trace and record all pointer operations that bring the
+    capability offset out-of-bounds
+    """
+
+    def scan_cap_arith(self, inst, entry, regs, last_regs, idx):
+        register = inst.cd.value
+        # check if we went out of bound
+        offset = register.base + register.offset
+        bound = register.base + register.length
+        if (offset > bound or offset < register.base):
+            data_entry = np.array([entry.cycles, register.base, bound, offset])
+            logger.debug("[%d] Found out-of-bound capability"\
+                         " base: 0x%x, len: 0x%x, off: 0x%x",
+                         idx, register.base, register.length, register.offset)
+            self.dataset.append(data_entry)
+        return False
+
+
+class OutOfBoundPlotPatchBuilder(PatchBuilder):
+    """
+    Generate patches for the out-of-bound plot.
+    Each capability that is left with an out-of-bounds offset is
+    rendered as 3 patches:
+    - a solid line indicating the range
+    - a dot indicating the offset
+    - a dotted line connecting the dot to the range to make
+    it more clear which offset belongs to which capability
     """
 
     def __init__(self):
-        self.ranges = RangeSet()
-        """List of ranges"""
-        self.size_limit = 0
-        """Minimum size to retain a range in the set"""
+        super(OutOfBoundPlotPatchBuilder, self).__init__()
 
-        self.ranges.append(Range(0, np.inf, Range.T_OMIT))
-
-    def __iter__(self):
-        return iter(self.ranges)
-
-    def _inspect_range(self, node_range):
+        self.split_size = 2 * self.size_limit
         """
-        XXX: this is quite generic but seems to be useful across
-        different omit-range detection mechanisms, may be be
-        desirable to make a base class. For now leave it unchanged
+        Capability length threshold to trigger the omission of
+        the middle portion of the capability range.
         """
-        overlap = self.ranges.match_overlap_range(node_range)
-        logger.debug("Mark %s -> %s", node_range, self.ranges)
-        for r in overlap:
-            # 4 possible situations for range (R)
-            # and node_range (NR):
-            # i) NR completely contained in R
-            # ii) R completely contained in NR
-            # iii) NR crosses the start or iv) the end of R
-            if (node_range.start >= r.start and node_range.end <= r.end):
-                # (i) split R
-                del self.ranges[self.ranges.index(r)]
-                r_left = Range(r.start, node_range.start, Range.T_OMIT)
-                r_right = Range(node_range.end, r.end, Range.T_OMIT)
-                if r_left.size >= self.size_limit:
-                    self.ranges.append(r_left)
-                if r_right.size >= self.size_limit:
-                    self.ranges.append(r_right)
-            elif (node_range.start <= r.start and node_range.end >= r.end):
-                # (ii) remove R
-                del self.ranges[self.ranges.index(r)]
-            elif node_range.start < r.start:
-                # (iii) resize range
-                r.start = node_range.end
-                if r.size < self.size_limit:
-                    del self.ranges[self.ranges.index(r)]
-            elif node_range.end > r.end:
-                # (iv) resize range
-                r.end = node_range.start
-                if r.size < self.size_limit:
-                    del self.ranges[self.ranges.index(r)]
-        logger.debug("New omit set %s", self.ranges)
 
-    def inspect(self, node):
+        self._cap_ranges = []
         """
-        Inspect a CheriCapNode and update internal
-        set of ranges
-
-        Take the node address and round it to page boundary
+        List of line coordinates for ranges of capabilities that 
+        have violated the bounds. This is used to build a 
+        :class:`matplotlib.collections.LineCollection`
         """
-        for addr in node.address.values():
-            page_addr = addr & ~(0xfff)
-            page_bound = page_addr + 0x1000
-            page_range = Range(page_addr, page_bound, Range.T_KEEP)
-            self._inspect_range(page_range)
 
-    def add_ranges(self, canvas):
+        self._oob_links = []
         """
-        Apply the ranges to an AddressSpaceCanvas
+        List of line coordinates for the dotted lines connecting
+        the capability range and the offset dot
         """
-        for r in self.ranges:
-            canvas.omit(r.start, r.end)
+        
+        self._oob_offsets = []
+        """
+        List of coordinates for the dots representing the out-of-bound
+        offsets
+        """
+
+        # clear the bbox, we are creating it from scratches
+        self._bbox = None
+
+    def inspect(self, data):
+        """
+        The data item for an out-of-bound capability is expected to 
+        be in the form [cycles, base, length, offset]
+        """
+        logger.debug("Inspect data point %s", data)
+        cycles, base, bound, offset = data
+        cap_range = ((base, cycles), (bound, cycles))
+        oob_offset = (offset, cycles)
+        if offset < base:
+            oob_link = ((offset, cycles), (base, cycles))
+        else:
+            # offset > base + length because we are certain that
+            # it is out of bounds
+            oob_link = ((bound, cycles), (offset, cycles))
+        self._cap_ranges.append(cap_range)
+        self._oob_links.append(oob_link)
+        self._oob_offsets.append(oob_offset)
+        
+        # update bounding box
+        range_bbox = Bbox(cap_range)
+        link_bbox = Bbox(oob_link)
+        offset_bbox = Bbox([oob_offset, oob_offset])
+        if self._bbox:
+            self._bbox = Bbox.union([self._bbox, range_bbox,
+                                     link_bbox, offset_bbox])
+        else:
+            self._bbox = Bbox.union([range_bbox, link_bbox, offset_bbox])
+
+        # update ranges
+        logger.debug("View %s", self._bbox)
+        self._update_regions(Range(self._bbox.xmin, self._bbox.xmax,
+                                   Range.T_KEEP))
+
+    def get_patches(self, ax):
+        ranges = LineCollection(self._cap_ranges,
+                                linestyle="solid")
+        links = LineCollection(self._oob_links,
+                               linestyle="dotted",
+                               colors=colorConverter.to_rgba_array("#808080"))
+
+        color = colorConverter.to_rgba_array("#DC143C")
+        scales = np.array((20,))
+        marker_obj = MarkerStyle("o")
+        path = marker_obj.get_path().transformed(
+            marker_obj.get_transform())
+
+        offsets = PathCollection(
+            (path,), scales,
+            facecolors=color,
+            offsets=self._oob_offsets,
+            transOffset=ax.transData)
+        offsets.set_transform(IdentityTransform())
+        
+        return [ranges, links, offsets]
 
 
-class CapabilityDot:
+class CapOutOfBoundPlot(Plot):
     """
-    Draw the memory address associated to a capability
-    (where it is stored)
+    Plot the time, range and offset of out-of-bound capability 
+    manipulations
     """
-
-    GENERIC_COLOR = "b"
-    STACK_COLOR = "y"
-    HEAP_COLOR = "r"
-    CODE_COLOR = "g"
-
-    def __init__(self, node, addr, time):
-        self.node = node
-        self.addr = addr
-        self.time = time
-
-    @property
-    def start(self):
-        return self.addr
-
-    @property
-    def end(self):
-        return self.addr + 1
-
-    @property
-    def size(self):
-        return 1
-
-    @property
-    def y_value(self):
-        return self.time / 10**6
-
-    def draw(self, start, end, ax):
-        """
-        Draw the interesting part of the element
-        """
-        ax.plot(start, self.y_value, "o", color="b")
-        return 0
-
-    def omit(self, start, end, ax):
-        """
-        Draw the pattern showing an omitted block
-        of the element
-        """
-        return 0
-
-    def __str__(self):
-        return "<CapDot at:0x%x>" % (self.start,)
-
-class PointerDensityPlot:
 
     def __init__(self, tracefile):
-        self.tracefile = tracefile
-        """Tracefile path"""
-        self.parser = PointerProvenanceParser(tracefile)
-        """Tracefile parser"""
-        self.tree = None
-        """Provenance tree"""
-        self.omit_strategy = PageBoundaryOmitStrategy()
-        """
-        Strategy object that decides which parts of the AS
-        are interesting
-        """
+        super(CapOutOfBoundPlot, self).__init__(tracefile)
 
-        self._caching = False
+        self.patch_builder = OutOfBoundPlotPatchBuilder()
+        """Strategy object that builds the plot components"""
 
     def _get_cache_file(self):
-        return self.tracefile + ".cache"
+        return self.tracefile + "_oob.cache"
 
-    def set_caching(self, state):
-        self._caching = state
-
-    def build_tree(self):
-        """
-        Build the provenance tree
-        """
-        logger.debug("Generating provenance tree for %s", self.tracefile)
-        self.tree = CachedProvenanceTree()
+    def build_dataset(self):
         if self._caching:
             fname = self._get_cache_file()
             try:
-                self.tree.load(fname)
+                with open(fname, "rb") as fd:
+                    self.dataset = pickle.load(fd)
+                    logger.info("Using cached dataset %s", fname)
             except IOError:
-                self.parser.parse(self.tree)
-                self.tree.save(self._get_cache_file())
+                self.parser.parse()
+                with open(fname, "wb") as fd:
+                    pickle.dump(self.dataset, fd, pickle.HIGHEST_PROTOCOL)
+                logger.info("Saving cached dataset %s", fname)
         else:
-            self.parser.parse(self.tree)
+            self.parser.parse()
 
-        errs = []
-        self.tree.check_consistency(errs)
-        if len(errs) > 0:
-            logger.warning("Inconsistent provenance tree: %s", errs)
+        # inject fake item for testing
+        # self.dataset.append([100, 0x30000, 0x40000, 0x41000])
+        # self.dataset.append([125, 0x6000, 0x20000, 0x24000])
+        # self.dataset.append([130, 0x10000, 0x12000, 0x8000])
+        # self.dataset.append([150, 0x3000, 0x5000, 0x6000])
+        self.dataset = np.array(self.dataset)
 
+    def init_parser(self):
+        return OutOfBoundParser(self.dataset, self.tracefile)
 
-    def plot(self, radix=None):
+    def init_dataset(self):
+        return []
+
+    def plot(self):
         """
-        Create the provenance plot and return the figure
-
-        radix: a root node to use instead of the full tree
+        Create the time, range and offset of out-of-bound
+        capability manipulations
         """
+        progress = ProgressPrinter(len(self.dataset), desc="Generating plot")
+        fig = plt.figure(figsize=(15,10))
+        ax = fig.add_axes([0.05, 0.15, 0.9, 0.8,],
+                          projection="custom_addrspace")
+        ax.set_ylabel("Time (cycles)")
+        ax.set_xlabel("Virtual Address")
+        ax.set_title("Distribution of out-of-bounds capability computations")
+        for item in self.dataset:
+            progress.advance()
+            self.patch_builder.inspect(item)
+        progress.finish()
 
-        if radix is None:
-            tree = self.tree
-        else:
-            tree = radix
-        tree_progress = ProgressPrinter(len(tree), desc="Adding nodes")
-        fig = plt.figure()
-        ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,])
-
-        canvas = AddressSpaceCanvas(ax)
-        for child in tree:
-            tree_progress.advance()
-            self.omit_strategy.inspect(child)
-            for t_store, addr in child.address.items():
-                canvas.add_element(CapabilityDot(child, addr, t_store))
-        tree_progress.finish()
-
-        self.omit_strategy.add_ranges(canvas)
-        canvas.draw()
+        for collection in self.patch_builder.get_patches(ax):
+            ax.add_collection(collection)
+        ax.set_omit_ranges(self.patch_builder.get_omit_ranges())
+        
+        view_box = self.patch_builder.get_bbox()
+        xmin = view_box.xmin * 0.98
+        xmax = view_box.xmax * 1.02
+        ymin = view_box.ymin * 0.98
+        ymax = view_box.ymax * 1.02
+        logger.debug("X limits: (%d, %d)", xmin, xmax)
+        ax.set_xlim(xmin, xmax)
+        logger.debug("Y limits: (%d, %d)", ymin, ymax)
+        ax.set_ylim(ymin, ymax)
         ax.invert_yaxis()
+        
         return fig
-
-    def build_figure(self):
-        """
-        Build the plot without showing it
-        """
-        if self.tree is None:
-            self.build_tree()
-        fig = self.plot()
-
-    def show(self):
-        """
-        Show plot in a new window
-        """
-        self.build_figure()
-        plt.show()
-
-    def save(self, path):
-        """
-        Save plot to file
-        """
-        self.build_figure()
-        plt.savefig(path)

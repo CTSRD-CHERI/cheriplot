@@ -181,10 +181,6 @@ class LeafCapPatchGenerator:
 
 
 class PointerProvenancePlot:
-    """
-    XXX: the logic for tree caching/generation should go elsewhere,
-    there should be only plotting stuff here
-    """
 
     def __init__(self, tracefile):
         self.tracefile = tracefile
