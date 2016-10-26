@@ -352,7 +352,11 @@ class CallbackTraceParser(TraceParser):
         def _scan(entry, regs, idx):
             self.progress.advance()
             disasm = self._dis.disassemble(entry.inst)
-            inst = Instruction(disasm, regs)
+            try:
+                inst = Instruction(disasm, regs)
+            except Exception:
+                logger.error("Error parsing instruction %s", disasm.name)
+                return False
 
             ret = False
 
