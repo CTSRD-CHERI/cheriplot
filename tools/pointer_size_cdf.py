@@ -26,54 +26,22 @@ import cProfile
 import pstats
 
 from cheri_trace_parser.plot import PointerSizeCdfPlot
+from cheri_trace_parser.core.tool import PlotTool
 
 logger = logging.getLogger(__name__)
 
-if __name__ == "__main__":
-    parser = ap.ArgumentParser(description="Out of bound pointer manipulation from cheri trace")
-    parser.add_argument("trace", help="Path to trace file")
-    parser.add_argument("-c", "--cache", help="Enable caching of the parsed trace",
-                        action="store_true")
-    parser.add_argument("-v", "--verbose", help="Show debug output",
-                        action="store_true")
-    parser.add_argument("-o", "--outfile", help="Save plot to file")
-    parser.add_argument("--log", help="Set logfile path")
-    parser.add_argument("--profile",
-                        help="Run in profiler (disable verbose output)",
-                        action="store_true")
+class CdfPlotTool(PlotTool):
 
-    args = parser.parse_args()
+    def _run(self, args):
+        plot = PointerSizeCdfPlot(args.trace)
 
-    if args.profile:
-        args.verbose = False
-
-    logging_args = {}
-    if args.verbose:
-        logging_args["level"] = logging.DEBUG
-    else:
-        logging_args["level"] = logging.INFO
-
-    if args.log:
-        logging_args["filename"] = args.log
-
-    logging.basicConfig(**logging_args)
-
-    plot = PointerSizeCdfPlot(args.trace)
-    
-    if args.cache:
-        plot.set_caching(True)
-
-    try:
-        if args.profile:
-            cProfile.run("plot.show()", "run_stats")
-        elif args.outfile is None:
-            plot.show()
-        else:
+        if args.cache:
+            plot.set_caching(True)
+        if args.outfile:
             plot.save(args.outfile)
-    finally:
-        # print profiling results
-        if args.profile:
-            p = pstats.Stats("run_stats")
-            p.strip_dirs()
-            p.sort_stats("cumulative")
-            p.print_stats()
+        else:
+            plot.show()
+
+if __name__ == "__main__":
+    tool = CdfPlotTool()
+    tool.run()

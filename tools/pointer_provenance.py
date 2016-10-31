@@ -26,67 +26,31 @@ import cProfile
 import pstats
 
 from cheri_trace_parser.plot import PointerProvenancePlot
+from cheri_trace_parser.core.tool import PlotTool
 
 logger = logging.getLogger(__name__)
 
-if __name__ == "__main__":
-    parser = ap.ArgumentParser(description="Plot pointer provenance from cheri trace")
-    parser.add_argument("trace", help="Path to trace file")
-    parser.add_argument("-c", "--cache", help="Enable provenance tree caching",
-                        action="store_true")
-    parser.add_argument("-v", "--verbose", help="Show debug output",
-                        action="store_true")
-    parser.add_argument("--log", help="Set logfile path")
-    parser.add_argument("--tree", help="Dump tree to logging and exit",
-                        action="store_true")
-    parser.add_argument("--profile",
-                        help="Run in profiler (disable verbose output)",
-                        action="store_true")
-    parser.add_argument("--split-plot",
-                        help="Generate different plot for each root capability",
-                        action="store_true")
+class ProvenancePlotTool(PlotTool):
 
-    args = parser.parse_args()
+    description = "Plot pointer provenance from cheri trace"
 
-    if args.profile:
-        args.verbose = False
+    def init_arguments(self):
+        super(ProvenancePlotTool, self).init_arguments()
+        self.parser.add_argument("--tree", help="Dump tree to logging and exit",
+                                 action="store_true")
 
-    logging_args = {}
-    if args.verbose:
-        logging_args["level"] = logging.DEBUG
-    else:
-        logging_args["level"] = logging.INFO
+    def _run(self, args):
+        plot = PointerProvenancePlot(args.trace)
 
-    if args.log:
-        logging_args["filename"] = args.log
+        if args.cache:
+            plot.set_caching(True)
 
-    logging.basicConfig(**logging_args)
-
-    plot = PointerProvenancePlot(args.trace)
-    if args.cache:
-        plot.set_caching(True)
-
-    try:
         if args.tree:
-            if args.profile:
-                cProfile.run("plot.build_tree()", "run_stats")
-            else:
-                plot.build_tree()
-                logger.debug("Provenance tree:")
-                logger.debug(plot.tree)
-                # XXX inefficient, make tree.__str__ handle this
-                # logger.debug("Tree size: %d" % len(plot.tree))
+            plot.build_dataset()
+            logger.debug(plot.dataset)
         else:
-            if args.profile:
-                cProfile.run("plot.show()", "run_stats")
-            elif args.split_plot:
-                plot.show_multiple()
-            else:
-                plot.show()
-    finally:
-        # print profiling results
-        if args.profile:
-            p = pstats.Stats("run_stats")
-            p.strip_dirs()
-            p.sort_stats("cumulative")
-            p.print_stats()
+            plot.show()
+
+if __name__ == "__main__":
+    tool = ProvenancePlotTool()
+    tool.run()

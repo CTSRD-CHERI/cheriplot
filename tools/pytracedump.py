@@ -18,23 +18,26 @@ Python version of cheritrace tracedump tool
 """
 
 import sys
-
-from cheri_trace_parser.core.parser import TraceParser
-
-import pycheritrace as pct
 import argparse
+import logging
 
-class PyDumpParser(TraceParser):
+from cheri_trace_parser.core.parser import CallbackTraceParser
+from cheri_trace_parser.core.tool import Tool
+
+logger = logging.getLogger(__name__)
+
+class PyDumpParser(CallbackTraceParser):
 
     def __init__(self, find, *args):
-        super(PyDumpParser, self).__init__(*args)
+        super(PyDumpParser, self).__init__(None, *args)
         self.dump_registers = False
+        """Enable register set dump"""
+        
         self.find_instr = find
-        self.dis = pct.disassembler()
+        """Find occurrences of this instruction"""
+        
         self.kernel_mode = False
-
-    def enable_regdump(self, enable):
-        self.dump_registers = enable
+        """Keep track of kernel-userspace transitions"""
 
     def repr_register(self, entry):
         if (entry.gpr_number() != -1):
@@ -42,89 +45,109 @@ class PyDumpParser(TraceParser):
         elif (entry.capreg_number() != -1):
             return "$c%d" % entry.capreg_number()
 
-    def dump_regs(self, entry, regs):
+    def dump_regs(self, entry, regs, last_regs):
         if not self.dump_registers:
             return
 
         for idx in range(0,31):
-            print("[%d] $%d = %x" %
-                  (regs.valid_gprs[idx],
-                   idx,
-                   regs.gpr[idx]))
+            real_regnum = idx + 1
+            print("[%d] $%d = %x" % (
+                regs.valid_gprs[idx],
+                real_regnum,
+                regs.gpr[idx]))
         for idx in range(0,32):
-            print("[%d] $c%d = b:%x o:%x l:%x" %
-                  (regs.valid_caps[idx],
-                   idx,
-                   regs.cap_reg[idx].base,
-                   regs.cap_reg[idx].offset,
-                   regs.cap_reg[idx].length))
+            print("[%d] $c%d = b:%x o:%x l:%x" % (
+                regs.valid_caps[idx],
+                idx,
+                regs.cap_reg[idx].base,
+                regs.cap_reg[idx].offset,
+                regs.cap_reg[idx].length))
 
-    def dump_instr(self, entry, regs, idx):
-        inst = self.dis.disassemble(entry.inst)
 
+    def dump_instr(self, inst, entry, idx):
         print("{%d} 0x%x" % (entry.cycles, entry.pc),
-              inst.name,
+              inst.inst.name,
               "[ld:%d st:%d]" % (entry.is_load, entry.is_store))
 
         # dump read/write
-        reg_str = self.repr_register(entry)
+        if inst.cd is None:
+            # no operands for the instruction
+            return
+
         if entry.is_load:
-            print("%s = [%x]" % (reg_str, entry.memory_address))
+            print("$%s = [%x]" % (inst.cd.name, entry.memory_address))
         elif entry.is_store:
-            print("[%x] = %s" % (entry.memory_address, reg_str))
+            print("[%x] = $%s" % (entry.memory_address, inst.cd.name))
 
         if (entry.gpr_number() != -1):
-            print("$%d = %x" % (entry.gpr_number(), entry.reg_value_gp()))
+            if inst.implicit:
+                gpr_value = inst.implicit.value
+                gpr_name = inst.implicit.name
+            else:
+                gpr_value = inst.cd.value
+                gpr_name = inst.cd.name
+            print("$%s = %x" % (gpr_name, gpr_value))
         elif (entry.capreg_number() != -1):
-            cap = entry.reg_value_cap()
-            print("$c%d = b:%x o:%x l:%x" %
-                  (entry.capreg_number(), cap.base,
-                   cap.offset, cap.length))
+            if inst.implicit:
+                cap_name = inst.implicit.name
+                cap_value = inst.implicit.value
+            else:
+                cap_name = inst.cd.name
+                cap_value = inst.cd.value
+            print("$%s = b:%x o:%x l:%x" % (
+                cap_name, cap_value.base, cap_value.offset, cap_value.length))
 
-    def parse(self, start, end):
-
-        def _scan(entry, regs, idx):
-            inst = self.dis.disassemble(entry.inst)
-            if (self.find_instr is not None and
-                self.find_instr != inst.name.strip().split("\t")[0]):
-                return False
-
-            if self.kernel_mode != entry.is_kernel():
-                if entry.is_kernel():
-                    print("Enter kernel mode {%d}" % (entry.cycles))
-                else:
-                    print("Enter user mode {%d}" % (entry.cycles))
-                self.kernel_mode = entry.is_kernel()
-
-            # dump instr
-            self.dump_instr(entry, regs, idx)
-            self.dump_regs(entry, regs)
+    def scan_all(self, inst, entry, regs, last_regs, idx):
+        if (self.find_instr is not None and
+            self.find_instr != inst.opcode):
             return False
+        
+        if self.kernel_mode != entry.is_kernel():
+            if entry.is_kernel():
+                print("Enter kernel mode {%d}" % (entry.cycles))
+            else:
+                print("Enter user mode {%d}" % (entry.cycles))
+            self.kernel_mode = entry.is_kernel()
+        # dump instr
+        self.dump_instr(inst, entry, idx)
+        self.dump_regs(entry, regs, last_regs)
+        return False
 
-        self.trace.scan(_scan, start, end)
+class PyTraceDump(Tool):
+    """
+    Pytracedump is similar to cheri-tracedump although
+    it has some additional features.
+    """
+    
+    description="Dump CHERI binary trace "\
+                 "(python version of cheri-tracedump)."
 
+    def init_arguments(self):
+        super(PyTraceDump, self).init_arguments()
+        self.parser.add_argument("-s", "--start", type=int, default=None,
+                                 help="Start at given offset")
+        self.parser.add_argument("-e", "--end", type=int, default=None,
+                                 help="Stop at given offset")
+        self.parser.add_argument("-i", "--info",
+                                 help="Print trace info and exit",
+                                 action="store_true")
+        self.parser.add_argument("-r", "--regs", help="Dump register content",
+                                 action="store_true")
+        self.parser.add_argument("-f", "--find",
+                                 help="Find instruction occurrences")
+
+    def _run(self, args):
+        pdp = PyDumpParser(args.find, args.trace)
+        pdp.dump_registers = args.regs
+
+        if (args.info):
+            print("Trace size: %d" % len(pdp))
+            exit()
+
+        start = args.start if args.start is not None else 0
+        end = args.end if args.end is not None else len(pdp)
+        pdp.parse(start, end)
+        
 if __name__ == "__main__":
-
-    ap = argparse.ArgumentParser(description="Dump CHERI binary trace "\
-                                 "(python version of cheri-tracedump).")
-    ap.add_argument("trace", help="Path to trace file")
-    ap.add_argument("-s", "--start", type=int, default=None,
-                    help="Start at given offset")
-    ap.add_argument("-e", "--end", type=int, default=None,
-                    help="Stop at given offset")
-    ap.add_argument("-i", "--info", help="Print trace info and exit",
-                    action="store_true")
-    ap.add_argument("-r", "--regs", help="Dump register content",
-                    action="store_true")
-    ap.add_argument("-f", "--find", help="Find instruction occurrences")
-    args = ap.parse_args()
-
-    pdp = PyDumpParser(args.find, args.trace)
-
-    pdp.enable_regdump(args.regs)
-    if (args.info):
-        print("Trace size: %d" % len(pdp))
-        exit()
-    start = args.start if args.start is not None else 0
-    end = args.end if args.end is not None else len(pdp)
-    pdp.parse(start, end)
+    tool = PyTraceDump()
+    tool.run()
