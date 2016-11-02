@@ -32,8 +32,16 @@ logger = logging.getLogger(__name__)
 
 class CdfPlotTool(PlotTool):
 
+    def init_arguments(self):
+        super(CdfPlotTool, self).init_arguments()
+        self.parser.add_argument("additional_traces",
+                                 help="Additional trace files to parse",
+                                 nargs="*")
+
     def _run(self, args):
         plot = PointerSizeCdfPlot(args.trace)
+
+        plot.add_traces(args.additional_traces)
 
         if args.cache:
             plot.set_caching(True)

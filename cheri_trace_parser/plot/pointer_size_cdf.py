@@ -17,6 +17,7 @@ permissions and limitations under the License.
 import numpy as np
 import logging
 import pickle
+import os
 
 from matplotlib import pyplot as plt
 from scipy import stats
@@ -44,34 +45,68 @@ class PointerParser(CallbackTraceParser):
         return False
 
 class PointerSizeCdfPlot(Plot):
+    """
+    Plot a Cumulative Distribution Function of the number of
+    instantiations of capability pointer vs. the capability
+    lengths.
+    """
+    
+    def __init__(self, trace, *args, **kwargs):
+        super(PointerSizeCdfPlot, self).__init__(trace, *args, **kwargs)
+        self.traces = [trace]
+        """Store all the trace files"""
+        self.parsers = [self.parser]
+        """For each trace file there is a different parser"""
+        self.datasets = [self.dataset]
+        """For each trace file there is a different dataset"""
 
-    def __init__(self, trace):
-        super(PointerSizeCdfPlot, self).__init__(trace)
-
+        # clear parser and dataset as they are replaced by the
+        # list equivalents
+        self.parser = None
+        self.dataset = None
+    
     def _get_cache_file(self):
-        return self.tracefile + self.__class__.__name__ + ".cache"
+        prefix = ""
+        for trace in self.traces:
+            full_name = os.path.basename(trace)
+            name, ext = os.path.splitext(full_name)
+            prefix += name
+        return prefix + self.__class__.__name__ + ".cache"
 
-    def init_parser(self):
-        return PointerParser(self.dataset, self.tracefile)
+    def init_parser(self, dataset, tracefile):
+        return PointerParser(dataset, tracefile)
 
     def init_dataset(self):
         return []
+
+    def add_traces(self, trace_files):
+        """
+        Set the additional traces for the plot
+        """
+        self.traces += trace_files
+        for trace in trace_files:
+            dataset = self.init_dataset()
+            self.datasets.append(dataset)
+            self.parsers.append(self.init_parser(dataset, trace))
     
     def build_dataset(self):
         if self._caching:
             fname = self._get_cache_file()
             try:
                 with open(fname, "rb") as fd:
-                    self.dataset = pickle.load(fd)
+                    self.datasets = pickle.load(fd)
                     logger.info("Using cached dataset %s", fname)
             except OSError:
-                self.parser.parse()
+                for parser in self.parsers:
+                    parser.parse()
                 with open(fname, "wb") as fd:
-                    pickle.dump(self.dataset, fd, pickle.HIGHEST_PROTOCOL)
+                    pickle.dump(self.datasets, fd, pickle.HIGHEST_PROTOCOL)
                 logger.info("Saving cached dataset %s", fname)
         else:
-            self.parser.parse()
-        self.dataset = np.array(self.dataset)
+            for parser in self.parsers:
+                parser.parse()
+        for idx, dataset in enumerate(self.datasets):
+            self.datasets[idx] = np.array(dataset)
 
     def plot(self):
         """
@@ -83,16 +118,25 @@ class PointerSizeCdfPlot(Plot):
         ax.set_ylabel("Proportion of total capability pointers")
         ax.set_xlabel("Capability size (bytes)")
         ax.set_title("CDF of the size of capability pointers")
-
-        # mine
-        sizes = self.dataset[:,1]
-        logger.debug("[len, cycle] %s", np.dstack((self.dataset[:,1], self.dataset[:,3])))
-        size_freq = stats.itemfreq(sizes)
-        size_pdf = size_freq[:,1] / len(sizes)
-        y = np.cumsum(size_pdf)
-        ax.plot(size_freq[:,0], y)
-        ax.axvline(2**12, linestyle="--")
         ax.set_xscale("log", basex=2)
+        
+        # build the plot for each dataset
+        # since the plot is normalized on the y there is
+        # no problem on the scale
+        for dataset in self.datasets:
+            sizes = dataset[:,1]
+            logger.debug("[len, cycle] %s", np.dstack((dataset[:,1], dataset[:,3])))
+            size_freq = stats.itemfreq(sizes)
+            size_pdf = size_freq[:,1] / len(sizes)
+            y = np.cumsum(size_pdf)
+            ax.plot(size_freq[:,0], y)
+
+        legend_keys = []
+        for trace in self.traces:
+            full_name = os.path.basename(trace)
+            name, ext = os.path.splitext(full_name)
+            legend_keys.append(name)
+        ax.legend(legend_keys, loc="lower right")
         
         return fig
         

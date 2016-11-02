@@ -33,7 +33,7 @@ class Plot:
         """Tracefile path"""
         self.dataset = self.init_dataset()
         """Parsed dataset"""
-        self.parser = self.init_parser()
+        self.parser = self.init_parser(self.dataset, self.tracefile)
         """Tracefile parser"""
 
         self._caching = False
@@ -45,12 +45,16 @@ class Plot:
     def set_caching(self, state):
         self._caching = state
 
-    def init_parser(self):
+    def init_parser(self, dataset, tracefile):
         """
         Initialise the trace parser object
 
         This method is meant to be overridden in subclasses
 
+        :param dataset: The dataset object to fill
+        :type dataset: object
+        :param tracefile: Trace file path
+        :type tracefile: str
         :return: The parser for the current trace
         """
         return
@@ -122,6 +126,6 @@ class ProvenanceTreePlot(Plot):
     def init_dataset(self):
         return CachedProvenanceTree()
 
-    def init_parser(self):
-        return PointerProvenanceParser(self.tracefile)
+    def init_parser(self, dataset, tracefile):
+        return PointerProvenanceParser(tracefile)
         
