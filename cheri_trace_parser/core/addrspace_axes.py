@@ -320,14 +320,16 @@ class AddressSpaceAxes(axes.Axes):
 
         XXX: 
         - rename to a more meaningful name
-        - only take the omit range list
+        - only take the omit range list, the other list is never used
         """
+        logger.debug("_filter %s", target_range)
         if len(other_list.match_overlap_range(target_range)):
             raise ValueError("Range %s is present in another filter" %
                              target_range)
 
         existing_range = target_list.match_overlap_range(target_range)
-        assert len(existing_range) < 2, "Too many overlapping ranges"
+        assert len(existing_range) < 2, "Too many overlapping ranges %s, %s" % (
+            existing_range, target_range)
         try:
             target_range = existing_range[0] + target_range
         except IndexError:
@@ -421,8 +423,9 @@ class Range:
     T_UNKN = -1
 
     def __init__(self, start, end, rtype=-1):
-        self.start = start
-        self.end = end
+        # make sure that start <= end always
+        self.start = min(start, end)
+        self.end = max(start, end)
         self.rtype = rtype
         """The type is used to distinguish omit and keep ranges"""
 
@@ -467,7 +470,7 @@ class Range:
 
 class RangeSet(list):
     """
-    XXX Make this use vector operations on numpy arrays internally
+    Represent a list ranges that can be searched for overlaps
     """
 
     def __init__(self, *args):
@@ -483,12 +486,16 @@ class RangeSet(list):
     def match_overlap_range(self, target):
         """
         Return the list of ranges overlapping target
+        XXX ranges are considered to be open, no overlapping
+        occurs if the ranges are contiguous.
+
+
         XXX one of the boundaries should not have <= or >=
         otherwise we count that twice for adjacent ranges.
         By convention range intervals are left-closed e.g.
         [start, end)
         """
-        overlaps = [r for r in self if (r.start <= target.end and
+        overlaps = [r for r in self if (r.start < target.end and
                                         r.end > target.start)]
         return RangeSet(overlaps)
 
@@ -497,6 +504,6 @@ class RangeSet(list):
         Return the first range in the set that overlaps target
         """
         for r in self:
-            if (r.start <= target.end and r.end > target.start):
+            if (r.start < target.end and r.end > target.start):
                 return r
         return None

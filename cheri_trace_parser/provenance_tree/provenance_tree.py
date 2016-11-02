@@ -54,6 +54,8 @@ class CheriCapNode:
     C_FROMPTR = 2
     C_PTR_SETBOUNDS = 3
 
+    MAX_ADDR = 0xffffffffffffffff
+
     def __init__(self, cr=None):
         self.address = {}
         self.base = None
@@ -86,7 +88,7 @@ class CheriCapNode:
         convenience property to get base + length
         """
         if (self.base is not None and self.length is not None):
-            return self.base + self.length
+            return (self.base + self.length) % self.MAX_ADDR
         return None
 
     def find_node(self, base, length):
@@ -182,11 +184,15 @@ class CheriCapNode:
         A list of nodes violating the property is filled.
         """
         if (self.base is None or self.length is None):
-            # root node
-            return
+            is_root = True
+        else:
+            is_root = False
+
         for child in self.children:
-            if (self.base > child.base or
-                child.base + child.length > self.base + self.length):
+            if is_root:
+                child.check_consistency(violations)
+            elif (self.base > child.base or
+                  child.base + child.length > self.base + self.length):
                 violations.append(child)
                 child.check_consistency(violations)
         return violations

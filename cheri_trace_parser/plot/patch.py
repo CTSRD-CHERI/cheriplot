@@ -59,7 +59,6 @@ class PatchBuilder:
         :type node_range: :class:`cheri_trace_parser.core.Range`
         """
         overlap = self.ranges.match_overlap_range(node_range)
-        logger.debug("Mark %s -> %s", node_range, self.ranges)
         for r in overlap:
             # 4 possible situations for range (R)
             # and node_range (NR):
@@ -88,7 +87,6 @@ class PatchBuilder:
                 r.end = node_range.start
                 if r.size < self.size_limit:
                     del self.ranges[self.ranges.index(r)]
-        logger.debug("New omit set %s", self.ranges)
 
     def inspect(self, data):
         """
@@ -101,7 +99,6 @@ class PatchBuilder:
         :type data: object
         """
         return
-            
 
     def get_omit_ranges(self):
         """

@@ -60,63 +60,50 @@ class TraceParser:
         return 0
 
 
-class CallbackMeta(type):
-    """
-    Resolve callback methods in :class:`.CallbackTraceParser`
-    by looking for methods in the form scan_*
-    """
-
-    def __new__(cls, name, bases, namespace, **kwds):
-        result = type.__new__(cls, name, bases, namespace, **kwds)
-        result._callbacks = {}
-        for opcode in Instruction.cap_opcodes:
-            callback_method = "scan_%s" % opcode
-            if hasattr(result, callback_method):
-                result._callbacks[opcode] = getattr(result, callback_method)
-
 class Instruction:
     """
     Internal instruction representation that provides more
-    information in addition to the pycheritrace disassembler
+    information in addition to the pycheritrace disassembler.
     """
 
     class IClass(Enum):
         """
         Enumerate instruction classes for
-        :meth:`.Instruction.is_type`
+        :meth:`.Instruction.is_type`.
         """
 
-        I_CAP = "cap"
-        """Generic capability instruction"""
         I_CAP_LOAD = "cap_load"
-        """Load via capability"""
+        """Load via capability."""
         I_CAP_STORE = "cap_store"
-        """Store via capability"""
+        """Store via capability."""
         I_CAP_CAST = "cap_cast"
-        """Cast capability to or from pointer"""
+        """Cast capability to or from pointer."""
         I_CAP_ARITH = "cap_arith"
-        """Arithmetic capability manipulation"""
+        """Arithmetic capability manipulation."""
         I_CAP_BOUND = "cap_bound"
-        """Change capability bounds"""
+        """Change capability bounds."""
         I_CAP_FLOW = "cap_flow"
-        """Capability flow control"""
+        """Capability flow control."""
+        I_CAP_OTHER = "cap_other"
+        """Other capability instruction not in previous classes."""
+        I_CAP = "cap"
+        """Generic capability instruction."""
 
 
     class Operand:
         """
-        Helper class for parsing instruction operands
+        Helper class for parsing instruction operands.
         """
 
         def __init__(self, name, regset, is_immediate):
             self.is_immediate = is_immediate
-            """True if the operand an immediate"""
+            """True if the operand an immediate."""
 
             self.name = name
-            """Matched argument string, e.g. c4 for the register $c4"""
+            """Matched argument string, e.g. c4 for the register $c4."""
 
             self.value = None
-            """Value of the operand"""
-
+            """Value of the operand."""
             if self.cap_index != -1:
                 if regset.valid_caps[self.cap_index]:
                     self.value = regset.cap_reg[self.cap_index]
@@ -124,8 +111,10 @@ class Instruction:
                     logger.warning("Taking value of %s from "\
                                    "invalid cap register", name)
             elif self.reg_index != -1:
-                if regset.valid_gprs[self.reg_index]:
-                    self.value = regset.gpr[self.reg_index]
+                if self.reg_index == 0:
+                    self.value = 0
+                elif regset.valid_gprs[self.reg_index - 1]:
+                    self.value = regset.gpr[self.reg_index - 1]
                 else:
                     logger.warning("Taking value of %s from "\
                                    "invalid gpr register", name)
@@ -145,54 +134,105 @@ class Instruction:
             strval = str(self.name)
             if self.name and strval[0] == "c":
                 return -1
+            if self.name == "gp":
+                return 28
             if self.name == "sp":
                 return 29
             if self.name == "fp":
                 return 30
+            if self.name == "ra":
+                return 31
+            if self.name == "zero":
+                return 0
             if strval[0] != "f":
                 # do not support floating point registers for now
                 return int(self.name)
             return -1
 
+        def __repr__(self):
+            return "<operand %s = %s>" % (self.name, self.value)
 
-    # XXX may be desirable to replace the matching
-    # with something provided by the llvm backend
-
-    cap_load = ["clc", "clb", "clh", "clw",
-                "cld", "clhu", "clwu", "cllc",
-                "cllb", "cllh", "cllw", "clld",
-                "cllhu", "cllwu"]
-    cap_store = ["csc", "csb", "csh", "csw",
-                 "csd", "cscc", "cscb", "csch",
-                 "cscw", "cscd"]
-    cap_cast = ["ctoptr", "cfromptr"]
-    cap_arith = ["cincoffset", "csetoffset", "csub"]
-    cap_bound = ["csetbounds", "csetboundsexact"]
-    cap_flow = ["cbtu", "cbts", "cjr", "cjalr",
-                "ccall", "creturn"]
-    cap_other = ["cgetperm", "cgettype", "cgetbase", "cgetlen",
-                 "cgettag", "cgetsealed", "cgetoffset", "cgetpcc",
-                 "cgetpccsetoffset", "cseal", "cunseal", "candperm",
-                 "ccleartag", "ceq", "cne", "clt",
-                 "cle", "cltu","cleu", "cexeq",
-                 "cgetcause", "csetcause", "ccheckperm", "cchecktype",
-                 "clearlo", "clearhi", "cclearlo", "cclearhi",
-                 "fpclearlo", "fpclearhi"]
-
-    def __init__(self, inst, regset):
+    class Implicit:
         """
-        Construct instruction from pycheritrace instruction
+        Helper class representing an implicit register written by an
+        instruction.
+        """
+
+        def __init__(self, entry):
+            if entry.gpr_number() != -1:
+                self.name = entry.gpr_number()
+                self.value = entry.reg_value_gp()
+            elif entry.capreg_number() != -1:
+                self.name = entry.capreg_number()
+                self.value = entry.reg_value_cap()
+
+        def __repr__(self):
+            return "<implicit %s = %s>" % (self.name, self.value)
+
+
+    # map each instruction class to a set of opcodes
+    iclass_map = {
+        IClass.I_CAP_LOAD: [
+            "clc", "clb", "clh", "clw",
+            "cld", "clhu", "clwu", "cllc",
+            "cllb", "cllh", "cllw", "clld",
+            "cllhu", "cllwu"],
+        IClass.I_CAP_STORE: [
+            "csc", "csb", "csh", "csw",
+            "csd", "cscc", "cscb", "csch",
+            "cscw", "cscd"],
+        IClass.I_CAP_CAST: [
+            "ctoptr", "cfromptr"],
+        IClass.I_CAP_ARITH: [
+            "cincoffset", "csetoffset", "csub"],
+        IClass.I_CAP_BOUND: [
+            "csetbounds", "csetboundsexact"],
+        IClass.I_CAP_FLOW: [
+            "cbtu", "cbts", "cjr", "cjalr",
+            "ccall", "creturn"],
+        IClass.I_CAP_OTHER: [
+            "cgetperm", "cgettype", "cgetbase", "cgetlen",
+            "cgettag", "cgetsealed", "cgetoffset", "cgetpcc",
+            "cgetpccsetoffset", "cseal", "cunseal", "candperm",
+            "ccleartag", "ceq", "cne", "clt",
+            "cle", "cltu","cleu", "cexeq",
+            "cgetcause", "csetcause", "ccheckperm", "cchecktype",
+            "clearlo", "clearhi", "cclearlo", "cclearhi",
+            "fpclearlo", "fpclearhi"]
+        }
+
+    def __init__(self, inst, entry, regset, prev_regset):
+        """
+        Construct instruction from pycheritrace instruction.
 
         :param inst: pycheritrace disassembler instruction
         :type inst: :class:`pycheritrace.instruction_info`
+        :param regset: register set after the execution 
+        of the instruction
+        :type regset: :class:`pycheritrace.register_set`
+        :param prev_regset: register set before the execution 
+        of the instruction
+        :type prev_regset: :class:`pycheritrace.register_set`
         """
-        self.regset = regset
+        self._regset = regset
+        """Register set used for the destination register."""
+
+        self._prev_regset = prev_regset
+        """Register set used for the source register(s)."""
+
         self.inst = inst
+        """Disassembled instruction."""
+
+        self.entry = entry
+        """Trace entry of the instruction"""
+
         self._parsed = False
+        """Flag indicating whether :meth:`parse` has been called."""
 
         # the opcode is the only thing needed every time
         parts = inst.name.split("\t")
         self.opcode = parts[1]
+        """Instruction opcode"""
 
     def parse(self):
         """
@@ -208,27 +248,72 @@ class Instruction:
             # remove pseudo instructions such as .set
             logger.info("Directives are not yet supported%s", disasm)
             disasm = disasm.split("\n")[1]
-        # XXX currently assuming CHERI capability instruction
-        # the operand registers and immediates should really be
-        # available from llvm, I just don't know how yet.
-        match = re.match("^\s*([a-z]+)\s*(\$?)(c?[sfp0-9]{1,2})?\s*,?"\
-                         "\s*(\$?)(c?[sfp0-9]{1,2})?\s*,?"\
-                         "\s*(\$?)([0-9csfpx\$\(\)]+)?", disasm)
+
+        # XXX the operand registers and immediates should really be
+        # available from llvm, don't know how yet.
+        match = re.match("^\s*([a-z0-9]+)\s*(\$?)(c?[sfgpra]{0,2}[0-9]*)?\s*,?"\
+                         "\s*(\$?)(c?[sfgpra0-9]{1,2})?\s*,?"\
+                         "\s*(\$?)([0-9csfgpxra\$\(\)]+)?", disasm)
         if match == None:
             logger.error("Asm expression not supported %s", disasm)
             raise ValueError("Malformed disassembly %s", disasm)
-        self.cd = self.Operand(match.group(3), self.regset,
-                               match.group(2) == "")
-        self.cb = self.Operand(match.group(5), self.regset,
-                               match.group(4) == "")
-        self.rt = self.Operand(match.group(7), self.regset,
-                               match.group(6) == "")
+        if match.group(3):
+            self.cd = self.Operand(match.group(3), self._regset,
+                                   match.group(2) == "")
+        else:
+            self.cd = None
+
+        if match.group(5):
+            self.cb = self.Operand(match.group(5), self._prev_regset,
+                                   match.group(4) == "")
+        else:
+            self.cb = None
+
+        if match.group(7):
+            self.rt = self.Operand(match.group(7), self._prev_regset,
+                                   match.group(6) == "")
+        else:
+            self.rt = None
+
+        # check for implicit register write
+        gpr_number = self.entry.gpr_number()
+        cap_number = self.entry.capreg_number()
+        if ((gpr_number != -1 and (self.cd is None or self.cd.reg_index != gpr_number)) or
+            (cap_number != -1 and (self.cd is None or self.cd.cap_index != cap_number))):
+            self.implicit = self.Implicit(self.entry)
+        else:
+            self.implicit = None
+
+        # logger.debug("parsed instruction cd:%s cb:%s rt:%s impl:%s",
+        #              self.cd, self.cb, seplf.rt, self.implicit)
 
 
 class CallbackTraceParser(TraceParser):
     """
     Trace parser that provides help to filter
-    and normalize instructions
+    and normalize instructions.
+
+    This class performs the filtering of instructions
+    that are interesting to the parser and calls the appropriate
+    callback if it is defined.
+    Callback methods must start with "scan_" followed by the opcode
+    or instruction class (e.g. scan_ld will be invoked every time an
+    "ld" instruction is found, scan_cap_load will be invoked every time
+    a load or store through a capability is found).
+    The callback must have the follwing signature:
+    scan_<name>(inst, entry, regs, last_regs, idx).
+
+    Valid instruction class names are:
+
+    all: all instructions
+    cap: all capability instructions
+    cap_load: all capability load
+    cap_store: all capability store
+    cap_arith: all capability pointer manipulation
+    cap_bound: all capability bound modification
+    cap_cast: all conversions from and to capability pointers
+    cap_other: all capability instructions that do not fall in
+    the previous "cap_" classes
     """
 
     def __init__(self, dataset, trace_path):
@@ -251,58 +336,34 @@ class CallbackTraceParser(TraceParser):
         # time during scanning
         self._callbacks = {}
 
-        # generic callbacks for instruction classes
-        # look in this object for iclass callbacks of the
-        # form scan_<iclass_name> and temporarily store the
-        # methods here. The methods are added to all the opcodes in
-        # the relevant iclass in the _callbacks dictionary
-        iclass_callbacks = {}
-        for iclass in Instruction.IClass:
-            callback_method = "scan_%s" % iclass.value
-            try:
-                iclass_callbacks[iclass] = getattr(self, callback_method)
-            except AttributeError:
-                continue
-
         # for each opcode we may be interested in, check if there is
         # one or more callbacks to call, if so these will be stored
         # in _callbacks[<opcode>] so that the _get_callbacks function
         # can retrieve them in ~O(1)
-        cap_opcodes = (Instruction.cap_load + Instruction.cap_store +
-                       Instruction.cap_cast + Instruction.cap_arith +
-                       Instruction.cap_bound + Instruction.cap_flow +
-                       Instruction.cap_other)
-        cap_iclass = chain(repeat(Instruction.IClass.I_CAP_LOAD,
-                                  len(Instruction.cap_load)),
-                           repeat(Instruction.IClass.I_CAP_STORE,
-                                  len(Instruction.cap_store)),
-                           repeat(Instruction.IClass.I_CAP_CAST,
-                                  len(Instruction.cap_cast)),
-                           repeat(Instruction.IClass.I_CAP_ARITH,
-                                  len(Instruction.cap_arith)),
-                           repeat(Instruction.IClass.I_CAP_BOUND,
-                                  len(Instruction.cap_bound)),
-                           repeat(Instruction.IClass.I_CAP_FLOW,
-                                  len(Instruction.cap_flow)),
-                           repeat(None, len(Instruction.cap_other)))
-        for opcode, iclass in zip(cap_opcodes, cap_iclass):
-            callbacks = []
-            callback_method = "scan_%s" % opcode
-            try:
-                callbacks.append(iclass_callbacks[Instruction.IClass.I_CAP])
-            except KeyError:
-                pass
+        for attr in dir(self):
+            method = getattr(self, attr)
+            if (not attr.startswith("scan_") or not callable(method)):
+                continue
+            instr_name = attr[5:]
+            for iclass in Instruction.IClass:
+                if instr_name == iclass.value:
+                    # add the iclass callback for all the
+                    # instructions in such class
+                    if iclass == Instruction.IClass.I_CAP:
+                        opcodes = []
+                        for iclass_opcodes in Instruction.iclass_map.values():
+                            opcodes += iclass_opcodes
+                    else:
+                        opcodes = Instruction.iclass_map.get(iclass, [])
+                    for opcode in opcodes:
+                        try:
+                            self._callbacks[opcode].append(method)
+                        except KeyError:
+                            self._callbacks[opcode] = [method]
+                    break
+            else:
+                self._callbacks[instr_name] = [method]
 
-            try:
-                callbacks.append(iclass_callbacks[iclass])
-            except KeyError:
-                pass
-
-            try:
-                callbacks.append(getattr(self, callback_method))
-            except AttributeError:
-                pass
-            self._callbacks[opcode] = callbacks
         logger.debug("Loaded callbacks for CallbackTraceParser %s",
                      self._callbacks)
 
@@ -316,15 +377,14 @@ class CallbackTraceParser(TraceParser):
         :return: list of methods to be called
         :rtype: list of callables
         """
-        try:
-
-            callbacks = self._callbacks[inst.opcode]
+        # try to get the callback for all instructions, if any
+        callbacks = self._callbacks.get("all", [])
+        callbacks += self._callbacks.get(inst.opcode, [])
+        if len(callbacks):
             # parse instruction operands only when
             # absolutely necessary
             inst.parse()
-            return callbacks
-        except KeyError:
-            return []
+        return callbacks
 
     def parse(self, start=None, end=None):
         """
@@ -353,9 +413,12 @@ class CallbackTraceParser(TraceParser):
             self.progress.advance()
             disasm = self._dis.disassemble(entry.inst)
             try:
-                inst = Instruction(disasm, regs)
+                if self._last_regs is None:
+                    self._last_regs = regs
+                inst = Instruction(disasm, entry, regs, self._last_regs)
             except Exception:
-                logger.error("Error parsing instruction %s", disasm.name)
+                logger.error("Error parsing instruction #%d pc:0x%x: %s raw: 0x%x",
+                             entry.cycles, entry.pc, disasm.name, entry.inst)
                 return False
 
             ret = False
