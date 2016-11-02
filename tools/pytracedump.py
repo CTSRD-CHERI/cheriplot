@@ -35,6 +35,9 @@ class PyDumpParser(CallbackTraceParser):
         
         self.find_instr = find
         """Find occurrences of this instruction"""
+
+        self.raw = False
+        """Show raw instruction dump"""
         
         self.kernel_mode = False
         """Keep track of kernel-userspace transitions"""
@@ -69,6 +72,8 @@ class PyDumpParser(CallbackTraceParser):
               inst.inst.name,
               "[ld:%d st:%d]" % (entry.is_load, entry.is_store))
 
+        if self.raw:
+            print("raw: 0x%x", entry.inst)
         # dump read/write
         if inst.cd is None:
             # no operands for the instruction
@@ -133,12 +138,19 @@ class PyTraceDump(Tool):
                                  action="store_true")
         self.parser.add_argument("-r", "--regs", help="Dump register content",
                                  action="store_true")
+        self.parser.add_argument("--raw",
+                                 help="Show raw hex dump of the instruction",
+                                 action="store_true")
         self.parser.add_argument("-f", "--find",
                                  help="Find instruction occurrences")
+        # self.parser.add_argument("--follow",
+        #                          help="show all the instructions that touch"\
+        #                          " a given register")
 
     def _run(self, args):
         pdp = PyDumpParser(args.find, args.trace)
         pdp.dump_registers = args.regs
+        pdp.raw = args.raw
 
         if (args.info):
             print("Trace size: %d" % len(pdp))
