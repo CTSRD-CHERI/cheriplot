@@ -31,7 +31,7 @@ from cheri_trace_parser.provenance_tree import (
 
 logger = logging.getLogger(__name__)
 
-class ContinuousPointerDensityPlot:
+class PointerDensityPlot:
 
     def __init__(self, tracefile):
         self.tracefile = tracefile
