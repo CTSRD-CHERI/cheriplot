@@ -305,14 +305,14 @@ class CallbackTraceParser(TraceParser):
 
     Valid instruction class names are:
 
-    all: all instructions
-    cap: all capability instructions
-    cap_load: all capability load
-    cap_store: all capability store
-    cap_arith: all capability pointer manipulation
-    cap_bound: all capability bound modification
-    cap_cast: all conversions from and to capability pointers
-    cap_other: all capability instructions that do not fall in
+    * all: all instructions
+    * cap: all capability instructions
+    * cap_load: all capability load
+    * cap_store: all capability store
+    * cap_arith: all capability pointer manipulation
+    * cap_bound: all capability bound modification
+    * cap_cast: all conversions from and to capability pointers
+    * cap_other: all capability instructions that do not fall in
     the previous "cap_" classes
     """
 
