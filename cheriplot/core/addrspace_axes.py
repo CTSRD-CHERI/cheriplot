@@ -28,7 +28,7 @@ from itertools import repeat
 from functools import reduce
 from operator import attrgetter
 
-from cheri_trace_parser.utils import ProgressPrinter
+from ..utils import ProgressPrinter
 
 logger = logging.getLogger(__name__)
 

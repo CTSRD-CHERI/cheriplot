@@ -38,8 +38,6 @@ logger = logging.getLogger(__name__)
 CAP_LOAD = 0x2
 CAP_STORE = 0x4
 CAP_EXEC = 0x8
-# XXXAM: it may be desirable to have a Capability class to represent
-# data inside a capability register
 
 class CheriCapNode:
     """

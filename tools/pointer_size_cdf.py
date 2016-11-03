@@ -25,8 +25,8 @@ import logging
 import cProfile
 import pstats
 
-from cheri_trace_parser.plot import PointerSizeCdfPlot
-from cheri_trace_parser.core.tool import PlotTool
+from cheriplot.plot import PointerSizeCdfPlot
+from cheriplot.core.tool import PlotTool
 
 logger = logging.getLogger(__name__)
 

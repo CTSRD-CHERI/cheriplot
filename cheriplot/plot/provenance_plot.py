@@ -23,14 +23,14 @@ import logging
 from io import StringIO
 
 from matplotlib import pyplot as plt
-from matplotlib import lines, collections, transforms
+from matplotlib import lines, collections, transforms, patches
 
-from cheri_trace_parser.utils import ProgressPrinter
-from cheri_trace_parser.core import RangeSet, Range
+from ..utils import ProgressPrinter
+from ..core import RangeSet, Range
 
-from cheri_trace_parser.core import CallbackTraceParser, Instruction
-from cheri_trace_parser.plot import Plot, PatchBuilder
-from cheri_trace_parser.provenance_tree import (CachedProvenanceTree,
+from ..core import CallbackTraceParser, Instruction
+from ..plot import Plot, PatchBuilder
+from ..provenance_tree import (CachedProvenanceTree,
                                                 CheriCapNode)
 
 logger = logging.getLogger(__name__)
@@ -220,7 +220,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         :param cap: capability register value
         :type cap: :class:`pycheritrace.capability_register`
         :return: the newly created node
-        :rtype: :class:`cheri_trace_parser.provenance_tree.CheriCapNode`
+        :rtype: :class:`cheriplot.provenance_tree.CheriCapNode`
         """
         node = CheriCapNode(cap)
         node.t_alloc = 0
@@ -301,6 +301,9 @@ class LeafCapPatchBuilder(PatchBuilder):
         self._keep_collection = np.empty((1,2,2))
         """Collection of elements in keep ranges"""
 
+        self._arrow_collection = []
+        """Collection of arrow coordinates"""
+
     def _build_patch(self, node_range, y):
         """
         Build patch for the given range and type and add it
@@ -314,10 +317,29 @@ class LeafCapPatchBuilder(PatchBuilder):
         else:
             raise ValueError("Invalid range type %s" % node_range.rtype)
 
+    def _build_provenance_arrow(self, src_node, dst_node):
+        """
+        Build an arrow that shows the source capability for a node
+        The arrow goes from the source to the child
+        """
+        src_x = (src_node.base + src_node.bound) / 2
+        src_y = src_node.t_alloc * self.y_unit
+        dst_x = (dst_node.base + dst_node.bound) / 2
+        dst_y = dst_node.t_alloc * self.y_unit
+        dx = dst_x - src_x
+        dy = dst_y - src_y
+        arrow = patches.FancyArrow(src_x, src_y, dx, dy,
+                                   fc="k",
+                                   ec="k",
+                                   head_length=0.0001,
+                                   head_width=0.0001,
+                                   width=0.00001)
+        # self._arrow_collection.append(arrow)
+
     def inspect(self, node):
-        if len(node) != 0:
-            # not a leaf in the provenance tree
-            return
+        # if len(node) != 0:
+        #     # not a leaf in the provenance tree
+        #     return
         if node.bound < node.base:
             logger.warning("Skip overflowed node %s", node)
             return
@@ -343,13 +365,17 @@ class LeafCapPatchBuilder(PatchBuilder):
             keep_range = Range(node.base, node.bound, Range.T_KEEP)
             self._update_regions(keep_range)
             self._build_patch(keep_range, node_y)
+        # build arrows
+        for child in node:
+            self._build_provenance_arrow(node, child)
 
     def get_patches(self):
         omit_patch = collections.LineCollection(self._omit_collection,
-                                                linestyle="dotted")
+                                                linestyle="solid")
         keep_patch = collections.LineCollection(self._keep_collection,
                                                 linestyle="solid")
-        return [omit_patch, keep_patch]
+        arrow_patch = collections.PatchCollection(self._arrow_collection)
+        return [omit_patch, keep_patch, arrow_patch]
 
 
 class PointerProvenancePlot(Plot):

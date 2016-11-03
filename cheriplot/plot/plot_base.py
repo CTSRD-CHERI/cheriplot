@@ -18,9 +18,6 @@ import logging
 
 from matplotlib import pyplot as plt
 
-from cheri_trace_parser.provenance_tree import (
-    PointerProvenanceParser, CachedProvenanceTree)
-
 logger = logging.getLogger(__name__)
 
 class Plot:
@@ -103,29 +100,4 @@ class Plot:
         self.build_dataset()
         fig = self.plot()
         plt.savefig(path)
-
-class ProvenanceTreePlot(Plot):
-
-    def build_dataset(self):
-        logger.debug("Generating provenance tree for %s", self.tracefile)
-        if self._caching:
-            fname = self._get_cache_file()
-            try:
-                self.dataset.load(fname)
-            except IOError:
-                self.parser.parse(self.dataset)
-                self.dataset.save(self._get_cache_file())
-        else:
-            self.parser.parse(self.tree)
-
-        errs = []
-        self.dataset.check_consistency(errs)
-        if len(errs) > 0:
-            logger.warning("Inconsistent provenance tree: %s", errs)
-
-    def init_dataset(self):
-        return CachedProvenanceTree()
-
-    def init_parser(self, dataset, tracefile):
-        return PointerProvenanceParser(tracefile)
         

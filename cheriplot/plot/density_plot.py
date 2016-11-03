@@ -24,10 +24,10 @@ import numpy as np
 import logging
 from matplotlib import pyplot as plt
 
-from cheri_trace_parser.utils import ProgressPrinter
-from cheri_trace_parser.core import RangeSet, Range
-from cheri_trace_parser.provenance_tree import (
-    PointerProvenanceParser, CachedProvenanceTree, CheriCapNode)
+from ..utils import ProgressPrinter
+from ..core import RangeSet, Range
+from ..provenance_tree import (PointerProvenanceParser,
+                               CachedProvenanceTree, CheriCapNode)
 
 logger = logging.getLogger(__name__)
 

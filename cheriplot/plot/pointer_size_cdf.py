@@ -22,9 +22,9 @@ import os
 from matplotlib import pyplot as plt
 from scipy import stats
 
-from cheri_trace_parser.utils import ProgressPrinter
-from cheri_trace_parser.core import CallbackTraceParser
-from cheri_trace_parser.plot import Plot
+from ..utils import ProgressPrinter
+from ..core import CallbackTraceParser
+from ..plot import Plot
 
 logger = logging.getLogger(__name__)
 

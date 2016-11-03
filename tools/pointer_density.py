@@ -25,8 +25,8 @@ import logging
 import cProfile
 import pstats
 
-from cheri_trace_parser.plot import PointerDensityPlot
-from cheri_trace_parser.core.tool import PlotTool
+from cheriplot.plot import PointerDensityPlot
+from cheriplot.core.tool import PlotTool
 
 logger = logging.getLogger(__name__)
 

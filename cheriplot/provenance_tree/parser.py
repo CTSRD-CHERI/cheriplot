@@ -26,13 +26,17 @@ import numpy as np
 
 from functools import reduce
 
-from cheri_trace_parser.core.parser import TraceParser
-from cheri_trace_parser.utils import ProgressPrinter
+from ..core.parser import TraceParser
+from ..utils import ProgressPrinter
 from .provenance_tree import CheriCapNode
 
 logger = logging.getLogger(__name__)
 
 class PointerProvenanceParser(TraceParser):
+    """
+    Parser that creates a provenance tree
+    XXX Deprecated
+    """
 
     def __init__(self, *args, **kwargs):
         super(PointerProvenanceParser, self).__init__(*args, **kwargs)

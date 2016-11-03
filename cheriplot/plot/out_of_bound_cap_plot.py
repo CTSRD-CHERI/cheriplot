@@ -24,9 +24,9 @@ from matplotlib.markers import MarkerStyle
 from matplotlib.transforms import Bbox, IdentityTransform
 from matplotlib.colors import colorConverter
 
-from cheri_trace_parser.utils import ProgressPrinter
-from cheri_trace_parser.core import RangeSet, Range, CallbackTraceParser
-from cheri_trace_parser.plot import Plot, PatchBuilder
+from ..utils import ProgressPrinter
+from ..core import RangeSet, Range, CallbackTraceParser
+from ..plot import Plot, PatchBuilder
 
 logger = logging.getLogger(__name__)
 

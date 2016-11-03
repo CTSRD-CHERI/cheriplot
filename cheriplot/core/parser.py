@@ -32,7 +32,7 @@ from itertools import repeat, chain
 from multiprocessing import RawValue, Process
 from ctypes import py_object
 
-from cheri_trace_parser.utils import ProgressPrinter
+from ..utils import ProgressPrinter
 
 logger = logging.getLogger(__name__)
 

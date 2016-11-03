@@ -21,8 +21,8 @@ import sys
 import argparse
 import logging
 
-from cheri_trace_parser.core.parser import CallbackTraceParser
-from cheri_trace_parser.core.tool import Tool
+from cheriplot.core.parser import CallbackTraceParser
+from cheriplot.core.tool import Tool
 
 logger = logging.getLogger(__name__)
 

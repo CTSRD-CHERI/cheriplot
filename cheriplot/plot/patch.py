@@ -19,7 +19,7 @@ import numpy as np
 
 from matplotlib import transforms
 
-from cheri_trace_parser.core import RangeSet, Range
+from ..core import RangeSet, Range
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class PatchBuilder:
         The behaviour is modified by :attr:`size_limit`
 
         :param node_range: Range specifying the new region
-        :type node_range: :class:`cheri_trace_parser.core.Range`
+        :type node_range: :class:`cheriplot.core.Range`
         """
         overlap = self.ranges.match_overlap_range(node_range)
         for r in overlap:
