@@ -24,6 +24,7 @@ from io import StringIO
 
 from matplotlib import pyplot as plt
 from matplotlib import lines, collections, transforms, patches
+from matplotlib.colors import colorConverter
 
 from ..utils import ProgressPrinter
 from ..core import RangeSet, Range
@@ -31,7 +32,8 @@ from ..core import RangeSet, Range
 from ..core import CallbackTraceParser, Instruction
 from ..plot import Plot, PatchBuilder
 from ..provenance_tree import (CachedProvenanceTree,
-                                                CheriCapNode)
+                               CAP_LOAD, CAP_STORE, CAP_EXEC,
+                               CheriCapNode)
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +154,9 @@ class PointerProvenanceParser(CallbackTraceParser):
         Whenever a capability instruction is found, update
         the mapping from capability register to the provenance
         tree node associated to the capability in it.
+        
+        XXX track ccall and creturn properly, also skip csX and clX
+        as we don't care
         """
         if not self.regs_valid:
             return False
@@ -172,14 +177,17 @@ class PointerProvenanceParser(CallbackTraceParser):
         try:
             node = self.regset.memory_map[entry.memory_address]
         except KeyError:
-            logger.debug("Load c%s from new location 0x%x, create root node",
+            logger.debug("Load c%s from new location 0x%x",
                          cd, entry.memory_address)
+            if not inst.cd.value.valid:
+                # can not create a node from the instruction value so finish
+                return False
             node = None
 
         if node is None:
             # add a node as a root node because we have never
             # seen the content of this register yet
-            node = self.make_root_node(cd, inst.cd.value)
+            node = self.make_root_node(cd, inst.cd.value, time=entry.cycles)
             logger.debug("Found %s value (missing in initial set) %s",
                          inst.cd.name, node)
         self.regset[cd] = node
@@ -208,7 +216,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         node.address[entry.cycles] = entry.memory_address
         return False
 
-    def make_root_node(self, idx, cap):
+    def make_root_node(self, idx, cap, time=0):
         """
         Create a root node of the provenance tree.
         The node is added to the tree and associated
@@ -223,7 +231,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         :rtype: :class:`cheriplot.provenance_tree.CheriCapNode`
         """
         node = CheriCapNode(cap)
-        node.t_alloc = 0
+        node.t_alloc = time
         self.dataset.append(node)
         self.regset.load(idx, node)
         return node
@@ -251,10 +259,6 @@ class PointerProvenanceParser(CallbackTraceParser):
             raise Exception("Missing parent for %s [%x, %x]" %
                             (node, src.base, src.length))
         parent.append(node)
-        # # check for loops, there should not be any
-        # if len(self.dataset.check_consistency([])) != 0:
-        #     logger.error("Inconsistent tree build parent @ %d: %s, node %s", entry.cycles, parent, node)
-        #     assert False, "Tree consistency violation"
         return node
 
     def update_regs(self, inst, entry, regs, last_regs):
@@ -267,7 +271,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         self.regset.move(cb.cap_index, cd.cap_index)
 
 
-class LeafCapPatchBuilder(PatchBuilder):
+class ColorCodePatchBuilder(PatchBuilder):
     """
     The patch generator build the matplotlib patches for each
     capability node and generates the ranges of address-space in
@@ -284,7 +288,7 @@ class LeafCapPatchBuilder(PatchBuilder):
     """
 
     def __init__(self):
-        super(LeafCapPatchBuilder, self).__init__()
+        super(ColorCodePatchBuilder, self).__init__()
 
         self.split_size = 2 * self.size_limit
         """
@@ -301,39 +305,66 @@ class LeafCapPatchBuilder(PatchBuilder):
         self._keep_collection = np.empty((1,2,2))
         """Collection of elements in keep ranges"""
 
+        self._collection_map = {
+            0: [],
+            CAP_LOAD: [],
+            CAP_STORE: [],
+            CAP_EXEC: [],
+            CAP_LOAD|CAP_STORE: [],
+            CAP_LOAD|CAP_EXEC: [],
+            CAP_STORE|CAP_EXEC: [],
+            CAP_STORE|CAP_LOAD|CAP_EXEC: []
+        }
+        """Map capability permission to the set where the line should go"""
+
+        self._colors = {
+            0: colorConverter.to_rgb("#bcbcbc"),
+            CAP_LOAD: colorConverter.to_rgb("k"),
+            CAP_STORE: colorConverter.to_rgb("y"),
+            CAP_EXEC: colorConverter.to_rgb("m"),
+            CAP_LOAD|CAP_STORE: colorConverter.to_rgb("c"),
+            CAP_LOAD|CAP_EXEC: colorConverter.to_rgb("b"),
+            CAP_STORE|CAP_EXEC: colorConverter.to_rgb("g"),
+            CAP_STORE|CAP_LOAD|CAP_EXEC: colorConverter.to_rgb("r")
+        }
+        """Map capability permission to line colors"""
+
+        self._patches = None
+        """List of enerated patches"""
+
         self._arrow_collection = []
         """Collection of arrow coordinates"""
 
-    def _build_patch(self, node_range, y):
+    def _build_patch(self, node_range, y, perms):
         """
         Build patch for the given range and type and add it
         to the patch collection for drawing
         """
-        line = [[(node_range.start, y), (node_range.end, y)]]
-        if node_range.rtype == Range.T_KEEP:
-            self._keep_collection = np.append(self._keep_collection, line, axis=0)
-        elif node_range.rtype == Range.T_OMIT:
-            self._omit_collection = np.append(self._omit_collection, line, axis=0)
-        else:
-            raise ValueError("Invalid range type %s" % node_range.rtype)
+        line = [(node_range.start, y), (node_range.end, y)]
+
+        if perms is None:
+            perms = 0
+        rwx_perm = perms & (CAP_LOAD|CAP_STORE|CAP_EXEC)
+        self._collection_map[rwx_perm].append(line)
 
     def _build_provenance_arrow(self, src_node, dst_node):
         """
         Build an arrow that shows the source capability for a node
         The arrow goes from the source to the child
         """
-        src_x = (src_node.base + src_node.bound) / 2
-        src_y = src_node.t_alloc * self.y_unit
-        dst_x = (dst_node.base + dst_node.bound) / 2
-        dst_y = dst_node.t_alloc * self.y_unit
-        dx = dst_x - src_x
-        dy = dst_y - src_y
-        arrow = patches.FancyArrow(src_x, src_y, dx, dy,
-                                   fc="k",
-                                   ec="k",
-                                   head_length=0.0001,
-                                   head_width=0.0001,
-                                   width=0.00001)
+        return
+        # src_x = (src_node.base + src_node.bound) / 2
+        # src_y = src_node.t_alloc * self.y_unit
+        # dst_x = (dst_node.base + dst_node.bound) / 2
+        # dst_y = dst_node.t_alloc * self.y_unit
+        # dx = dst_x - src_x
+        # dy = dst_y - src_y
+        # arrow = patches.FancyArrow(src_x, src_y, dx, dy,
+        #                            fc="k",
+        #                            ec="k",
+        #                            head_length=0.0001,
+        #                            head_width=0.0001,
+        #                            width=0.00001)
         # self._arrow_collection.append(arrow)
 
     def inspect(self, node):
@@ -348,34 +379,55 @@ class LeafCapPatchBuilder(PatchBuilder):
                                                 node.bound, node_y)
 
         self._bbox = transforms.Bbox.union([self._bbox, node_box])
+        keep_range = Range(node.base, node.bound, Range.T_KEEP)
+        
         if node.length > self.split_size:
             l_range = Range(node.base, node.base + self.size_limit,
                             Range.T_KEEP)
             r_range = Range(node.bound - self.size_limit, node.bound,
                             Range.T_KEEP)
-            omit_range = Range(node.base + self.size_limit,
-                               node.bound - self.size_limit,
-                               Range.T_OMIT)
             self._update_regions(l_range)
             self._update_regions(r_range)
-            self._build_patch(l_range, node_y)
-            self._build_patch(r_range, node_y)
-            self._build_patch(omit_range, node_y)
         else:
-            keep_range = Range(node.base, node.bound, Range.T_KEEP)
             self._update_regions(keep_range)
-            self._build_patch(keep_range, node_y)
-        # build arrows
-        for child in node:
-            self._build_provenance_arrow(node, child)
+
+        self._build_patch(keep_range, node_y, node.permissions)
+        
+        #invalidate collections
+        self._patches = None
+        
+        # # build arrows
+        # for child in node:
+        #     self._build_provenance_arrow(node, child)
 
     def get_patches(self):
-        omit_patch = collections.LineCollection(self._omit_collection,
-                                                linestyle="solid")
-        keep_patch = collections.LineCollection(self._keep_collection,
-                                                linestyle="solid")
-        arrow_patch = collections.PatchCollection(self._arrow_collection)
-        return [omit_patch, keep_patch, arrow_patch]
+        if self._patches:
+            return self._patches
+        self._patches = []
+        for perm, collection in self._collection_map.items():
+            coll = collections.LineCollection(collection,
+                                              colors=[self._colors[perm]],
+                                              linestyle="solid")
+            self._patches.append(coll)
+        return self._patches
+
+    def get_legend(self):
+        if not self._patches:
+            self.get_patches()
+        legend = ([], [])
+        for patch, perm in zip(self._patches, self._collection_map.keys()):
+            legend[0].append(patch)
+            perm_string = ""
+            if perm & CAP_LOAD:
+                perm_string += "R"
+            if perm & CAP_STORE:
+                perm_string += "W"
+            if perm & CAP_EXEC:
+                perm_string += "X"
+            if perm_string == "":
+                perm_string = "None"
+            legend[1].append(perm_string)
+        return legend
 
 
 class PointerProvenancePlot(Plot):
@@ -387,7 +439,7 @@ class PointerProvenancePlot(Plot):
     def __init__(self, tracefile):
         super(PointerProvenancePlot, self).__init__(tracefile)
 
-        self.patch_builder = LeafCapPatchBuilder()
+        self.patch_builder = ColorCodePatchBuilder()
         """Strategy object that builds the plot components"""
 
     def init_parser(self, dataset, tracefile):
@@ -477,6 +529,7 @@ class PointerProvenancePlot(Plot):
             self.patch_builder.inspect(item)
             dataset_progress.advance()
         dataset_progress.finish()
+        logger.debug("Nodes %d, ranges %d", len(self.dataset), len(self.patch_builder.ranges))
 
         for collection in self.patch_builder.get_patches():
             ax.add_collection(collection)
@@ -492,6 +545,7 @@ class PointerProvenancePlot(Plot):
         logger.debug("Y limits: (%d, %d)", ymin, ymax)
         ax.set_ylim(ymin, ymax * 1.02)
         ax.invert_yaxis()
+        ax.legend(*self.patch_builder.get_legend(), loc="best")
 
         logger.debug("Plot build completed")
         return fig

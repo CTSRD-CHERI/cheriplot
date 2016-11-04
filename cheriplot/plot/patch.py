@@ -136,3 +136,12 @@ class PatchBuilder:
         :rtype: :class:`matplotlib.transforms.Bbox`
         """
         return self._bbox
+
+    def get_legend(self):
+        """
+        Generate legend for the patches produced
+        
+        :return: a 2-tuple that can be used as Axes.legend arguments
+        :rtype: tuple
+        """
+        return None

@@ -192,10 +192,21 @@ class AddressSpaceScale(scale.ScaleBase):
             """
             trans = self.scale.transform
             ranges = trans.target_ranges
+            trans = self.scale.get_transform()
             values = []
             for r in ranges:
                 if r.rtype == Range.T_KEEP:
+                    if len(values) > 0:
+                        prev = trans.transform((values[-1], 0))[0]
+                        curr = trans.transform((r.start, 0))[0]
+                        # XXX 2**12 is an empiric value we should use
+                        # the bounding box of the label but there is no
+                        # easy way to get it from here
+                        if curr - prev < 2**12:
+                            # skip tick if they end up too close
+                            continue
                     values.append(r.start)
+                    
             return values
 
 
@@ -322,7 +333,6 @@ class AddressSpaceAxes(axes.Axes):
         - rename to a more meaningful name
         - only take the omit range list, the other list is never used
         """
-        logger.debug("_filter %s", target_range)
         if len(other_list.match_overlap_range(target_range)):
             raise ValueError("Range %s is present in another filter" %
                              target_range)
