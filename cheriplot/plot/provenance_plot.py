@@ -33,7 +33,9 @@ from ..core import CallbackTraceParser, Instruction
 from ..plot import Plot, PatchBuilder
 from ..provenance_tree import (CachedProvenanceTree,
                                CAP_LOAD, CAP_STORE, CAP_EXEC,
-                               CheriCapNode)
+                               CheriCapNode, CheriCapNodeNX)
+
+import networkx as nx
 
 logger = logging.getLogger(__name__)
 
@@ -230,9 +232,10 @@ class PointerProvenanceParser(CallbackTraceParser):
         :return: the newly created node
         :rtype: :class:`cheriplot.provenance_tree.CheriCapNode`
         """
-        node = CheriCapNode(cap)
+        node = CheriCapNodeNX(cap)
         node.t_alloc = time
-        self.dataset.append(node)
+        # self.dataset.append(node)
+        self.dataset.add_node(node)
         self.regset.load(idx, node)
         return node
 
@@ -242,7 +245,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         The parent is fetched from the register set depending on the source
         registers of the current instruction.
         """
-        node = CheriCapNode(inst.cd.value)
+        node = CheriCapNodeNX(inst.cd.value)
         node.t_alloc = entry.cycles
         node.pc = entry.pc
         node.is_kernel = entry.is_kernel()
@@ -258,7 +261,9 @@ class PointerProvenanceParser(CallbackTraceParser):
                          entry.capreg_number(), src.base, src.length)
             raise Exception("Missing parent for %s [%x, %x]" %
                             (node, src.base, src.length))
-        parent.append(node)
+        self.dataset.add_node(node)
+        self.dataset.add_edge(parent, node)
+        # parent.append(node)
         return node
 
     def update_regs(self, inst, entry, regs, last_regs):
@@ -446,7 +451,8 @@ class PointerProvenancePlot(Plot):
         return PointerProvenanceParser(dataset, tracefile)
 
     def init_dataset(self):
-        return CachedProvenanceTree()
+        return nx.DiGraph()
+        # return CachedProvenanceTree()
 
     def _get_cache_file(self):
         return self.tracefile + self.__class__.__name__ + ".cache"
@@ -463,56 +469,95 @@ class PointerProvenancePlot(Plot):
             if self._caching:
                 fname = self._get_cache_file()
                 try:
-                    self.dataset.load(fname)
+                    self.dataset = nx.read_gpickle(fname)
+                    # self.dataset.load(fname)
                 except IOError:
                     self.parser.parse()
-                    self.dataset.save(self._get_cache_file())
+                    nx.write_gpickle(self.dataset, self._get_cache_file())
+                    # self.dataset.save(self._get_cache_file())
             else:
                 self.parser.parse()
         except Exception as e:
             logger.error("Error while generating provenance tree %s", e)
             raise
 
-        errs = []
-        self.dataset.check_consistency(errs)
-        if len(errs) > 0:
-            logger.warning("Inconsistent provenance tree: %s", errs)
+        # errs = []
+        # self.dataset.check_consistency(errs)
+        # if len(errs) > 0:
+        #     logger.warning("Inconsistent provenance tree: %s", errs)
 
-        num_nodes = len(self.dataset)
+        # num_nodes = len(self.dataset)
+        num_nodes = self.dataset.number_of_nodes()
         logger.debug("Total nodes %d", num_nodes)
         progress = ProgressPrinter(num_nodes, desc="Remove kernel nodes")
-        def remove_nodes(node):
-            """
-            remove null capabilities
-            remove operations in kernel mode
-            """
+        
+        for node in self.dataset.nodes():
+            # remove null capabilities
+            # remove operations in kernel mode
             if (node.offset >= 0xFFFFFFFF0000000 or
                 (node.length == 0 and node.base == 0)):
-                # XXX should we only check the length?
-                node.selfremove()
+
+                # XXX should we remove the whole subtree?
+                self.dataset.remove_node(node)
             progress.advance()
-        self.dataset.visit(remove_nodes)
+            
+        # def remove_nodes(node):
+        #     """
+        #     remove null capabilities
+        #     remove operations in kernel mode
+        #     """
+        #     if (node.offset >= 0xFFFFFFFF0000000 or
+        #         (node.length == 0 and node.base == 0)):
+        #         # XXX should we only check the length?
+        #         node.selfremove()
+        #     progress.advance()
+        # self.dataset.visit(remove_nodes)
         progress.finish()
 
-        num_nodes = len(self.dataset)
+        # num_nodes = len(self.dataset)
+        num_nodes = self.dataset.number_of_nodes()
         logger.debug("Filtered kernel nodes, remaining %d", num_nodes)
         progress = ProgressPrinter(num_nodes, desc="Merge (cfromptr + csetbounds) sequences")
-        def merge_setbounds(node):
-            """
-            merge cfromptr -> csetbounds subtrees
-            """
-            if (node.parent.origin == CheriCapNode.C_FROMPTR and
+
+        for node in self.dataset.nodes():
+            # merge cfromptr -> csetbounds subtrees
+            if not self.dataset.has_node(node):
+                # node removed
+                continue
+            if len(self.dataset.predecessors(node)) == 0:
+                continue
+            parent = self.dataset.predecessors(node)[0]
+            if (parent.origin == CheriCapNode.C_FROMPTR and
                 node.origin == CheriCapNode.C_SETBOUNDS and
-                len(node.parent.children) == 1):
+                len(self.dataset.successors(parent)) == 1):
                 # the child must be unique to avoid complex logic
                 # when merging, it may be desirable to do so with
                 # more complex traces
                 node.origin = CheriCapNode.C_PTR_SETBOUNDS
-                grandpa = node.parent.parent
-                node.parent.selfremove()
-                grandpa.append(node)
+                if len(self.dataset.predecessors(parent)) > 0:
+                    new_parent = self.dataset.predecessors(parent)[0]
+                    self.dataset.remove_node(parent)
+                    self.dataset.add_edge(new_parent, node)
+                else:
+                    self.dataset.remove_node(parent)                    
             progress.advance()
-        self.dataset.visit(merge_setbounds)
+            
+        # def merge_setbounds(node):
+        #     """
+        #     merge cfromptr -> csetbounds subtrees
+        #     """
+        #     if (node.parent.origin == CheriCapNode.C_FROMPTR and
+        #         node.origin == CheriCapNode.C_SETBOUNDS and
+        #         len(node.parent.children) == 1):
+        #         # the child must be unique to avoid complex logic
+        #         # when merging, it may be desirable to do so with
+        #         # more complex traces
+        #         node.origin = CheriCapNode.C_PTR_SETBOUNDS
+        #         grandpa = node.parent.parent
+        #         node.parent.selfremove()
+        #         grandpa.append(node)
+        #     progress.advance()
+        # self.dataset.visit(merge_setbounds)
         progress.finish()
 
     def plot(self):
@@ -520,16 +565,21 @@ class PointerProvenancePlot(Plot):
         Create the provenance plot and return the figure
         """
 
+        nx.draw(self.dataset)
+        plt.show()
+        
         fig = plt.figure(figsize=(15,10))
         ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
                           projection="custom_addrspace")
 
-        dataset_progress = ProgressPrinter(len(self.dataset), desc="Adding nodes")
-        for item in self.dataset:
+        dataset_progress = ProgressPrinter(self.dataset.number_of_nodes(),
+                                           desc="Adding nodes")
+        for item in self.dataset.nodes():
             self.patch_builder.inspect(item)
             dataset_progress.advance()
         dataset_progress.finish()
-        logger.debug("Nodes %d, ranges %d", len(self.dataset), len(self.patch_builder.ranges))
+        logger.debug("Nodes %d, ranges %d", self.dataset.number_of_nodes(),
+                     len(self.patch_builder.ranges))
 
         for collection in self.patch_builder.get_patches():
             ax.add_collection(collection)

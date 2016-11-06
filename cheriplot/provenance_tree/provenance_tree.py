@@ -32,6 +32,10 @@ from operator import attrgetter
 from io import StringIO
 from functools import reduce
 
+# networkx test
+import networkx as nx
+# end
+
 logger = logging.getLogger(__name__)
 
 # permission bits
@@ -255,3 +259,83 @@ class CachedProvenanceTree(ProvenanceTree):
         with open(cache_file, "rb") as fd:
             self.__dict__.update(pickle.load(fd).__dict__)
         logger.info("Using cached provenance tree %s", cache_file)
+
+
+# networkx implementation
+
+class CheriCapNodeNX:
+    """
+    Capability pointer node in the provenance tree
+    """
+
+    # instruction that was parsed to create the node
+    UNKNOWN = -1
+    C_SETBOUNDS = 1
+    C_FROMPTR = 2
+    C_PTR_SETBOUNDS = 3
+
+    MAX_ADDR = 0xffffffffffffffff
+
+    def __init__(self, cr=None):
+        self.address = {}
+        self.base = None
+        self.length = None
+        self.offset = None
+        self.permissions = None
+        self.origin = self.UNKNOWN
+        self.valid = False
+        self.pc = None
+        self.is_kernel = False
+
+        if cr:
+            self.base = cr.base
+            self.length = cr.length
+            self.offset = cr.offset
+            self.permissions = cr.permissions
+            self.valid = cr.valid
+
+        # allocation and deallocation time (if any)
+        self.t_alloc = -1
+        self.t_free = -1
+
+    @property
+    def bound(self):
+        """
+        convenience property to get base + length
+        """
+        if (self.base is not None and self.length is not None):
+            return (self.base + self.length) % self.MAX_ADDR
+        return None
+
+    def __hash__(self):
+        return (hash(self.base) ^ hash(self.length) ^
+                hash(self.offset) ^ hash(self.pc) ^
+                hash(self.t_alloc))
+
+    # def __str__(self):
+    #     return self.to_str()
+
+    # def to_str(self, nest=0):
+    #     dump = StringIO()
+    #     addr = self.address if self.address is not None else {}
+    #     base = self.base if self.base is not None else 0
+    #     leng = self.length if self.length is not None else 0
+    #     off = self.offset if self.offset is not None else 0
+    #     pad = "    " * nest
+    #     rwx = ["-", "-", "-"]
+    #     if self.permissions is not None:
+    #         if self.permissions & CAP_LOAD:
+    #             rwx[0] = "r"
+    #         if self.permissions & CAP_STORE:
+    #             rwx[1] = "w"
+    #         if self.permissions & CAP_EXEC:
+    #             rwx[2] = "x"
+    #     dump.write("%s[%u @ %s <- b:%x o:%x l:%x p:%s from:%d]" %
+    #                (pad, self.t_alloc, addr, base, off, leng, "".join(rwx),
+    #                 self.origin))
+    #     dump.write("(\n")
+    #     for child in self.children:
+    #         dump.write(child.to_str(nest + 1))
+    #         dump.write(",\n")
+    #     dump.write("%s)" % pad)
+    #     return dump.getvalue()
