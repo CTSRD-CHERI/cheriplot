@@ -31,9 +31,7 @@ from ..core import RangeSet, Range
 
 from ..core import CallbackTraceParser, Instruction
 from ..plot import Plot, PatchBuilder
-from ..provenance_tree import (CachedProvenanceTree,
-                               CAP_LOAD, CAP_STORE, CAP_EXEC,
-                               CheriCapNode, CheriCapNodeNX)
+from ..provenance_tree import CheriCapPerm, CheriCapNodeNX
 
 import networkx as nx
 
@@ -125,6 +123,12 @@ class PointerProvenanceParser(CallbackTraceParser):
                     node.offset = 0
                     node.length = 0xffffffffffffffff
                     logger.warning("Guessing KDC %s", node)
+        # XXX we should see here the EPCC being moved to PCC
+        # but it is probably not stored in the trace so we take
+        # csetoffset to $c31 (EPCC) update in the instruction
+        # before this.
+        # logger.debug("EPCC b:%x l:%x o:%x", regs.cap_reg[31].base,
+        #              regs.cap_reg[31].length, regs.cap_reg[31].offset)
         return False
 
     def scan_csetbounds(self, inst, entry, regs, last_regs, idx):
@@ -135,7 +139,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         if not self.regs_valid:
             return False
         node = self.make_node(entry, inst)
-        node.origin = CheriCapNode.C_SETBOUNDS
+        node.origin = CheriCapNodeNX.C_SETBOUNDS
         self.regset.load(inst.cd.cap_index, node) # XXX scan_cap
         return False
 
@@ -147,7 +151,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         if not self.regs_valid:
             return False
         node = self.make_node(entry, inst)
-        node.origin = CheriCapNode.C_FROMPTR
+        node.origin = CheriCapNodeNX.C_FROMPTR
         self.regset.load(inst.cd.cap_index, node) # XXX scan_cap
         return False
 
@@ -156,7 +160,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         Whenever a capability instruction is found, update
         the mapping from capability register to the provenance
         tree node associated to the capability in it.
-        
+
         XXX track ccall and creturn properly, also skip csX and clX
         as we don't care
         """
@@ -310,27 +314,35 @@ class ColorCodePatchBuilder(PatchBuilder):
         self._keep_collection = np.empty((1,2,2))
         """Collection of elements in keep ranges"""
 
+        # permission composition shorthands
+        load_store = CheriCapPerm.LOAD | CheriCapPerm.STORE
+        load_exec = CheriCapPerm.LOAD | CheriCapPerm.EXEC
+        store_exec = CheriCapPerm.STORE | CheriCapPerm.EXEC
+        load_store_exec = (CheriCapPerm.STORE |
+                           CheriCapPerm.LOAD |
+                           CheriCapPerm.EXEC)
+
         self._collection_map = {
             0: [],
-            CAP_LOAD: [],
-            CAP_STORE: [],
-            CAP_EXEC: [],
-            CAP_LOAD|CAP_STORE: [],
-            CAP_LOAD|CAP_EXEC: [],
-            CAP_STORE|CAP_EXEC: [],
-            CAP_STORE|CAP_LOAD|CAP_EXEC: []
+            CheriCapPerm.LOAD: [],
+            CheriCapPerm.STORE: [],
+            CheriCapPerm.EXEC: [],
+            load_store: [],
+            load_exec: [],
+            store_exec: [],
+            load_store_exec: []
         }
         """Map capability permission to the set where the line should go"""
 
         self._colors = {
             0: colorConverter.to_rgb("#bcbcbc"),
-            CAP_LOAD: colorConverter.to_rgb("k"),
-            CAP_STORE: colorConverter.to_rgb("y"),
-            CAP_EXEC: colorConverter.to_rgb("m"),
-            CAP_LOAD|CAP_STORE: colorConverter.to_rgb("c"),
-            CAP_LOAD|CAP_EXEC: colorConverter.to_rgb("b"),
-            CAP_STORE|CAP_EXEC: colorConverter.to_rgb("g"),
-            CAP_STORE|CAP_LOAD|CAP_EXEC: colorConverter.to_rgb("r")
+            CheriCapPerm.LOAD: colorConverter.to_rgb("k"),
+            CheriCapPerm.STORE: colorConverter.to_rgb("y"),
+            CheriCapPerm.EXEC: colorConverter.to_rgb("m"),
+            load_store: colorConverter.to_rgb("c"),
+            load_exec: colorConverter.to_rgb("b"),
+            store_exec: colorConverter.to_rgb("g"),
+            load_store_exec: colorConverter.to_rgb("r")
         }
         """Map capability permission to line colors"""
 
@@ -349,7 +361,9 @@ class ColorCodePatchBuilder(PatchBuilder):
 
         if perms is None:
             perms = 0
-        rwx_perm = perms & (CAP_LOAD|CAP_STORE|CAP_EXEC)
+        rwx_perm = perms & (CheriCapPerm.LOAD |
+                            CheriCapPerm.STORE |
+                            CheriCapPerm.EXEC)
         self._collection_map[rwx_perm].append(line)
 
     def _build_provenance_arrow(self, src_node, dst_node):
@@ -385,7 +399,7 @@ class ColorCodePatchBuilder(PatchBuilder):
 
         self._bbox = transforms.Bbox.union([self._bbox, node_box])
         keep_range = Range(node.base, node.bound, Range.T_KEEP)
-        
+
         if node.length > self.split_size:
             l_range = Range(node.base, node.base + self.size_limit,
                             Range.T_KEEP)
@@ -397,10 +411,10 @@ class ColorCodePatchBuilder(PatchBuilder):
             self._update_regions(keep_range)
 
         self._build_patch(keep_range, node_y, node.permissions)
-        
+
         #invalidate collections
         self._patches = None
-        
+
         # # build arrows
         # for child in node:
         #     self._build_provenance_arrow(node, child)
@@ -423,11 +437,11 @@ class ColorCodePatchBuilder(PatchBuilder):
         for patch, perm in zip(self._patches, self._collection_map.keys()):
             legend[0].append(patch)
             perm_string = ""
-            if perm & CAP_LOAD:
+            if perm & CheriCapPerm.LOAD:
                 perm_string += "R"
-            if perm & CAP_STORE:
+            if perm & CheriCapPerm.STORE:
                 perm_string += "W"
-            if perm & CAP_EXEC:
+            if perm & CheriCapPerm.EXEC:
                 perm_string += "X"
             if perm_string == "":
                 perm_string = "None"
@@ -437,8 +451,7 @@ class ColorCodePatchBuilder(PatchBuilder):
 
 class PointerProvenancePlot(Plot):
     """
-    Plot the provenance tree showing the time of allocation vs 
-    base and bound of each node.
+    Base class for plots using the pointer provenance graph
     """
 
     def __init__(self, tracefile):
@@ -452,13 +465,9 @@ class PointerProvenancePlot(Plot):
 
     def init_dataset(self):
         return nx.DiGraph()
-        # return CachedProvenanceTree()
 
     def _get_cache_file(self):
-        return self.tracefile + self.__class__.__name__ + ".cache"
-
-    def _get_plot_file(self):
-        return self.tracefile + ".png"
+        return self.tracefile + "_provenance_plot.cache"
 
     def build_dataset(self):
         """
@@ -485,36 +494,20 @@ class PointerProvenancePlot(Plot):
         # self.dataset.check_consistency(errs)
         # if len(errs) > 0:
         #     logger.warning("Inconsistent provenance tree: %s", errs)
-
-        # num_nodes = len(self.dataset)
         num_nodes = self.dataset.number_of_nodes()
         logger.debug("Total nodes %d", num_nodes)
         progress = ProgressPrinter(num_nodes, desc="Remove kernel nodes")
-        
+
         for node in self.dataset.nodes():
             # remove null capabilities
             # remove operations in kernel mode
             if (node.offset >= 0xFFFFFFFF0000000 or
                 (node.length == 0 and node.base == 0)):
-
                 # XXX should we remove the whole subtree?
                 self.dataset.remove_node(node)
             progress.advance()
-            
-        # def remove_nodes(node):
-        #     """
-        #     remove null capabilities
-        #     remove operations in kernel mode
-        #     """
-        #     if (node.offset >= 0xFFFFFFFF0000000 or
-        #         (node.length == 0 and node.base == 0)):
-        #         # XXX should we only check the length?
-        #         node.selfremove()
-        #     progress.advance()
-        # self.dataset.visit(remove_nodes)
         progress.finish()
 
-        # num_nodes = len(self.dataset)
         num_nodes = self.dataset.number_of_nodes()
         logger.debug("Filtered kernel nodes, remaining %d", num_nodes)
         progress = ProgressPrinter(num_nodes, desc="Merge (cfromptr + csetbounds) sequences")
@@ -527,47 +520,51 @@ class PointerProvenancePlot(Plot):
             if len(self.dataset.predecessors(node)) == 0:
                 continue
             parent = self.dataset.predecessors(node)[0]
-            if (parent.origin == CheriCapNode.C_FROMPTR and
-                node.origin == CheriCapNode.C_SETBOUNDS and
+            if (parent.origin == CheriCapNodeNX.C_FROMPTR and
+                node.origin == CheriCapNodeNX.C_SETBOUNDS and
                 len(self.dataset.successors(parent)) == 1):
                 # the child must be unique to avoid complex logic
                 # when merging, it may be desirable to do so with
                 # more complex traces
-                node.origin = CheriCapNode.C_PTR_SETBOUNDS
+                node.origin = CheriCapNodeNX.C_PTR_SETBOUNDS
                 if len(self.dataset.predecessors(parent)) > 0:
                     new_parent = self.dataset.predecessors(parent)[0]
                     self.dataset.remove_node(parent)
                     self.dataset.add_edge(new_parent, node)
                 else:
-                    self.dataset.remove_node(parent)                    
+                    self.dataset.remove_node(parent)
             progress.advance()
-            
-        # def merge_setbounds(node):
-        #     """
-        #     merge cfromptr -> csetbounds subtrees
-        #     """
-        #     if (node.parent.origin == CheriCapNode.C_FROMPTR and
-        #         node.origin == CheriCapNode.C_SETBOUNDS and
-        #         len(node.parent.children) == 1):
-        #         # the child must be unique to avoid complex logic
-        #         # when merging, it may be desirable to do so with
-        #         # more complex traces
-        #         node.origin = CheriCapNode.C_PTR_SETBOUNDS
-        #         grandpa = node.parent.parent
-        #         node.parent.selfremove()
-        #         grandpa.append(node)
-        #     progress.advance()
-        # self.dataset.visit(merge_setbounds)
         progress.finish()
+
+        # # suppress cfromptr
+        # for node in self.dataset.nodes():
+        #     if node.origin == CheriCapNodeNX.C_FROMPTR:
+        #         self.dataset.remove_node(node)
+
+        for node in self.dataset.nodes():
+            if node.length > 2**20:
+                logger.debug("Large node %s", node)
+
+        assert len(self.dataset.nodes()) == len(set(self.dataset.nodes())), "Duplicate nodes"
+
+
+class AddressMapPlot(PointerProvenancePlot):
+    """
+    Plot the provenance tree showing the time of allocation vs 
+    base and bound of each node.
+    """
+
+    def __init__(self, tracefile):
+        super(AddressMapPlot, self).__init__(tracefile)
+
+        self.patch_builder = ColorCodePatchBuilder()
+        """Strategy object that builds the plot components"""
 
     def plot(self):
         """
         Create the provenance plot and return the figure
         """
 
-        nx.draw(self.dataset)
-        plt.show()
-        
         fig = plt.figure(figsize=(15,10))
         ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
                           projection="custom_addrspace")
@@ -596,6 +593,67 @@ class PointerProvenancePlot(Plot):
         ax.set_ylim(ymin, ymax * 1.02)
         ax.invert_yaxis()
         ax.legend(*self.patch_builder.get_legend(), loc="best")
+        ax.set_xlabel("Virtual Address")
+        ax.set_ylabel("Time (millions of cycles)")
 
         logger.debug("Plot build completed")
+        plt.savefig(self._get_plot_file())
         return fig
+
+
+class PointerTreePlot(PointerProvenancePlot):
+    """
+    Plot the pointer tree
+    """
+
+    # def _plot_subtree(self, nodes):
+    #     pos = nx.spring_layout(nodes)
+    #     nx.draw_networkx_nodes(self.dataset, pos)
+    #     nx.draw_networkx_edges(self.dataset, pos)
+
+    #     labels = {}
+    #     for node in self.dataset.nodes():
+    #         labels[node] = "0x%x" % node.length
+    #     nx.draw_networkx_labels(self.dataset, pos, labels, font_size=5)
+
+    #     plt.axis("off")
+    #     plt.savefig(self._get_plot_file())
+
+    def plot(self):
+
+        # roots = []
+
+        # for node in self.dataset.nodes():
+        #     if self.dataset.in_degree(node) == 0:
+        #         roots.append(node)
+
+        # max_root = roots[0]
+        # for root in roots:
+        #     if len(self.dataset.successors)
+
+        pos = nx.spring_layout(self.dataset)
+
+        node_sizes = np.array([n.length for n in self.dataset.nodes()])
+        # normalize in the range min_size, max_size
+        min_size = 100
+        max_size = 300
+        node_min = np.min(node_sizes) or 1
+        node_max = np.max(node_sizes)
+        b = (node_min * max_size - min_size * node_max) / (node_min - node_max)
+        a = (min_size - b) / node_min
+        node_sizes = a * node_sizes + b
+
+        logger.warning(node_sizes)
+
+        nx.draw_networkx_nodes(self.dataset, pos,
+                               node_size=400,
+                               node_color="lightblue")
+        nx.draw_networkx_edges(self.dataset, pos)
+
+        # labels = {}
+        # for node in self.dataset.nodes():
+        #     labels[node] = "0x%x" % node.length
+        # nx.draw_networkx_labels(self.dataset, pos, labels, font_size=5)
+
+        plt.axis("off")
+        plt.savefig(self._get_plot_file())

@@ -28,13 +28,13 @@ definetely be considered for tag distribution in memory.
 import pickle
 import logging
 
+from enum import IntEnum
 from operator import attrgetter
 from io import StringIO
 from functools import reduce
 
-# networkx test
 import networkx as nx
-# end
+
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +263,22 @@ class CachedProvenanceTree(ProvenanceTree):
 
 # networkx implementation
 
+class CheriCapPerm(IntEnum):
+    """
+    Bitmask for the permission bits
+    """
+
+    GLOBAL = 1
+    EXEC = 1 << 1
+    LOAD = 1 << 2
+    STORE = 1 << 3
+    CAP_LOAD = 1 << 4
+    CAP_STORE = 1 << 5
+    CAP_STORE_LOCAL = 1 << 6
+    SEAL = 1 << 7
+    SYSTEM_REGISTERS = 1 << 10
+
+
 class CheriCapNodeNX:
     """
     Capability pointer node in the provenance tree
@@ -312,30 +328,74 @@ class CheriCapNodeNX:
                 hash(self.offset) ^ hash(self.pc) ^
                 hash(self.t_alloc))
 
-    # def __str__(self):
-    #     return self.to_str()
+    def __str__(self):
+        addr = self.address if self.address is not None else {}
+        base = self.base if self.base is not None else 0
+        leng = self.length if self.length is not None else 0
+        off = self.offset if self.offset is not None else 0
+        perms = self.str_perm()
+        return "[%u: b:%x o:%x l:%x p:%s v:%s]" % (
+            self.t_alloc, base, off, leng, perms, self.valid)
 
-    # def to_str(self, nest=0):
-    #     dump = StringIO()
-    #     addr = self.address if self.address is not None else {}
-    #     base = self.base if self.base is not None else 0
-    #     leng = self.length if self.length is not None else 0
-    #     off = self.offset if self.offset is not None else 0
-    #     pad = "    " * nest
-    #     rwx = ["-", "-", "-"]
-    #     if self.permissions is not None:
-    #         if self.permissions & CAP_LOAD:
-    #             rwx[0] = "r"
-    #         if self.permissions & CAP_STORE:
-    #             rwx[1] = "w"
-    #         if self.permissions & CAP_EXEC:
-    #             rwx[2] = "x"
-    #     dump.write("%s[%u @ %s <- b:%x o:%x l:%x p:%s from:%d]" %
-    #                (pad, self.t_alloc, addr, base, off, leng, "".join(rwx),
-    #                 self.origin))
-    #     dump.write("(\n")
-    #     for child in self.children:
-    #         dump.write(child.to_str(nest + 1))
-    #         dump.write(",\n")
-    #     dump.write("%s)" % pad)
-    #     return dump.getvalue()
+    def has_perm(self, perm):
+        """
+        Check whether the node has the given permission bit set
+
+        :param perm: permission bit
+        :type perm: :class:`.CheriCapPerm`
+        :return: True or False
+        :rtype: bool
+        """
+        if self.permissions & perm:
+            return True
+        return False
+
+    def str_perm(self):
+        """
+        Convert permission bitmask to human readable list of flags
+
+        :return: string containing the names of the set permission bits
+        :rtype: string
+        """
+        perm_string = ""
+        if self.permissions:
+            for perm in CheriCapPerm:
+                if self.permissions & perm.value:
+                    if perm_string:
+                        perm_string += " "
+                    perm_string += perm.name
+        if not perm_string:
+            perm_string = "None"
+        return perm_string
+
+
+def tree_layout(G, nlist=None):
+    """
+    Position nodes in trees.
+
+    Reingold-tilford for networkx
+
+    G must be a directed graph, root nodes are the nodes
+    that have no inbound edges
+
+    :param G: networkx DiGraph
+    :type G: :class:`networkx.DiGraph`
+    :param nlist: list of nodes
+    :type nlist: list
+    :return: dictionary of positions keyed by node
+    :rtype: dict
+
+    XXX this should be moved in the plot or core module
+    """
+
+    # grab root nodes
+    roots = []
+    pos = {}
+    if nlist is None:
+        nlist = G.nodes()
+
+    for node in nlist:
+        if G.in_degree(node) == 0:
+            roots.append(node)
+
+    return pos

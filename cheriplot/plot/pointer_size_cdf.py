@@ -73,6 +73,10 @@ class PointerSizeCdfPlot(Plot):
             prefix += name
         return prefix + self.__class__.__name__ + ".cache"
 
+    def _get_plot_file(self):
+        classname = self.__class__.__name__.lower()
+        return "%s_%s.pgf" % (self.tracefile, classname)
+
     def init_parser(self, dataset, tracefile):
         return PointerParser(dataset, tracefile)
 
@@ -137,6 +141,7 @@ class PointerSizeCdfPlot(Plot):
             name, ext = os.path.splitext(full_name)
             legend_keys.append(name)
         ax.legend(legend_keys, loc="lower right")
-        
+
+        plt.savefig(self._get_plot_file())
         return fig
         

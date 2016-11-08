@@ -25,7 +25,7 @@ import logging
 import cProfile
 import pstats
 
-from cheriplot.plot import PointerProvenancePlot
+from cheriplot.plot import PointerTreePlot, AddressMapPlot
 from cheriplot.core.tool import PlotTool
 
 logger = logging.getLogger(__name__)
@@ -36,20 +36,25 @@ class ProvenancePlotTool(PlotTool):
 
     def init_arguments(self):
         super(ProvenancePlotTool, self).init_arguments()
-        self.parser.add_argument("--tree", help="Dump tree to logging and exit",
+        self.parser.add_argument("--tree", help="Draw a provenance tree plot",
+                                 action="store_true")
+        self.parser.add_argument("--asmap",
+                                 help="Draw an address-map plot (default)",
                                  action="store_true")
 
     def _run(self, args):
-        plot = PointerProvenancePlot(args.trace)
+        if args.tree:
+            plot = PointerTreePlot(args.trace)
+        else:
+            plot = AddressMapPlot(args.trace)
+
+        if args.outfile:
+            plot.plot_file = args.outfile
 
         if args.cache:
             plot.set_caching(True)
 
-        if args.tree:
-            plot.build_dataset()
-            logger.debug(plot.dataset)
-        else:
-            plot.show()
+        plot.show()
 
 if __name__ == "__main__":
     tool = ProvenancePlotTool()

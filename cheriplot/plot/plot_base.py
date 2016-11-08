@@ -33,11 +33,20 @@ class Plot:
         self.parser = self.init_parser(self.dataset, self.tracefile)
         """Tracefile parser"""
 
+        self.plot_file = None
+        """Path to the file where the plot should be saved"""
+
         self._caching = False
         """dataset caching enable """
 
     def _get_cache_file(self):
         return self.tracefile + ".cache"
+
+    def _get_plot_file(self):
+        if self.plot_file:
+            return self.plot_file
+        classname = self.__class__.__name__.lower()
+        return "%s_%s.pgf" % (self.tracefile, classname)
 
     def set_caching(self, state):
         self._caching = state
