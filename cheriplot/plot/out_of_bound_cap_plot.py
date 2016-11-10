@@ -26,7 +26,7 @@ from matplotlib.colors import colorConverter
 
 from ..utils import ProgressPrinter
 from ..core import RangeSet, Range, CallbackTraceParser
-from ..plot import Plot, PatchBuilder
+from ..plot import Plot, PatchBuilder, OmitRangeSetBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,23 @@ class OutOfBoundParser(CallbackTraceParser):
         return False
 
 
+class OutOfBoundRangeBuilder(OmitRangeSetBuilder):
+    """
+    Generate omit-ranges for the AddressSpaceAxes
+    """
+
+    def __init__(self):
+        super(OutOfBoundRangeBuilder, self).__init__()
+
+    def inspect(self, data):
+        """
+        The data item for an out-of-bound capability is expected to 
+        be in the form [cycles, base, length, offset]
+        """
+        cycles, base, bound, offset = data
+        self._update_regions(Range(min(base, offset), max(offset, bound),
+                                   Range.T_KEEP))
+
 class OutOfBoundPlotPatchBuilder(PatchBuilder):
     """
     Generate patches for the out-of-bound plot.
@@ -64,12 +81,6 @@ class OutOfBoundPlotPatchBuilder(PatchBuilder):
 
     def __init__(self):
         super(OutOfBoundPlotPatchBuilder, self).__init__()
-
-        self.split_size = 2 * self.size_limit
-        """
-        Capability length threshold to trigger the omission of
-        the middle portion of the capability range.
-        """
 
         self._cap_ranges = []
         """
@@ -124,8 +135,6 @@ class OutOfBoundPlotPatchBuilder(PatchBuilder):
 
         # update ranges
         logger.debug("View %s", self._bbox)
-        self._update_regions(Range(self._bbox.xmin, self._bbox.xmax,
-                                   Range.T_KEEP))
 
     def get_patches(self, ax):
         ranges = LineCollection(self._cap_ranges,
@@ -161,6 +170,9 @@ class CapOutOfBoundPlot(Plot):
 
         self.patch_builder = OutOfBoundPlotPatchBuilder()
         """Strategy object that builds the plot components"""
+
+        self.range_builder = OutOfBoundRangeBuilder()
+        """Strategy object that builds omit-ranges of AddressSpaceAxes"""
 
     def _get_cache_file(self):
         return self.tracefile + "_oob.cache"
@@ -208,11 +220,12 @@ class CapOutOfBoundPlot(Plot):
         for item in self.dataset:
             progress.advance()
             self.patch_builder.inspect(item)
+            self.range_builder.inspect(item)
         progress.finish()
 
         for collection in self.patch_builder.get_patches(ax):
             ax.add_collection(collection)
-        ax.set_omit_ranges(self.patch_builder.get_omit_ranges())
+        ax.set_omit_ranges(self.range_builder.get_omit_ranges())
         
         view_box = self.patch_builder.get_bbox()
         xmin = view_box.xmin * 0.98

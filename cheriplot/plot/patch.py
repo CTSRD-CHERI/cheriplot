@@ -23,10 +23,9 @@ from ..core import RangeSet, Range
 
 logger = logging.getLogger(__name__)
 
-class PatchBuilder:
+class OmitRangeSetBuilder:
     """
-    The patch generator build the matplotlib patches for each
-    dataset item and generates the ranges of address-space in
+    The rangeset generator creates the ranges of address-space in
     which we are not interested
     """
 
@@ -36,9 +35,6 @@ class PatchBuilder:
         
         self.size_limit = 2**12
         """Minimum distance between omitted address-space ranges"""
-        
-        self._bbox = transforms.Bbox.from_bounds(0, 0, 0, 0)
-        """Bounding box of the artists in the collections"""
         
         # omit everything if there is nothing to show
         self.ranges.append(Range(0, np.inf, Range.T_OMIT))
@@ -112,6 +108,30 @@ class PatchBuilder:
         :rtype: iterable with shape Nx2
         """
         return [[r.start, r.end] for r in self.ranges]
+
+
+class PatchBuilder:
+    """
+    The patch generator build the matplotlib patches for each
+    dataset item
+    """
+
+    def __init__(self):
+        
+        self._bbox = transforms.Bbox.from_bounds(0, 0, 0, 0)
+        """Bounding box of the artists in the collections"""
+
+    def inspect(self, data):
+        """
+        Inspect a data item and update internal
+        set of ranges
+
+        This is intended to be overridden by subclasses
+
+        :param data: a item of the dataset to be processed
+        :type data: object
+        """
+        return
 
     def get_patches(self):
         """

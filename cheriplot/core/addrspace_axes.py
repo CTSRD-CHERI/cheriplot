@@ -179,6 +179,7 @@ class AddressSpaceScale(scale.ScaleBase):
     class AddressSpaceTickLocator(Locator):
         def __init__(self, scale):
             self.scale = scale
+            """The address space scale"""
         
         def __call__(self):
             vmin, vmax = self.axis.get_view_interval()
@@ -254,6 +255,22 @@ class AddressSpaceXAxis(axis.XAxis):
         Like the polar plot it is not meaningful
         """
         return 0.0
+
+    def set_ticks(self, ticks, minor=False):
+        logger.debug("force ticks %s", ticks)
+        ticks = self.convert_units(ticks)
+        if len(ticks) > 1:
+            xleft, xright = self.get_view_interval()
+            if xright > xleft:
+                self.set_view_interval(min(ticks), max(ticks))
+            else:
+                self.set_view_interval(max(ticks), min(ticks))
+        if minor:
+            self.set_minor_locator(FixedLocator(ticks))
+            return self.get_minor_ticks(len(ticks))
+        else:
+            self.set_major_locator(FixedLocator(ticks))
+            return self.get_major_ticks(len(ticks))
 
     
 class AddressSpaceAxes(axes.Axes):
@@ -477,6 +494,9 @@ class Range:
         fmt = "<Range s:" + start + " e:" + end + " t:%s>"
         return fmt % (self.start, self.end, rtype)
 
+    def __hash__(self):
+        return hash(self.start) ^ hash(self.end) ^ hash(self.rtype)
+
 
 class RangeSet(list):
     """
@@ -498,12 +518,6 @@ class RangeSet(list):
         Return the list of ranges overlapping target
         XXX ranges are considered to be open, no overlapping
         occurs if the ranges are contiguous.
-
-
-        XXX one of the boundaries should not have <= or >=
-        otherwise we count that twice for adjacent ranges.
-        By convention range intervals are left-closed e.g.
-        [start, end)
         """
         overlaps = [r for r in self if (r.start < target.end and
                                         r.end > target.start)]
@@ -516,4 +530,14 @@ class RangeSet(list):
         for r in self:
             if (r.start < target.end and r.end > target.start):
                 return r
+        return None
+
+    def pop_overlap_range(self, target):
+        """
+        Return the index of the first range in the set 
+        that overlaps target
+        """
+        for i,r in enumerate(self):
+            if (r.start < target.end and r.end > target.start):
+                return self.pop(i)
         return None
