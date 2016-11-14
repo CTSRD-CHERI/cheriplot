@@ -356,13 +356,16 @@ class CallbackTraceParser(TraceParser):
                     else:
                         opcodes = Instruction.iclass_map.get(iclass, [])
                     for opcode in opcodes:
-                        try:
+                        if opcode in self._callbacks:
                             self._callbacks[opcode].append(method)
-                        except KeyError:
+                        else:
                             self._callbacks[opcode] = [method]
                     break
             else:
-                self._callbacks[instr_name] = [method]
+                if instr_name in self._callbacks:
+                    self._callbacks[instr_name] += [method]
+                else:
+                    self._callbacks[instr_name] = [method]
 
         logger.debug("Loaded callbacks for CallbackTraceParser %s",
                      self._callbacks)
@@ -378,7 +381,7 @@ class CallbackTraceParser(TraceParser):
         :rtype: list of callables
         """
         # try to get the callback for all instructions, if any
-        callbacks = self._callbacks.get("all", [])
+        callbacks = list(self._callbacks.get("all", []))
         callbacks += self._callbacks.get(inst.opcode, [])
         if len(callbacks):
             # parse instruction operands only when
