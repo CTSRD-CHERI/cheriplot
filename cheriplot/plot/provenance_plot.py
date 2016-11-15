@@ -25,7 +25,7 @@ from io import StringIO
 from operator import attrgetter
 
 from matplotlib import pyplot as plt
-from matplotlib import lines, collections, transforms, patches
+from matplotlib import lines, collections, transforms, patches, text
 from matplotlib.colors import colorConverter
 
 from ..utils import ProgressPrinter
@@ -88,12 +88,60 @@ class PointerProvenanceParser(CallbackTraceParser):
                 else:
                     dump.write("$c%d = Not mapped\n" % idx)
 
+    class SyscallTracker:
+        """
+        Keeps the current syscall context information so that
+        the correct return point can be detected
+        """
+
+        def __init__(self):
+            self.in_syscall = False
+            """Flag indicates whether we are tracking a systemcall"""
+
+            self.pc_syscall = None
+            """syscall instruction PC"""
+
+            self.pc_eret = None
+            """related eret instruction PC"""
+
+            self.code = None
+            """syscall code"""
+
+        def make_node(self):
+            """
+            Generate a node in the capability tree
+            if the system call returns a capability
+            """
+            node = CheriCapNodeNX()
+            node.origin = CheriCapNodeNX.SYS_MMAP
+            # need to grab the node associated with the return value
+            # and create a new one or mark it with SYS_MMAP
+            # with t_alloc = entry.cycles
+
+        def scan_syscall(self, inst, entry, regs):
+            """
+            Scan a syscall instruction and detect the syscall type
+            and arguments
+            """
+            # syscall code in $v0
+            # syscall arguments in $a0-$a7/$c3-$c10
+            code = regs.gpr[1] # $v0
+            indirect_code = regs.gpr[3] # $a0
+            is_indirect = (code == 0 or code == 198)
+            if ((is_indirect and indirect_code == 477) or
+                (not is_indirect and code == 477)):
+                # mmap syscall
+                self.in_syscall = True
+                self.pc_syscall = entry.pc
+                self.pc_eret = entry.pc + 4
+                self.code = indirect_code if is_indirect else code
+
 
     def __init__(self, dataset, trace):
         super(PointerProvenanceParser, self).__init__(dataset, trace)
         self.regs_valid = False
         """
-        Flag used to disable parsing until the registerset 
+        Flag used to disable parsing until the registerset
         is completely initialised.
         """
 
@@ -102,6 +150,23 @@ class PointerProvenanceParser(CallbackTraceParser):
         Register set that maps capability registers
         to nodes in the provenance tree.
         """
+
+        self.syscall_tracker = self.SyscallTracker()
+        """Keep state related to system calls entry end return"""
+
+    def scan_all(self, inst, entry, regs, last_regs, idx):
+        """
+        Detect end of syscalls by checking the expected return PC
+        after an eret
+        """
+        if not self.regs_valid:
+            return False
+
+        if (self.syscall_tracker.in_syscall and
+            entry.pc == self.syscall_tracker.pc_eret):
+            node = self.syscall_tracker.make_node()
+            logger.debug("Built syscall node %s", node)
+        return False
 
     def scan_eret(self, inst, entry, regs, last_regs, idx):
         """
@@ -133,6 +198,14 @@ class PointerProvenanceParser(CallbackTraceParser):
         #              regs.cap_reg[31].length, regs.cap_reg[31].offset)
         return False
 
+    def scan_syscall(self, inst, entry, regs, last_regs, idx):
+        """
+        Record entering mmap system calls so that we can grab the return
+        value at the end
+        """
+        self.syscall_tracker.scan_syscall(inst, entry, regs)
+        return False
+
     def scan_csetbounds(self, inst, entry, regs, last_regs, idx):
         """
         Each csetbounds is a new pointer allocation
@@ -142,7 +215,7 @@ class PointerProvenanceParser(CallbackTraceParser):
             return False
         node = self.make_node(entry, inst)
         node.origin = CheriCapNodeNX.C_SETBOUNDS
-        self.regset.load(inst.cd.cap_index, node) # XXX scan_cap
+        self.regset.load(inst.cd.cap_index, node)
         return False
 
     def scan_cfromptr(self, inst, entry, regs, last_regs, idx):
@@ -154,7 +227,7 @@ class PointerProvenanceParser(CallbackTraceParser):
             return False
         node = self.make_node(entry, inst)
         node.origin = CheriCapNodeNX.C_FROMPTR
-        self.regset.load(inst.cd.cap_index, node) # XXX scan_cap
+        self.regset.load(inst.cd.cap_index, node)
         return False
 
     def scan_cap(self, inst, entry, regs, last_regs, idx):
@@ -167,6 +240,12 @@ class PointerProvenanceParser(CallbackTraceParser):
         as we don't care
         """
         if not self.regs_valid:
+            return False
+        if (inst.opcode == "ccall" or inst.opcode == "creturn" or
+            inst.opcode == "cjalr"):
+            logger.warning("cap flow control not yet handled, skipping")
+            return False
+        if entry.is_store or entry.is_load:
             return False
         self.update_regs(inst, entry, regs, last_regs)
         return False
@@ -196,7 +275,7 @@ class PointerProvenanceParser(CallbackTraceParser):
             # add a node as a root node because we have never
             # seen the content of this register yet
             node = self.make_root_node(cd, inst.cd.value, time=entry.cycles)
-            logger.debug("Found %s value (missing in initial set) %s",
+            logger.debug("Found %s value %s from memory load",
                          inst.cd.name, node)
         self.regset[cd] = node
         return False
@@ -213,7 +292,7 @@ class PointerProvenanceParser(CallbackTraceParser):
             # add a node as a root node because we have never
             # seen the content of this register yet
             node = self.make_root_node(cd, inst.cd.value)
-            logger.debug("Found %s value (missing in initial set)",
+            logger.debug("Found %s value %s from memory store",
                          inst.cd.name, node)
 
             # XXX for now return but the correct behaviour would
@@ -518,7 +597,7 @@ class PointerProvenancePlot(Plot):
         for node in self.dataset.nodes():
             # remove null capabilities
             # remove operations in kernel mode
-            if (node.offset >= 0xFFFFFFFF0000000 or
+            if ((node.pc and node.pc >= 0xFFFFFFFF0000000) or
                 (node.length == 0 and node.base == 0)):
                 # XXX should we remove the whole subtree?
                 self.dataset.remove_node(node)
@@ -553,21 +632,76 @@ class PointerProvenancePlot(Plot):
                     self.dataset.remove_node(parent)
         progress.finish()
 
-        # # suppress cfromptr
-        # for node in self.dataset.nodes():
-        #     if node.origin == CheriCapNodeNX.C_FROMPTR:
-        #         self.dataset.remove_node(node)
-
-        # for node in self.dataset.nodes():
-        #     if node.length > 2**20:
-        #         logger.debug("Large node %s", node)
-
+        # this will hopefully go away changing graph library
         assert len(self.dataset.nodes()) == len(set(self.dataset.nodes())), "Duplicate nodes"
+
+
+class VMMapPatchBuilder(PatchBuilder):
+    """
+    Build the patches that highlight the vmmap boundaries in the
+    AddressMapPlot
+    """
+
+    def __init__(self):
+        super(VMMapPatchBuilder, self).__init__()
+
+        self.y_max = np.inf
+        """Max value on the y-axis computed by the AddressMapPlot"""
+
+        self.patches = []
+        """List of rectangles"""
+
+        self.patch_colors = []
+        """List of colors for the patches"""
+
+        self.annotations = []
+        """Text labels"""
+
+        self._colors = {
+            "": colorConverter.to_rgb("#bcbcbc"),
+            "r": colorConverter.to_rgb("k"),
+            "w": colorConverter.to_rgb("y"),
+            "x": colorConverter.to_rgb("m"),
+            "rw": colorConverter.to_rgb("c"),
+            "rx": colorConverter.to_rgb("b"),
+            "wx": colorConverter.to_rgb("g"),
+            "rwx": colorConverter.to_rgb("r")
+        }
+        """Map section permission to line colors"""
+
+    def inspect(self, vmentry):
+        rect = patches.Rectangle((vmentry.start, 0),
+                                 vmentry.end - vmentry.start, self.y_max)
+        self.patches.append(rect)
+        self.patch_colors.append(self._colors[vmentry.perms])
+
+        label_position = ((vmentry.start + vmentry.end) / 2, self.y_max / 2)
+        vme_path = str(vmentry.path).split("/")[-1] if str(vmentry.path) else ""
+        if not vme_path and vmentry.grows_down:
+            vme_path = "stack"
+        vme_label = "%s %s" % (vmentry.perms, vme_path)
+        label = text.Text(text=vme_label, rotation="vertical",
+                          position=label_position,
+                          horizontalalignment="center",
+                          verticalalignment="center")
+        self.annotations.append(label)
+
+
+    def params(self, **kwargs):
+        self.y_max = kwargs.get("y_max", self.y_max)
+
+    def get_patches(self):
+        coll = collections.PatchCollection(self.patches, alpha=0.1,
+                                           facecolors=self.patch_colors)
+        return [coll]
+
+    def get_annotations(self):
+        return self.annotations
 
 
 class AddressMapPlot(PointerProvenancePlot):
     """
-    Plot the provenance tree showing the time of allocation vs 
+    Plot the provenance tree showing the time of allocation vs
     base and bound of each node.
     """
 
@@ -575,12 +709,22 @@ class AddressMapPlot(PointerProvenancePlot):
         super(AddressMapPlot, self).__init__(tracefile)
 
         self.patch_builder = ColorCodePatchBuilder()
-        """Strategy object that builds the plot components"""
+        """
+        Helper object that builds the plot components.
+        See :class:`.ColorCodePatchBuilder`
+        """
 
         self.range_builder = AddressMapOmitBuilder()
         """
-        Strategy objects that detects the interesting
-        parts of the address-space
+        Helper objects that detects the interesting
+        parts of the address-space.
+        See :class:`.AddressMapOmitBuilder`
+        """
+
+        self.vmmap_patch_builder = VMMapPatchBuilder()
+        """
+        Helper object that builds patches to display VM map regions.
+        See :class:`.VMMapPatchBuilder`
         """
 
         self.vmmap = None
@@ -593,11 +737,22 @@ class AddressMapPlot(PointerProvenancePlot):
         """
         self.vmmap = VMMap(mapfile)
 
+    def build_dataset(self):
+        super(AddressMapPlot, self).build_dataset()
+
+        highmap = {}
+        logger.debug("Search for capability manipulations in high userspace memory")
+        for node in self.dataset.nodes():
+            if node.base > 0x120001341:
+                if node.pc not in highmap:
+                    highmap[node.pc] = node
+                    logger.debug("found high userspace entry %s, pc:0x%x", node, node.pc)
+
     def plot(self):
         """
-        Create the provenance plot and return the figure
+        Create the address-map plot
         """
-        
+
         fig = plt.figure(figsize=(15,10))
         ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
                           projection="custom_addrspace")
@@ -609,9 +764,17 @@ class AddressMapPlot(PointerProvenancePlot):
             self.range_builder.inspect(item)
             dataset_progress.advance()
         dataset_progress.finish()
-        
+
+        view_box = self.patch_builder.get_bbox()
+        xmin = view_box.xmin * 0.98
+        xmax = view_box.xmax * 1.02
+        ymin = view_box.ymin * 0.98
+        ymax = view_box.ymax * 1.02
+
         if self.vmmap:
+            self.vmmap_patch_builder.params(y_max=ymax)
             for vme in self.vmmap:
+                self.vmmap_patch_builder.inspect(vme)
                 self.range_builder.inspect_range(Range(vme.start, vme.end))
 
         logger.debug("Nodes %d, ranges %d", self.dataset.number_of_nodes(),
@@ -620,12 +783,12 @@ class AddressMapPlot(PointerProvenancePlot):
         for collection in self.patch_builder.get_patches():
             ax.add_collection(collection)
         ax.set_omit_ranges(self.range_builder.get_omit_ranges())
+        if self.vmmap:
+            for collection in self.vmmap_patch_builder.get_patches():
+                ax.add_collection(collection)
+            for label in self.vmmap_patch_builder.get_annotations():
+                ax.add_artist(label)
 
-        view_box = self.patch_builder.get_bbox()
-        xmin = view_box.xmin * 0.98
-        xmax = view_box.xmax * 1.02
-        ymin = view_box.ymin * 0.98
-        ymax = view_box.ymax * 1.02
         logger.debug("X limits: (%d, %d)", xmin, xmax)
         ax.set_xlim(xmin, xmax)
         logger.debug("Y limits: (%d, %d)", ymin, ymax)
@@ -636,9 +799,9 @@ class AddressMapPlot(PointerProvenancePlot):
             end_ticks = [vme.end for vme in self.vmmap]
             ticks = sorted(start_ticks + end_ticks)
             # current_ticks = ax.get_ticks()
-            logger.debug("ticks %s", ["0x%x" % t for t in ticks])
+            logger.debug("address map ticks %s", ["0x%x" % t for t in ticks])
             ax.set_xticks(ticks)
-        
+
         ax.invert_yaxis()
         ax.legend(*self.patch_builder.get_legend(), loc="best")
         ax.set_xlabel("Virtual Address")
@@ -653,19 +816,6 @@ class PointerTreePlot(PointerProvenancePlot):
     """
     Plot the pointer tree
     """
-
-    # def _plot_subtree(self, nodes):
-    #     pos = nx.spring_layout(nodes)
-    #     nx.draw_networkx_nodes(self.dataset, pos)
-    #     nx.draw_networkx_edges(self.dataset, pos)
-
-    #     labels = {}
-    #     for node in self.dataset.nodes():
-    #         labels[node] = "0x%x" % node.length
-    #     nx.draw_networkx_labels(self.dataset, pos, labels, font_size=5)
-
-    #     plt.axis("off")
-    #     plt.savefig(self._get_plot_file())
 
     def plot(self):
 
@@ -694,7 +844,7 @@ class PointerTreePlot(PointerProvenancePlot):
         logger.warning(node_sizes)
 
         nx.draw_networkx_nodes(self.dataset, pos,
-                               node_size=400,
+                               node_size=100,
                                node_color="lightblue")
         nx.draw_networkx_edges(self.dataset, pos)
 
@@ -902,7 +1052,7 @@ class PointedAddressFrequencyPlot(PointerProvenancePlot):
         plt.savefig(self._get_plot_file())
         return fig
 
-    
+
 class OmitRangeBuilder(PatchBuilder):
     """
     XXX split the omit-range generation logic from the patch builder logic
@@ -916,7 +1066,7 @@ class OmitRangeBuilder(PatchBuilder):
         Capability length threshold to trigger the omission of
         the middle portion of the capability range.
         """
-    
+
     def inspect(self, keep_range):
         if keep_range.size > self.split_size:
             l_range = Range(keep_range.start, keep_range.start + self.size_limit,

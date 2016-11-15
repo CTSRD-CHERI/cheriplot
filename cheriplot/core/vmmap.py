@@ -56,6 +56,10 @@ class VMMap:
             return "x" in str(self.vmmap[self.index][3])
 
         @property
+        def perms(self):
+            return self.vmmap[self.index][3].strip()
+
+        @property
         def resident(self):
             return self.vmmap[self.index][4]
 
@@ -71,6 +75,14 @@ class VMMap:
         def shadow(self):
             return self.vmmap[self.index][7]
 
+        @property
+        def grows_down(self):
+            return "D" in self.vmmap[self.index][8]
+
+        @property
+        def path(self):
+            return self.vmmap[self.index][10].strip()
+
     def __init__(self, map_file):
 
         try:
@@ -79,7 +91,7 @@ class VMMap:
             logger.error("Can not open %s", map_file)
             raise
 
-        dtype_spec = np.dtype("u8,u8,u8,a3,u8,u8,u8,u8,a5,a16,O")
+        dtype_spec = np.dtype("u8,u8,u8,U16,u8,u8,u8,u8,U16,U16,U1024")
         self.vmmap = np.genfromtxt(map_file, delimiter=',',
                                    dtype=dtype_spec)
         logger.debug(self.vmmap)

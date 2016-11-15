@@ -289,6 +289,7 @@ class CheriCapNodeNX:
     C_SETBOUNDS = 1
     C_FROMPTR = 2
     C_PTR_SETBOUNDS = 3
+    SYS_MMAP = 4
 
     MAX_ADDR = 0xffffffffffffffff
 
