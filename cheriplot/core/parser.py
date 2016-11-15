@@ -239,24 +239,37 @@ class Instruction:
         Perform the expensive part of instruction parsing.
         This is separate from __init__ so that it can be performed
         only when strictly necessary.
+
+        XXX: the new implementation removes regexp so it is probably faster
+        and can go without this trick.
         """
         if self._parsed:
             return
 
         disasm = self.inst.name
-        if len(disasm.split("\n")) > 1:
-            # remove pseudo instructions such as .set
-            logger.info("Directives are not yet supported%s", disasm)
-            disasm = disasm.split("\n")[1]
+
+        # for now strip asm directives
+        instruction = None
+        for line in disasm.split("\n"):
+            line = line.strip()
+            if line.startswith("."):
+                logger.debug("Skip ASM directive %s", line)
+            elif instruction is not None:
+                # this is an additional paranoic sanity check, may be useless
+                logger.error("Multiple instructions in single disasm object %s",
+                             disasm)
+                raise ValueError("Malformed disassembly %s", disasm)
+            else:
+                instruction = line
 
         # XXX the operand registers and immediates should really be
         # available from llvm, don't know how yet.
         match = re.match("^\s*([a-z0-9]+)\s*(\$?)(c?[sfgpra]{0,2}[0-9]*)?\s*,?"\
                          "\s*(\$?)(c?[sfgpra0-9]{1,2})?\s*,?"\
-                         "\s*(\$?)([0-9csfgpxra\$\(\)]+)?", disasm)
+                         "\s*(\$?)([0-9csfgpxra\$\(\)]+)?", instruction)
         if match == None:
-            logger.error("Asm expression not supported %s", disasm)
-            raise ValueError("Malformed disassembly %s", disasm)
+            logger.error("Asm expression not supported %s", instruction)
+            raise ValueError("Malformed disassembly %s", instruction)
         if match.group(3):
             self.cd = self.Operand(match.group(3), self._regset,
                                    match.group(2) == "")
@@ -448,7 +461,7 @@ class ThreadedTraceParser:
     process pulls data from the queue(s) and stores it in the
     dataset
 
-    XXX: experimental
+    XXX: experimental/broken
     """
 
     def __init__(self, path, parser, threads=2):
