@@ -54,7 +54,7 @@ class PointerDensityPlot:
         return self.tracefile + ".cache"
 
     def _get_plot_file(self):
-        return self.tracefile + ".png"
+        return self.tracefile + ".pgf"
 
     def set_caching(self, state):
         self._caching = state
@@ -141,7 +141,7 @@ class PointerDensityPlot:
         ax.set_xlim(first_tick - page_size, data[-1][0] + page_size)
         ax.vlines(data[:,0], [1]*len(data[:,0]), data[:,1], color="b")
         
-        # fig.savefig(self._get_plot_file())
+        fig.savefig(self._get_plot_file())
         return fig
 
     def build_figure(self):
