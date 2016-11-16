@@ -354,11 +354,12 @@ class PointerProvenanceParser(CallbackTraceParser):
     def update_regs(self, inst, entry, regs, last_regs):
         cd = inst.cd
         cb = inst.cb
-        if (cd is None or cd.cap_index == -1):
+        if not cd or not cb:
             return
-        if (cb is None or cb.cap_index == -1):
-            return
-        self.regset.move(cb.cap_index, cd.cap_index)
+        try:
+            self.regset.move(cb.cap_index, cd.cap_index)
+        except IndexError:
+            logger.debug(inst)
 
 
 class AddressMapOmitBuilder(OmitRangeSetBuilder):

@@ -32,13 +32,19 @@ class PyDumpParser(CallbackTraceParser):
         super(PyDumpParser, self).__init__(None, *args)
         self.dump_registers = False
         """Enable register set dump"""
-        
+
         self.find_instr = find
         """Find occurrences of this instruction"""
 
+        self.pc = None
+        """Find occurrences of given PC"""
+
+        self.syscall = None
+        """Find occurrences of syscalls with given type"""
+
         self.raw = False
         """Show raw instruction dump"""
-        
+
         self.kernel_mode = False
         """Keep track of kernel-userspace transitions"""
 
@@ -85,20 +91,12 @@ class PyDumpParser(CallbackTraceParser):
             print("[%x] = $%s" % (entry.memory_address, inst.cd.name))
 
         if (entry.gpr_number() != -1):
-            if inst.implicit:
-                gpr_value = inst.implicit.value
-                gpr_name = inst.implicit.name
-            else:
-                gpr_value = inst.cd.value
-                gpr_name = inst.cd.name
+            gpr_value = inst.cd.value
+            gpr_name = inst.cd.name
             print("$%s = %x" % (gpr_name, gpr_value))
         elif (entry.capreg_number() != -1):
-            if inst.implicit:
-                cap_name = inst.implicit.name
-                cap_value = inst.implicit.value
-            else:
-                cap_name = inst.cd.name
-                cap_value = inst.cd.value
+            cap_name = inst.cd.name
+            cap_value = inst.cd.value
             print("$%s = b:%x o:%x l:%x" % (
                 cap_name, cap_value.base, cap_value.offset, cap_value.length))
 
@@ -106,7 +104,10 @@ class PyDumpParser(CallbackTraceParser):
         if (self.find_instr is not None and
             self.find_instr != inst.opcode):
             return False
-        
+        if (self.pc is not None and
+            self.pc != entry.pc):
+            return False
+
         if self.kernel_mode != entry.is_kernel():
             if entry.is_kernel():
                 print("Enter kernel mode {%d}" % (entry.cycles))
@@ -123,7 +124,7 @@ class PyTraceDump(Tool):
     Pytracedump is similar to cheri-tracedump although
     it has some additional features.
     """
-    
+
     description="Dump CHERI binary trace "\
                  "(python version of cheri-tracedump)."
 
@@ -143,6 +144,12 @@ class PyTraceDump(Tool):
                                  action="store_true")
         self.parser.add_argument("-f", "--find",
                                  help="Find instruction occurrences")
+        self.parser.add_argument("-p", "--pc",
+                                 help="Find all hits of given PC")
+        self.parser.add_argument("--syscall",
+                                 help="Find syscalls of given type")
+        # self.parser.add_argument("--kernel",
+        #                          help="Use this kernel image to extract debug symbols")
         # self.parser.add_argument("--follow",
         #                          help="show all the instructions that touch"\
         #                          " a given register")
@@ -152,14 +159,20 @@ class PyTraceDump(Tool):
         pdp.dump_registers = args.regs
         pdp.raw = args.raw
 
-        if (args.info):
+        if args.pc:
+            pdp.pc = int(args.pc, 0)
+
+        if args.syscall:
+            pdp.syscall = args.syscall
+
+        if args.info:
             print("Trace size: %d" % len(pdp))
             exit()
 
         start = args.start if args.start is not None else 0
         end = args.end if args.end is not None else len(pdp)
         pdp.parse(start, end)
-        
+
 if __name__ == "__main__":
     tool = PyTraceDump()
     tool.run()

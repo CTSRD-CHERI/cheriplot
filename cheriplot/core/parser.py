@@ -60,6 +60,80 @@ class TraceParser:
         return 0
 
 
+class Operand:
+    """
+    Helper class used to parse memory operands
+    """
+
+    def __init__(self, op_info, regset):
+
+        self.info = op_info
+        """The operand_info structure for this operand"""
+
+        self.is_register = op_info.is_register
+        """Operand is a register?"""
+
+        self.is_immediate = op_info.is_immediate
+        """Operand is immediate?"""
+
+        self.name = None
+        """Operand register name"""
+
+        self.is_capreg = op_info.is_register and op_info.register_number >= 64
+        """Operand is a capability register or gpr?"""
+
+        if self.is_immediate:
+            self.value = op_info.immediate
+        elif self.is_register:
+            reg_num = op_info.register_number
+            self.name = pct.cvar.mips_register_names[reg_num]
+            if reg_num == 0:
+                self.value = 0
+            elif reg_num < 32:                
+                if not regset.valid_gprs[reg_num - 1]:
+                    logger.debug("Taking GPR value $%d from invalid register",
+                                   reg_num)
+                self.value = regset.gpr[reg_num - 1]
+            elif reg_num < 64:
+                logger.warning("Floating point registers not yet supported")
+                self.value = 0
+            else:
+                if not regset.valid_caps[reg_num - 64]:
+                    logger.debug("Taking CAP value $c%d from invalid register",
+                                   reg_num - 64)
+                self.value = regset.cap_reg[reg_num - 64]
+                    
+        else:
+            logger.error("Operand type not supported")
+            raise ValueError("Operand type not supported")
+
+    @property
+    def cap_index(self):
+        """Return the register number in the range 0-31"""
+        if not self.is_capreg:
+            logger.error("Operand is not a capability register,"
+                         " can not get register number")
+            raise IndexError("Operand is not a capability register")
+        return self.info.register_number - 64
+
+    @property
+    def gpr_index(self):
+        """Return the register number in the range 0-31"""
+        if not (self.is_register and self.info.register_number < 32):
+            logger.error("Operand is not a GPR register,"
+                         " can not get register number")
+            raise IndexError("Operand is not a GPR register")
+        return self.info.register_number
+
+    def __str__(self):
+        if self.is_immediate:
+            return "<Op %s>" % self.value
+        elif self.is_register:
+            return "<Op $%s = %s>" % (self.name, self.value)
+        else:
+            return "<Op unknown>"
+
+
 class Instruction:
     """
     Internal instruction representation that provides more
@@ -88,87 +162,6 @@ class Instruction:
         """Other capability instruction not in previous classes."""
         I_CAP = "cap"
         """Generic capability instruction."""
-
-
-    class Operand:
-        """
-        Helper class for parsing instruction operands.
-        """
-
-        def __init__(self, name, regset, is_immediate):
-            self.is_immediate = is_immediate
-            """True if the operand an immediate."""
-
-            self.name = name
-            """Matched argument string, e.g. c4 for the register $c4."""
-
-            self.value = None
-            """Value of the operand."""
-            if self.cap_index != -1:
-                if regset.valid_caps[self.cap_index]:
-                    self.value = regset.cap_reg[self.cap_index]
-                else:
-                    logger.warning("Taking value of %s from "\
-                                   "invalid cap register", name)
-            elif self.reg_index != -1:
-                if self.reg_index == 0:
-                    self.value = 0
-                elif regset.valid_gprs[self.reg_index - 1]:
-                    self.value = regset.gpr[self.reg_index - 1]
-                else:
-                    logger.warning("Taking value of %s from "\
-                                   "invalid gpr register", name)
-
-        @property
-        def cap_index(self):
-            if (self.is_immediate or self.name is None):
-                return -1
-            if (self.name and str(self.name)[0] == "c"):
-                return int(self.name[1:])
-            return -1
-
-        @property
-        def reg_index(self):
-            if (self.is_immediate or self.name is None):
-                return -1
-            strval = str(self.name)
-            if self.name and strval[0] == "c":
-                return -1
-            if self.name == "gp":
-                return 28
-            if self.name == "sp":
-                return 29
-            if self.name == "fp":
-                return 30
-            if self.name == "ra":
-                return 31
-            if self.name == "zero":
-                return 0
-            if strval[0] != "f":
-                # do not support floating point registers for now
-                return int(self.name)
-            return -1
-
-        def __repr__(self):
-            return "<operand %s = %s>" % (self.name, self.value)
-
-    class Implicit:
-        """
-        Helper class representing an implicit register written by an
-        instruction.
-        """
-
-        def __init__(self, entry):
-            if entry.gpr_number() != -1:
-                self.name = entry.gpr_number()
-                self.value = entry.reg_value_gp()
-            elif entry.capreg_number() != -1:
-                self.name = entry.capreg_number()
-                self.value = entry.reg_value_cap()
-
-        def __repr__(self):
-            return "<implicit %s = %s>" % (self.name, self.value)
-
 
     # map each instruction class to a set of opcodes
     iclass_map = {
@@ -229,76 +222,43 @@ class Instruction:
         self._parsed = False
         """Flag indicating whether :meth:`parse` has been called."""
 
-        # the opcode is the only thing needed every time
         parts = inst.name.split("\t")
         self.opcode = parts[1]
         """Instruction opcode"""
 
-    def parse(self):
-        """
-        Perform the expensive part of instruction parsing.
-        This is separate from __init__ so that it can be performed
-        only when strictly necessary.
+        # if inst.type == inst.instruction_type.memory_access:
+        # last two operands are offset+register
 
-        XXX: the new implementation removes regexp so it is probably faster
-        and can go without this trick.
-        """
-        if self._parsed:
-            return
+        self.operands = []
+        """List of instruction operands :class:`.Operand`"""
+        
+        for op in inst.operands:
+            self.operands.append(Operand(op, regset))
 
-        disasm = self.inst.name
+    @property
+    def cd(self):
+        if len(self.operands) > 0:
+            return self.operands[0]
+        return None
 
-        # for now strip asm directives
-        instruction = None
-        for line in disasm.split("\n"):
-            line = line.strip()
-            if line.startswith("."):
-                logger.debug("Skip ASM directive %s", line)
-            elif instruction is not None:
-                # this is an additional paranoic sanity check, may be useless
-                logger.error("Multiple instructions in single disasm object %s",
-                             disasm)
-                raise ValueError("Malformed disassembly %s", disasm)
-            else:
-                instruction = line
+    @property
+    def cb(self):
+        if len(self.operands) > 1:
+            return self.operands[1]
+        return None
 
-        # XXX the operand registers and immediates should really be
-        # available from llvm, don't know how yet.
-        match = re.match("^\s*([a-z0-9]+)\s*(\$?)(c?[sfgpra]{0,2}[0-9]*)?\s*,?"\
-                         "\s*(\$?)(c?[sfgpra0-9]{1,2})?\s*,?"\
-                         "\s*(\$?)([0-9csfgpxra\$\(\)]+)?", instruction)
-        if match == None:
-            logger.error("Asm expression not supported %s", instruction)
-            raise ValueError("Malformed disassembly %s", instruction)
-        if match.group(3):
-            self.cd = self.Operand(match.group(3), self._regset,
-                                   match.group(2) == "")
-        else:
-            self.cd = None
+    @property
+    def rt(self):
+        if len(self.operands) > 2:
+            return self.operands[2]
+        return None
 
-        if match.group(5):
-            self.cb = self.Operand(match.group(5), self._prev_regset,
-                                   match.group(4) == "")
-        else:
-            self.cb = None
-
-        if match.group(7):
-            self.rt = self.Operand(match.group(7), self._prev_regset,
-                                   match.group(6) == "")
-        else:
-            self.rt = None
-
-        # check for implicit register write
-        gpr_number = self.entry.gpr_number()
-        cap_number = self.entry.capreg_number()
-        if ((gpr_number != -1 and (self.cd is None or self.cd.reg_index != gpr_number)) or
-            (cap_number != -1 and (self.cd is None or self.cd.cap_index != cap_number))):
-            self.implicit = self.Implicit(self.entry)
-        else:
-            self.implicit = None
-
-        # logger.debug("parsed instruction cd:%s cb:%s rt:%s impl:%s",
-        #              self.cd, self.cb, seplf.rt, self.implicit)
+    def __str__(self):
+        instr_repr = "<Inst %s " % self.opcode
+        for op in self.operands:
+            instr_repr += str(op)
+        instr_repr += ">"
+        return instr_repr
 
 
 class CallbackTraceParser(TraceParser):
@@ -396,10 +356,10 @@ class CallbackTraceParser(TraceParser):
         # try to get the callback for all instructions, if any
         callbacks = list(self._callbacks.get("all", []))
         callbacks += self._callbacks.get(inst.opcode, [])
-        if len(callbacks):
-            # parse instruction operands only when
-            # absolutely necessary
-            inst.parse()
+        # if len(callbacks):
+        #     # parse instruction operands only when
+        #     # absolutely necessary
+        #     inst.parse()
         return callbacks
 
     def parse(self, start=None, end=None):
@@ -432,7 +392,7 @@ class CallbackTraceParser(TraceParser):
                 if self._last_regs is None:
                     self._last_regs = regs
                 inst = Instruction(disasm, entry, regs, self._last_regs)
-            except Exception:
+            except Exception as e:
                 logger.error("Error parsing instruction #%d pc:0x%x: %s raw: 0x%x",
                              entry.cycles, entry.pc, disasm.name, entry.inst)
                 return False
