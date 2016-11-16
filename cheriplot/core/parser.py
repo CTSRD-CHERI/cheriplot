@@ -65,10 +65,13 @@ class Operand:
     Helper class used to parse memory operands
     """
 
-    def __init__(self, op_info, regset):
+    def __init__(self, op_info, instr):
 
         self.info = op_info
         """The operand_info structure for this operand"""
+
+        self.instr = instr
+        """The instruction with this operand"""
 
         self.is_register = op_info.is_register
         """Operand is a register?"""
@@ -76,33 +79,36 @@ class Operand:
         self.is_immediate = op_info.is_immediate
         """Operand is immediate?"""
 
-        self.name = None
-        """Operand register name"""
+    @property
+    def name(self):
+        """Operand register name or None"""
+        if self.is_register:
+            return pct.cvar.mips_register_names[self.info.register_number]
+        else:
+            return None
 
-        self.is_capreg = op_info.is_register and op_info.register_number >= 64
-        """Operand is a capability register or gpr?"""
-
+    @property
+    def value(self):
+        """Operand value"""
         if self.is_immediate:
-            self.value = op_info.immediate
+            return self.info.immediate
         elif self.is_register:
-            reg_num = op_info.register_number
-            self.name = pct.cvar.mips_register_names[reg_num]
+            reg_num = self.info.register_number
             if reg_num == 0:
-                self.value = 0
+                return 0
             elif reg_num < 32:                
-                if not regset.valid_gprs[reg_num - 1]:
+                if not self.instr._regset.valid_gprs[reg_num - 1]:
                     logger.debug("Taking GPR value $%d from invalid register",
                                    reg_num)
-                self.value = regset.gpr[reg_num - 1]
+                return self.instr._regset.gpr[reg_num - 1]
             elif reg_num < 64:
                 logger.warning("Floating point registers not yet supported")
-                self.value = 0
+                return 0
             else:
-                if not regset.valid_caps[reg_num - 64]:
+                if not self.instr._regset.valid_caps[reg_num - 64]:
                     logger.debug("Taking CAP value $c%d from invalid register",
                                    reg_num - 64)
-                self.value = regset.cap_reg[reg_num - 64]
-                    
+                return self.instr._regset.cap_reg[reg_num - 64]
         else:
             logger.error("Operand type not supported")
             raise ValueError("Operand type not supported")
@@ -110,7 +116,7 @@ class Operand:
     @property
     def cap_index(self):
         """Return the register number in the range 0-31"""
-        if not self.is_capreg:
+        if not (self.is_register and self.info.register_number >= 64):
             logger.error("Operand is not a capability register,"
                          " can not get register number")
             raise IndexError("Operand is not a capability register")
@@ -233,7 +239,7 @@ class Instruction:
         """List of instruction operands :class:`.Operand`"""
         
         for op in inst.operands:
-            self.operands.append(Operand(op, regset))
+            self.operands.append(Operand(op, self))
 
     @property
     def cd(self):
