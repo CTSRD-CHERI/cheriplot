@@ -15,6 +15,7 @@ permissions and limitations under the License.
 """
 
 import sys
+import os
 import logging
 import argparse as ap
 import cProfile
@@ -71,17 +72,19 @@ class Tool:
 
         try:
             if args.profile:
-                cProfile.runcall(self._run, (args,), {},
-                                 self._get_profiler_file())
+                pr = cProfile.Profile()
+                pr.runcall(self._run, args)
             else:
                 self._run(args)
         finally:
             # print profiling results
             if args.profile:
-                p = pstats.Stats(self._get_profiler_file())
-                p.strip_dirs()
-                p.sort_stats("cumulative")
-                p.print_stats()
+                pr.create_stats()
+                pr.print_stats(sort="cumulative")
+                # p = pstats.Stats(self._get_profiler_file())
+                # p.strip_dirs()
+                # p.sort_stats("cumulative")
+                # p.print_stats()
 
     def _get_profiler_file(self):
         tool_name, _ = os.path.splitext(sys.argv[0])
