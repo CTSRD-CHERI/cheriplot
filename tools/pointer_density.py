@@ -35,10 +35,7 @@ class DensityPlotTool(PlotTool):
     description = "Plot pointer density from cheri trace"
 
     def _run(self, args):
-        plot = PointerDensityPlot(args.trace)
-
-        if args.cache:
-            plot.set_caching(True)
+        plot = PointerDensityPlot(args.trace, cache=args.cache)
 
         if args.outfile:
             plot.save(args.outfile)

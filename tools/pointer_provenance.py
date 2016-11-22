@@ -25,8 +25,9 @@ import logging
 import cProfile
 import pstats
 
-from cheriplot.plot import PointerTreePlot, AddressMapPlot, PointedAddressFrequencyPlot
 from cheriplot.core.tool import PlotTool
+from cheriplot.plot.provenance import (PointerTreePlot, AddressMapPlot,
+                                       PointedAddressFrequencyPlot)
 
 logger = logging.getLogger(__name__)
 
@@ -50,19 +51,16 @@ class ProvenancePlotTool(PlotTool):
 
     def _run(self, args):
         if args.tree:
-            plot = PointerTreePlot(args.trace)
+            plot = PointerTreePlot(args.trace, args.cache)
         elif args.pfreq:
-            plot = PointedAddressFrequencyPlot(args.trace)
+            plot = PointedAddressFrequencyPlot(args.trace, args.cache)
         else:
-            plot = AddressMapPlot(args.trace)
+            plot = AddressMapPlot(args.trace, args.cache)
             if args.vmmap_file:
                 plot.set_vmmap(args.vmmap_file)
 
         if args.outfile:
             plot.plot_file = args.outfile
-
-        if args.cache:
-            plot.set_caching(True)
 
         plot.show()
 

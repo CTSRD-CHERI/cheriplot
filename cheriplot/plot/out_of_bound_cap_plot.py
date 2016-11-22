@@ -38,7 +38,10 @@ class OutOfBoundParser(CallbackTraceParser):
     """
 
     def scan_cap_arith(self, inst, entry, regs, last_regs, idx):
-        register = inst.cd.value
+        if inst.opcode == "csub":
+            return False
+        
+        register = inst.op0.value
         # check if we went out of bound
         offset = register.base + register.offset
         bound = register.base + register.length
@@ -165,8 +168,8 @@ class CapOutOfBoundPlot(Plot):
     manipulations
     """
 
-    def __init__(self, tracefile):
-        super(CapOutOfBoundPlot, self).__init__(tracefile)
+    def __init__(self, *args, **kwargs):
+        super(CapOutOfBoundPlot, self).__init__(*args, **kwargs)
 
         self.patch_builder = OutOfBoundPlotPatchBuilder()
         """Strategy object that builds the plot components"""
@@ -178,7 +181,7 @@ class CapOutOfBoundPlot(Plot):
         return self.tracefile + "_oob.cache"
 
     def build_dataset(self):
-        if self._caching:
+        if self.caching:
             fname = self._get_cache_file()
             try:
                 with open(fname, "rb") as fd:
@@ -199,8 +202,8 @@ class CapOutOfBoundPlot(Plot):
         # self.dataset.append([150, 0x3000, 0x5000, 0x6000])
         self.dataset = np.array(self.dataset)
 
-    def init_parser(self):
-        return OutOfBoundParser(self.dataset, self.tracefile)
+    def init_parser(self, dataset, tracefile):
+        return OutOfBoundParser(dataset, tracefile)
 
     def init_dataset(self):
         return []

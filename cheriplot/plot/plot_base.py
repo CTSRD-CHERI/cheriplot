@@ -25,19 +25,21 @@ class Plot:
     Base class for plots that display cheritrace data
     """
 
-    def __init__(self, tracefile):
+    def __init__(self, tracefile, cache=False):
         self.tracefile = tracefile
         """Tracefile path"""
+
+        self.caching = cache
+        """dataset caching enable """
+        
         self.dataset = self.init_dataset()
         """Parsed dataset"""
+        
         self.parser = self.init_parser(self.dataset, self.tracefile)
         """Tracefile parser"""
 
         self.plot_file = None
         """Path to the file where the plot should be saved"""
-
-        self._caching = False
-        """dataset caching enable """
 
     def _get_cache_file(self):
         return self.tracefile + ".cache"
@@ -47,9 +49,6 @@ class Plot:
             return self.plot_file
         classname = self.__class__.__name__.lower()
         return "%s_%s.pgf" % (self.tracefile, classname)
-
-    def set_caching(self, state):
-        self._caching = state
 
     def init_parser(self, dataset, tracefile):
         """

@@ -35,10 +35,7 @@ class OutOfBoundPlotTool(PlotTool):
     description = "Out of bound pointer manipulation from cheri trace"
 
     def _run(self, args):
-        plot = CapOutOfBoundPlot(args.trace)
-
-        if args.cache:
-            plot.set_caching(True)
+        plot = CapOutOfBoundPlot(args.trace, args.cache)
 
         if args.outfile:
             plot.save(args.outfile)

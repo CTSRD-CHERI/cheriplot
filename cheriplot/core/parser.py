@@ -114,6 +114,11 @@ class Operand:
             raise ValueError("Operand type not supported")
 
     @property
+    def is_capability(self):
+        """The operand is a capability register?"""
+        return self.is_register and self.info.register_number >= 64
+
+    @property
     def cap_index(self):
         """Return the register number in the range 0-31"""
         if not (self.is_register and self.info.register_number >= 64):
@@ -235,29 +240,43 @@ class Instruction:
         # if inst.type == inst.instruction_type.memory_access:
         # last two operands are offset+register
 
+        # XXX may make operand parsing lazy to save parsing time
         self.operands = []
         """List of instruction operands :class:`.Operand`"""
         
         for op in inst.operands:
             self.operands.append(Operand(op, self))
 
-    @property
-    def cd(self):
-        if len(self.operands) > 0:
-            return self.operands[0]
+    def _op_n(self, n):
+        """Shorthand getter for operand N."""
+        if len(self.operands) > n:
+            return self.operands[n]
         return None
+            
+    @property
+    def op0(self):
+        """Shorthand getter for operand 0."""
+        return self._op_n(0)
 
     @property
-    def cb(self):
-        if len(self.operands) > 1:
-            return self.operands[1]
-        return None
+    def op1(self):
+        """Shorthand getter for operand 1."""
+        return self._op_n(1)
 
     @property
-    def rt(self):
-        if len(self.operands) > 2:
-            return self.operands[2]
-        return None
+    def op2(self):
+        """Shorthand getter for operand 2."""
+        return self._op_n(2)
+
+    @property
+    def op3(self):
+        """Shorthand getter for operand 3."""
+        return self._op_n(3)
+
+    # backward compatibility aliases
+    cd = op0
+    cb = op1
+    rt = op2
 
     def __str__(self):
         instr_repr = "<Inst %s " % self.opcode
@@ -405,10 +424,14 @@ class CallbackTraceParser(TraceParser):
 
             ret = False
 
-            for cbk in self._get_callbacks(inst):
-                ret |= cbk(inst, entry, regs, self._last_regs, idx)
-                if ret:
-                    break
+            try:
+                for cbk in self._get_callbacks(inst):
+                    ret |= cbk(inst, entry, regs, self._last_regs, idx)
+                    if ret:
+                        break
+            except Exception as e:
+                logger.error("Error in callback %s: %s", cbk, e)
+                raise
 
             self._last_regs = regs
             return ret

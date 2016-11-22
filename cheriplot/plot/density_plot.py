@@ -24,71 +24,26 @@ import numpy as np
 import logging
 from matplotlib import pyplot as plt
 
-from ..utils import ProgressPrinter
-from ..core import RangeSet, Range
-from ..provenance_tree import (PointerProvenanceParser,
-                               CachedProvenanceTree, CheriCapNode)
+from cheriplot.utils import ProgressPrinter
+
+from cheriplot.plot.provenance.provenance_plot import PointerProvenancePlot
 
 logger = logging.getLogger(__name__)
 
-class PointerDensityPlot:
 
-    def __init__(self, tracefile):
-        self.tracefile = tracefile
-        """Tracefile path"""
-        self.parser = PointerProvenanceParser(tracefile)
-        """Tracefile parser"""
-        self.tree = None
-        """Provenance tree"""
+class PointerDensityPlot(PointerProvenancePlot):
+    """
+    Show the number of pointers stored in each page
+    """
 
-        # XXX we may want to do this later
-        # self.omit_strategy = PageBoundaryOmitStrategy()
-        # """
-        # Strategy object that decides which parts of the AS
-        # are interesting
-        # """
-
-        self._caching = False
-
-    def _get_cache_file(self):
-        return self.tracefile + ".cache"
+    def __init__(self, tracefile, cache=False):
+        super(PointerDensityPlot, self).__init__(tracefile, cache)
 
     def _get_plot_file(self):
         return self.tracefile + ".pgf"
 
-    def set_caching(self, state):
-        self._caching = state
-
-    def build_tree(self):
-        """
-        Build the provenance tree
-        """
-        logger.debug("Generating provenance tree for %s", self.tracefile)
-        self.tree = CachedProvenanceTree()
-        if self._caching:
-            fname = self._get_cache_file()
-            try:
-                self.tree.load(fname)
-            except IOError:
-                logger.debug("No cached tree found %s", fname)
-                self.parser.parse(self.tree)
-                self.tree.save(self._get_cache_file())
-        else:
-            self.parser.parse(self.tree)
-
-        errs = []
-        self.tree.check_consistency(errs)
-        if len(errs) > 0:
-            logger.warning("Inconsistent provenance tree: %s", errs)
-
-
-    def plot(self, radix=None):
-        """
-        Create density plot
-
-        radix: a root node to use instead of the full tree
-        """
-        tree_size = len(self.tree)
+    def plot(self):
+        graph_size = self.dataset.num_vertices()
         # (addr, num_allocations)
         addresses = {}
         page_use = {}
@@ -97,9 +52,10 @@ class PointerDensityPlot:
         # address reuse metric
         # num_allocations vs address
         # linearly and in 4k chunks
-        tree_progress = ProgressPrinter(len(self.tree), desc="Fetching addresses")
-        for child in self.tree:
-            for time, addr in child.address.items():                
+        tree_progress = ProgressPrinter(graph_size, desc="Fetching addresses")
+        for node in self.dataset.vertices():
+            data = self.dataset.vp.data[node]
+            for time, addr in data.address.items():                
                 try:                
                     addresses[addr] += 1
                 except KeyError:
@@ -143,18 +99,3 @@ class PointerDensityPlot:
         
         fig.savefig(self._get_plot_file())
         return fig
-
-    def build_figure(self):
-        """
-        Build the plot without showing it
-        """
-        if self.tree is None:
-            self.build_tree()
-        fig = self.plot()
-
-    def show(self):
-        """
-        Show plot in a new window
-        """
-        self.build_figure()
-        plt.show()
