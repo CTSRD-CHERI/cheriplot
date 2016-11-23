@@ -12,7 +12,11 @@ Install the dependencies listed in requirements.txt
 pip install -r requirements.txt
 ```
 
+Additional Requirements
++++++++++++++++++++++++
 Cheritrace must also be installed, it can be found at [this repository](https://github.com/CTSRD-CHERI/cheritrace.git). If a virtualenv is used, pycheritrace has to be installed manually in the virtualenv by using the cheritrace_build/Python/setup.py script from the virtualenv.
+
+Python graph-tool is needed for the provenance graph, it is not available in pip but it can be installed from most package managers as python-graph-tool
 
 Documentation
 -------------
