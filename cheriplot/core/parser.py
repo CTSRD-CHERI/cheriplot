@@ -140,7 +140,12 @@ class Operand:
         if self.is_immediate:
             return "<Op %s>" % self.value
         elif self.is_register:
-            return "<Op $%s = %s>" % (self.name, self.value)
+            if self.is_capability:
+                value = "[b:0x%x, o:0x%x, l:0x%x]" % (
+                    self.value.base, self.value.offset, self.value.length)
+            else:
+                value = self.value
+            return "<Op $%s = %s>" % (self.name, value)
         else:
             return "<Op unknown>"
 
@@ -279,7 +284,8 @@ class Instruction:
     rt = op2
 
     def __str__(self):
-        instr_repr = "<Inst %s " % self.opcode
+        instr_repr = "<Inst {%d} pc:0x%x %s " % (
+            self.entry.cycles, self.entry.pc, self.opcode)
         for op in self.operands:
             instr_repr += str(op)
         instr_repr += ">"
@@ -418,7 +424,9 @@ class CallbackTraceParser(TraceParser):
                     self._last_regs = regs
                 inst = Instruction(disasm, entry, regs, self._last_regs)
             except Exception as e:
-                logger.error("Error parsing instruction #%d pc:0x%x: %s raw: 0x%x",
+                # XXX make this debug because the mul instruction always fails
+                # and it is too verbose but should report it as a warning/error
+                logger.debug("Error parsing instruction #%d pc:0x%x: %s raw: 0x%x",
                              entry.cycles, entry.pc, disasm.name, entry.inst)
                 return False
 

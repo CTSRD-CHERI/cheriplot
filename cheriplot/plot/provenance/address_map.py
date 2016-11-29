@@ -24,7 +24,7 @@ from matplotlib.colors import colorConverter
 from cheriplot.utils import ProgressPrinter
 from cheriplot.core.addrspace_axes import Range
 from cheriplot.core.vmmap import VMMap
-from cheriplot.core.provenance import CheriCapPerm
+from cheriplot.core.provenance import CheriCapPerm, CheriNodeOrigin
 from cheriplot.plot.patch import PatchBuilder, OmitRangeSetBuilder
 from cheriplot.plot.provenance.provenance_plot import PointerProvenancePlot
 
@@ -69,7 +69,8 @@ class ColorCodePatchBuilder(PatchBuilder):
             load_store: [],
             load_exec: [],
             store_exec: [],
-            load_store_exec: []
+            load_store_exec: [],
+            "call": [],
         }
         """Map capability permission to the set where the line should go"""
 
@@ -81,7 +82,8 @@ class ColorCodePatchBuilder(PatchBuilder):
             load_store: colorConverter.to_rgb("c"),
             load_exec: colorConverter.to_rgb("b"),
             store_exec: colorConverter.to_rgb("g"),
-            load_store_exec: colorConverter.to_rgb("r")
+            load_store_exec: colorConverter.to_rgb("r"),
+            "call": colorConverter.to_rgb("#31c648"),
         }
         """Map capability permission to line colors"""
 
@@ -105,25 +107,14 @@ class ColorCodePatchBuilder(PatchBuilder):
                             CheriCapPerm.EXEC)
         self._collection_map[rwx_perm].append(line)
 
-    def _build_provenance_arrow(self, src_node, dst_node):
+    def _build_call_patch(self, node_range, y, origin):
         """
-        Build an arrow that shows the source capability for a node
-        The arrow goes from the source to the child
+        Build patch for a node representing a system call
+        This is added to a different collection so it can be
+        colored differently.
         """
-        return
-        # src_x = (src_node.base + src_node.bound) / 2
-        # src_y = src_node.t_alloc * self.y_unit
-        # dst_x = (dst_node.base + dst_node.bound) / 2
-        # dst_y = dst_node.t_alloc * self.y_unit
-        # dx = dst_x - src_x
-        # dy = dst_y - src_y
-        # arrow = patches.FancyArrow(src_x, src_y, dx, dy,
-        #                            fc="k",
-        #                            ec="k",
-        #                            head_length=0.0001,
-        #                            head_width=0.0001,
-        #                            width=0.00001)
-        # self._arrow_collection.append(arrow)
+        line = [(node_range.start, y), (node_range.end, y)]
+        self._collection_map["call"].append(line)
 
     def inspect(self, node):
         if node.cap.bound < node.cap.base:
@@ -135,7 +126,10 @@ class ColorCodePatchBuilder(PatchBuilder):
 
         self._bbox = transforms.Bbox.union([self._bbox, node_box])
         keep_range = Range(node.cap.base, node.cap.bound, Range.T_KEEP)
-        self._build_patch(keep_range, node_y, node.cap.permissions)
+        if node.origin == CheriNodeOrigin.SYS_MMAP:
+            self._build_call_patch(keep_range, node_y, node.origin)
+        else:
+            self._build_patch(keep_range, node_y, node.cap.permissions)
 
         #invalidate collections
         self._patches = None
@@ -147,9 +141,9 @@ class ColorCodePatchBuilder(PatchBuilder):
         if self._patches:
             return self._patches
         self._patches = []
-        for perm, collection in self._collection_map.items():
+        for key, collection in self._collection_map.items():
             coll = collections.LineCollection(collection,
-                                              colors=[self._colors[perm]],
+                                              colors=[self._colors[key]],
                                               linestyle="solid")
             self._patches.append(coll)
         return self._patches
@@ -158,18 +152,21 @@ class ColorCodePatchBuilder(PatchBuilder):
         if not self._patches:
             self.get_patches()
         legend = ([], [])
-        for patch, perm in zip(self._patches, self._collection_map.keys()):
+        for patch, key in zip(self._patches, self._collection_map.keys()):
             legend[0].append(patch)
-            perm_string = ""
-            if perm & CheriCapPerm.LOAD:
-                perm_string += "R"
-            if perm & CheriCapPerm.STORE:
-                perm_string += "W"
-            if perm & CheriCapPerm.EXEC:
-                perm_string += "X"
-            if perm_string == "":
-                perm_string = "None"
-            legend[1].append(perm_string)
+            if key == "call":
+                legend[1].append("mmap")
+            else:
+                perm_string = ""
+                if key & CheriCapPerm.LOAD:
+                    perm_string += "R"
+                if key & CheriCapPerm.STORE:
+                    perm_string += "W"
+                if key & CheriCapPerm.EXEC:
+                    perm_string += "X"
+                if perm_string == "":
+                    perm_string = "None"
+                legend[1].append(perm_string)
         return legend
 
 
@@ -325,7 +322,7 @@ class AddressMapPlot(PointerProvenancePlot):
         logger.info("Search for capability manipulations in high userspace memory")
         for node in self.dataset.vertices():
             data = self.dataset.vp.data[node]
-            if data.cap.base > 0xfffff000:
+            if data.cap.base > 0x161000000:
                 if data.pc not in highmap:
                     highmap[data.pc] = node
                     logger.info("found high userspace entry %s, pc:0x%x", data, data.pc)
@@ -375,7 +372,8 @@ class AddressMapPlot(PointerProvenancePlot):
         logger.debug("X limits: (%d, %d)", xmin, xmax)
         ax.set_xlim(xmin, xmax)
         logger.debug("Y limits: (%d, %d)", ymin, ymax)
-        ax.set_ylim(ymin, ymax * 1.02)
+        y_pad = ymax * 0.02
+        ax.set_ylim(ymin - y_pad, ymax + y_pad)
         # manually set xticks based on the vmmap if we can
         if self.vmmap:
             start_ticks = [vme.start for vme in self.vmmap]

@@ -44,9 +44,13 @@ class PointerProvenanceParser(CallbackTraceParser):
         """
         def __init__(self):
             self.reg_nodes = np.empty(32, dtype=object)
-            """CheriCapNode associated with each register."""
+            """Graph node associated with each register."""
+            
             self.memory_map = {}
             """CheriCapNodes stored in memory."""
+            
+            self.pcc = None
+            """Current pcc node"""
 
         def __getitem__(self, idx):
             """
@@ -77,8 +81,12 @@ class PointerProvenanceParser(CallbackTraceParser):
     class SyscallTracker:
         """
         Keeps the current syscall context information so that
-        the correct return point can be detected
+        the correct return point can be detected.
+
+        XXX consider factoring out the system call tracking in a Mixin class.
         """
+
+        SYS_MMAP = 477
 
         def __init__(self):
             self.in_syscall = False
@@ -93,17 +101,31 @@ class PointerProvenanceParser(CallbackTraceParser):
             self.code = None
             """syscall code"""
 
-        def make_node(self):
+        def make_syscall_node(self, inst, entry, regs, dataset, regset):
             """
             Generate a node in the capability tree
             if the system call returns a capability
             """
-            # node = CheriCapNodeNX()
-            # node.origin = CheriCapNodeNX.SYS_MMAP
-            pass
-            # need to grab the node associated with the return value
-            # and create a new one or mark it with SYS_MMAP
-            # with t_alloc = entry.cycles
+
+            if self.code == self.SYS_MMAP:
+                # return value in $c3
+                data = NodeData()
+                data.cap = CheriCap(regs.cap_reg[3])
+                data.cap.t_alloc = entry.cycles
+                # XXX may want a way to store call pc and return pc
+                data.pc = entry.pc
+                data.origin = CheriNodeOrigin.SYS_MMAP
+                data.is_kernel = False
+                node = dataset.add_vertex()
+                dataset.vp.data[node] = data
+                # attach the new node to the capability node in $c3
+                # and replace it in the register set
+                parent = regset[3]
+                dataset.add_edge(parent, node)
+                regset[3] = node
+            else:
+                logger.error("Unknown syscall")
+            return node
 
         def scan_syscall(self, inst, entry, regs):
             """
@@ -115,8 +137,8 @@ class PointerProvenanceParser(CallbackTraceParser):
             code = regs.gpr[1] # $v0
             indirect_code = regs.gpr[3] # $a0
             is_indirect = (code == 0 or code == 198)
-            if ((is_indirect and indirect_code == 477) or
-                (not is_indirect and code == 477)):
+            if ((is_indirect and indirect_code == self.SYS_MMAP) or
+                (not is_indirect and code == self.SYS_MMAP)):
                 # mmap syscall
                 self.in_syscall = True
                 self.pc_syscall = entry.pc
@@ -151,9 +173,8 @@ class PointerProvenanceParser(CallbackTraceParser):
 
         if (self.syscall_tracker.in_syscall and
             entry.pc == self.syscall_tracker.pc_eret):
-            # node = self.syscall_tracker.make_node()
-            # XXX TO DO
-            node = None
+            node = self.syscall_tracker.make_syscall_node(
+                inst, entry, regs, self.dataset, self.regset)
             logger.debug("Built syscall node %s", node)
         return False
 
@@ -204,7 +225,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         Record entering mmap system calls so that we can grab the return
         value at the end
         """
-        # self.syscall_tracker.scan_syscall(inst, entry, regs) XXX disabled
+        self.syscall_tracker.scan_syscall(inst, entry, regs)
         return False
 
     def scan_csetbounds(self, inst, entry, regs, last_regs, idx):
@@ -252,13 +273,56 @@ class PointerProvenanceParser(CallbackTraceParser):
         """
         if not self.regs_valid:
             return False
-        if (inst.opcode == "ccall" or inst.opcode == "creturn" or
-            inst.opcode == "cjalr"):
-            logger.warning("cap flow control not yet handled, skipping")
+        if inst.opcode == "cjr":
+            # discard current pcc and replace it
+            if self.regset[inst.op0.cap_index] is not None:
+                # we already have a node for the new PCC
+                self.regset.pcc = self.regset[inst.op0.cap_index]
+                pcc_data = self.dataset.vp.data[self.regset.pcc]
+                if not pcc_data.has_perm(CheriCapPerm.EXEC):
+                    logger.error("Loading PCC without exec permissions? %s %s",
+                                 inst, pcc_data)
+            else:
+                # we should create a node here but this should really
+                # not be happening, the node is None only when the
+                # register content has never been seen before.
+                logger.error("Found cjr with unexpected "
+                             "target capability %s", inst)
+                raise RuntimeError("cjr to unknown capability")
+        elif inst.opcode == "cjalr":
+            # save current pcc
+            cd_idx = inst.op0.cap_index
+            if self.regset.pcc is None:
+                # create a root node for PCC that is in cd
+                old_pcc_node = self.make_root_node(entry, inst.op0.value,
+                                                   time=entry.cycles)
+            else:
+                old_pcc_node = self.regset.pcc
+            self.regset[cd_idx] = old_pcc_node
+
+            # discard current pcc and replace it
+            if self.regset[inst.op1.cap_index] is not None:
+                # we already have a node for the new PCC
+                self.regset.pcc = self.regset[inst.op1.cap_index]
+                pcc_data = self.dataset.vp.data[self.regset.pcc]
+                if not pcc_data.has_perm(CheriCapPerm.EXEC):
+                    logger.error("Loading PCC without exec permissions? %s %s",
+                                 inst, pcc_data)
+            else:
+                # we should create a node here but this should really
+                # not be happening, the node is None only when the
+                # register content has never been seen before.
+                logger.error("Found cjalr with unexpected "
+                             "target capability %s", inst)
+                raise RuntimeError("cjalr to unknown capability")
+        elif inst.opcode == "ccall" or inst.opcode == "creturn":
+            # these are handled by software so all register assignments
+            # are already parsed there
+            return False            
+        elif entry.is_store or entry.is_load:
             return False
-        if entry.is_store or entry.is_load:
-            return False
-        self.update_regs(inst, entry, regs, last_regs)
+        else:
+            self.update_regs(inst, entry, regs, last_regs)
         return False
 
     def scan_clc(self, inst, entry, regs, last_regs, idx):
@@ -349,7 +413,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         data.cap.t_alloc = time
         data.pc = pc
         data.origin = CheriNodeOrigin.ROOT
-        data.is_kernel = bool(entry.is_kernel)
+        data.is_kernel = entry.is_kernel()
 
         # create graph vertex and assign the data to it
         vertex = self.dataset.add_vertex()

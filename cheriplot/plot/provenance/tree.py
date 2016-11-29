@@ -36,11 +36,13 @@ class PointerTreePlot(PointerProvenancePlot):
         # also arf_layout? not sure how easy is to draw a tree with multiple roots
         # if we want to see features there
 
-
-        node_sizes = np.array([n.length for n in self.dataset.nodes()])
+        node_sizes = np.empty(self.dataset.num_vertices())
+        for idx, v in enumerate(self.dataset.vertices()):
+            data = self.dataset.vp.data[v]
+            node_sizes[idx] = data.length
         # normalize in the range min_size, max_size
-        min_size = 100
-        max_size = 300
+        min_size = 5
+        max_size = 50
         node_min = np.min(node_sizes) or 1
         node_max = np.max(node_sizes)
         b = (node_min * max_size - min_size * node_max) / (node_min - node_max)
