@@ -63,7 +63,11 @@ class CheriNodeOrigin(IntEnum):
     # aggregate nodes
     PTR_SETBOUNDS = 3
     # system calls
+    # the start and end are flags
+    SYS_START = 0x1000
+    SYS_END = 0x2000
     SYS_MMAP = 4
+    SYS_MUNMAP = 5
 
 
 class CheriCap:
@@ -92,8 +96,16 @@ class CheriCap:
         self.permissions = pct_cap.permissions if pct_cap else None
         """Capability permissions bitmap."""
 
+        self.objtype = pct_cap.type if pct_cap else None
+        """Capability object type."""
+
         self.valid = pct_cap.valid if pct_cap else False
         """Is the capability valid?"""
+
+        # XXX the unsealed property actually contains the sealed bit
+        # the naming is confusing and should be changed.
+        self.sealed = pct_cap.unsealed if pct_cap else False
+        """Is the capability sealed?"""
 
         self.t_alloc = -1
         """Allocation time"""
@@ -110,12 +122,13 @@ class CheriCap:
 
     def __str__(self):
         """Get string representation of the capability."""
-        base = self.base if self.base is not None else 0
-        leng = self.length if self.length is not None else 0
-        off = self.offset if self.offset is not None else 0
+        base = "%x" % self.base if self.base is not None else "-"
+        leng = "%x" % self.length if self.length is not None else "-"
+        off = "%x" % self.offset if self.offset is not None else "-"
         perms = self.str_perm()
-        return "[b:%x o:%x l:%x p:%s v:%s]" % (
-            base, off, leng, perms, self.valid)
+        objtype = "%x" % self.objtype if self.objtype is not None else "-"
+        return "[b:%s o:%s l:%s p:(%s) t:%s v:%s s:%s]" % (
+            base, off, leng, perms, objtype, self.valid, self.sealed)
 
     def has_perm(self, perm):
         """
@@ -193,194 +206,3 @@ class NodeData:
     def __str__(self):
         return "%s origin:%s pc:0x%x (kernel %d)" % (
             self.cap, self.origin.name, self.pc or 0, self.is_kernel)
-
-
-### all good until here
-# keeping the abstraction may too costly, without further justification it is
-# not worth spending time on it so try without it.
-        
-class GraphNode:
-    """
-    Interface representation of a provenance graph node
-
-    This abstract the internal graph representation of
-    the node properties
-    """
-
-    @classmethod
-    def from_operand(cls, op):
-        """
-        Create a node from a :class:`cheriplot.core.parser.Operand`
-        """
-
-        data = NodeData()
-        if not op.is_register or not op.is_capability:
-            logger.error("Attempt to create provenance node from "
-                         "non-capability operand %s", op)
-            raise ValueError("Operand is not a capability")
-        data.cap = CheriCap(op.value)
-        data.cap.t_alloc = op.instr.entry.cycles
-        data.pc = op.instr.entry.pc
-        data.is_kernel = op.instr.entry.is_kernel
-        node = cls(data)
-        return node
-
-    @classmethod
-    def from_vertex(cls, mgr, v):
-        node = cls(mgr._graph.vp.data[v])
-        node._mgr = mgr
-        node._vertex = v
-        return node
-
-    def __init__(self, data=None):
-        """
-        Create new node data instance.
-        
-        Each node data is associated to a vertex
-        handle in the graph, the handle is used
-        to perform graph operations.
-        """
-        self._data = data if data is not None else NodeData()
-        """The data associated to this node."""
-
-        self._vertex = None
-        """Reference to the corresponding :class:`graph_tool.Vertex`."""
-
-        self._mgr = None
-        """Reference to the graph manager :class:`.GraphManager`."""
-
-    @property
-    def data(self):
-        """Node data getter."""
-        return self._data
-
-    @data.setter
-    def set_data(self, data):
-        """
-        Setter for the data property.
-
-        If the node is in the graph, we need to keep in sync the
-        internal reference to the data and the data associated to
-        the graph vertex.
-        """
-        self._data = data
-        if self._vertex:            
-            self._mgr._graph.vp.data[self._vertex] = data
-
-    def add(self, node):
-        """
-        Add given node as a successor of this node.
-
-        :param node: the child node to add
-        :type node: :class:`.GraphNode`
-        """
-        if not (self._vertex and self._graph):
-            logger.error("Attempt to add node %s to this node %s, "
-                         "but this node is not in the graph", node, self)
-            raise RuntimeError("Can not add node to a node that is "
-                               "not in the graph")
-        self._mgr.add(self, node)
-
-    def __iter__(self):
-        """
-        Iterate over direct children
-        """
-        for v in self._vertex.out_neighbours():
-            yield GraphNode.from_vertex(self._mgr, v)
-
-
-class GraphManager:
-    """
-    Graph dataset manager.
-
-    This decouples the graph library from the cheriplot dataset
-    because I got bored of changing things around when trying
-    a new graph library.
-    The idea is the if we change graph library for some reason
-    only :class:`.GraphManager` and :class:`.ProvenanceTreeNode`
-    have to change. Algorithms that modify the graph should be
-    implemented in subclasses of :class:`.GraphManager`.
-    """
-
-    @classmethod
-    def empty(cls):
-        """
-        Create new empty graph.
-        """
-        graph = Graph(directed=True)
-        # create graph properties
-        vdata = graph.new_vertex_property("object")
-        graph.vertex_properties["data"] = vdata
-        mgr = cls(graph)
-        return mgr
-
-    @classmethod
-    def from_file(cls, path):
-        """
-        Load provenance graph from file
-        """
-        graph = load_graph(path)
-        mgr = cls(graph)
-        return mgr
-
-    def __init__(self, graph):
-        """
-        Initialise manager private data to defaults.
-
-        To create or load a graph use :meth:`.GraphManager.from_file`
-        and :meth:`.GraphManager.emtpy`.
-
-        :param graph: a graph-tool graph
-        :type graph: :class:`graph_tool.Graph`
-        """
-        self._graph = graph
-        """The graph-tool graph"""
-
-    def __len__(self):
-        """Return the number of vertices in the graph"""
-        return self._graph.num_vertices()
-
-    def save(self, filename):
-        """
-        Save graph to file.
-        """
-        self.graph.save(filename)
-
-    def add(self, parent, node):
-        """
-        Add new node to given parent.
-        """
-        if node._vertex != None:
-            # node already in the graph
-            if (node._vertex in parent._vertex.out_neighbours() or
-                node._vertex in parent._vertex.in_neighbours()):
-                logger.error("Nodes %s and %s are already connected")
-                raise RuntimeError("Can not connect same nodes multiple times")
-            new_v = node._vertex
-        else:
-            new_v = self._graph.add_vertex()
-            node._vertex = new_v
-            node._mgr = self
-        self._graph.vp.data[new_v] = node.data
-        if parent:
-            # if this is not a root node attach it
-            self._graph.add_edge(parent._vertex, new_v)
-
-    def remove(self, nodes):
-        """
-        Remove one or more nodes from the graph
-        along with all adjacent edges.
-        """
-        try:
-            vertices = [n._vertex for n in nodex]
-        except TypeError:
-            # nodes is not iterable, is a single node
-            vertices = nodes._vertex
-        self._graph.remove_vertex(vertices)
-
-    def __iter__(self):
-        """
-        Iterate over all the nodes in the graph.
-        """
-        for v in self._graph.vertices():
-            yield GraphNode.from_vertex(self, v)

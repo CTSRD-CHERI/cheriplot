@@ -55,7 +55,9 @@ class TraceParser:
     This handles only the loading of the trace file
     """
 
-    def __init__(self, trace_path=None):
+    def __init__(self, trace_path=None, **kwargs):
+
+        super(TraceParser, self).__init__(**kwargs)
         self.path = trace_path
         self.trace = None
 
@@ -153,8 +155,9 @@ class Operand:
             return "<Op %s>" % self.value
         elif self.is_register:
             if self.is_capability:
-                value = "[b:0x%x, o:0x%x, l:0x%x]" % (
-                    self.value.base, self.value.offset, self.value.length)
+                value = "[b:0x%x, o:0x%x, l:0x%x, v:%d]" % (
+                    self.value.base, self.value.offset,
+                    self.value.length, self.value.valid)
             else:
                 value = self.value
             return "<Op $%s = %s>" % (self.name, value)
@@ -186,6 +189,8 @@ class Instruction:
         """Change capability bounds."""
         I_CAP_FLOW = "cap_flow"
         """Capability flow control."""
+        I_CAP_CPREG = "cap_cpreg"
+        """Manipulation of reserved coprocessor registers"""
         I_CAP_OTHER = "cap_other"
         """Other capability instruction not in previous classes."""
         I_CAP = "cap"
@@ -211,15 +216,18 @@ class Instruction:
         IClass.I_CAP_FLOW: [
             "cbtu", "cbts", "cjr", "cjalr",
             "ccall", "creturn"],
+        IClass.I_CAP_CPREG: [
+            "csetdefault", "cgetdefault", "cgetepcc", "csetepcc",
+            "cgetkcc", "csetkcc", "cgetkdc", "csetkdc", "cgetpcc"],
         IClass.I_CAP_OTHER: [
             "cgetperm", "cgettype", "cgetbase", "cgetlen",
-            "cgettag", "cgetsealed", "cgetoffset", "cgetpcc",
+            "cgettag", "cgetsealed", "cgetoffset",
             "cgetpccsetoffset", "cseal", "cunseal", "candperm",
-            "ccleartag", "ceq", "cne", "clt",
+            "ccleartag", "cclearregs", "ceq", "cne", "clt",
             "cle", "cltu","cleu", "cexeq",
             "cgetcause", "csetcause", "ccheckperm", "cchecktype",
             "clearlo", "clearhi", "cclearlo", "cclearhi",
-            "fpclearlo", "fpclearhi"]
+            "fpclearlo", "fpclearhi", "cmove"]
         }
 
     def __init__(self, inst, entry, regset, prev_regset):
@@ -328,12 +336,13 @@ class CallbackTraceParser(TraceParser):
     * cap_arith: all capability pointer manipulation
     * cap_bound: all capability bound modification
     * cap_cast: all conversions from and to capability pointers
+    * cap_cpreg: all manipulations of ddc, kdc, epcc, kcc
     * cap_other: all capability instructions that do not fall in
     the previous "cap_" classes
     """
 
-    def __init__(self, dataset, trace_path):
-        super(CallbackTraceParser, self).__init__(trace_path)
+    def __init__(self, dataset, trace_path, **kwargs):
+        super(CallbackTraceParser, self).__init__(trace_path, **kwargs)
 
         self.dataset = dataset
         """The dataset where the parsed data will be stored"""
@@ -398,11 +407,8 @@ class CallbackTraceParser(TraceParser):
         """
         # try to get the callback for all instructions, if any
         callbacks = list(self._callbacks.get("all", []))
-        callbacks += self._callbacks.get(inst.opcode, [])
-        # if len(callbacks):
-        #     # parse instruction operands only when
-        #     # absolutely necessary
-        #     inst.parse()
+        # the <all> callback should be the last one executed
+        callbacks = self._callbacks.get(inst.opcode, []) + callbacks
         return callbacks
 
     def parse(self, start=None, end=None):

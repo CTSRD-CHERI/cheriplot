@@ -29,17 +29,21 @@ import numpy as np
 import logging
 
 from io import StringIO
+from enum import IntEnum
 
 from cheriplot.core.parser import CallbackTraceParser, Instruction
-from cheriplot.core.provenance import (GraphManager, GraphNode, CheriCapPerm,
-                                       CheriNodeOrigin, NodeData, CheriCap)
+from cheriplot.core.provenance import (
+    CheriCapPerm, CheriNodeOrigin, NodeData, CheriCap)
 
 logger = logging.getLogger(__name__)
 
 class PointerProvenanceParser(CallbackTraceParser):
     """
-    Parsing logic that builds the provenange graph used in
+    Parsing logic that builds the provenance graph used in
     all the provenance-based plots.
+
+    XXX may want to pull out all the nested classes in case they
+    can be reused.
     """
 
     class RegisterSet:
@@ -56,10 +60,10 @@ class PointerProvenanceParser(CallbackTraceParser):
         def __init__(self):
             self.reg_nodes = np.empty(32, dtype=object)
             """Graph node associated with each register."""
-            
+
             self.memory_map = {}
             """CheriCapNodes stored in memory."""
-            
+
             self.pcc = None
             """Current pcc node"""
 
@@ -80,6 +84,9 @@ class PointerProvenanceParser(CallbackTraceParser):
             self.reg_nodes[idx] = val
 
         def __repr__(self):
+            """
+            XXX broken: needs access to the dataset to get vertex data
+            """
             dump = StringIO()
             dump.write("RegisterSet snapshot:\n")
             for idx, node in enumerate(self.reg_nodes):
@@ -89,72 +96,124 @@ class PointerProvenanceParser(CallbackTraceParser):
                 else:
                     dump.write("$c%d = Not mapped\n" % idx)
 
-    class SyscallTracker:
+    class SyscallContext:
         """
         Keeps the current syscall context information so that
         the correct return point can be detected.
 
-        XXX consider factoring out the system call tracking in a Mixin class.
+        This class contains all the methods that manipulate
+        registers and values that depend on the ABI and constants
+        in CheriBSD.
         """
+        class SyscallCode(IntEnum):
+            """
+            Enumerate system call numbers that are recognised by the
+            parser and are used to add information to the provenance
+            graph.
+            """
+            SYS_MMAP = 477
+            SYS_MUNMAP = 73
+            # also interesting mprotect and shm* stuff
 
-        SYS_MMAP = 477
 
-        def __init__(self):
+        def __init__(self, *args, **kwargs):
             self.in_syscall = False
-            """Flag indicates whether we are tracking a systemcall"""
+            """Flag indicates whether we are tracking a systemcall."""
 
             self.pc_syscall = None
-            """syscall instruction PC"""
+            """Syscall instruction PC."""
+
+            self.t_syscall = None
+            """Syscall instruction cycle number."""
 
             self.pc_eret = None
-            """related eret instruction PC"""
+            """Expected eret instruction PC."""
 
             self.code = None
-            """syscall code"""
+            """Current syscall code."""
 
-        def make_syscall_node(self, inst, entry, regs, dataset, regset):
-            """
-            Generate a node in the capability tree
-            if the system call returns a capability
-            """
-
-            if self.code == self.SYS_MMAP:
-                # return value in $c3
-                data = NodeData()
-                data.cap = CheriCap(regs.cap_reg[3])
-                data.cap.t_alloc = entry.cycles
-                # XXX may want a way to store call pc and return pc
-                data.pc = entry.pc
-                data.origin = CheriNodeOrigin.SYS_MMAP
-                data.is_kernel = False
-                node = dataset.add_vertex()
-                dataset.vp.data[node] = data
-                # attach the new node to the capability node in $c3
-                # and replace it in the register set
-                parent = regset[3]
-                dataset.add_edge(parent, node)
-                regset[3] = node
-            else:
-                logger.error("Unknown syscall")
-            return node
-
-        def scan_syscall(self, inst, entry, regs):
-            """
-            Scan a syscall instruction and detect the syscall type
-            and arguments
-            """
+        def _get_syscall_code(self, regs):
+            """Get the syscall code for direct and indirect syscalls."""
             # syscall code in $v0
             # syscall arguments in $a0-$a7/$c3-$c10
             code = regs.gpr[1] # $v0
             indirect_code = regs.gpr[3] # $a0
             is_indirect = (code == 0 or code == 198)
-            if ((is_indirect and indirect_code == self.SYS_MMAP) or
-                (not is_indirect and code == self.SYS_MMAP)):
-                # mmap syscall
-                self.in_syscall = True
-                self.pc_syscall = entry.pc
-                self.pc_eret = entry.pc + 4
-                self.code = indirect_code if is_indirect else code
+            return indirect_code if is_indirect else code
+
+        def scan_syscall_start(self, inst, entry, regs, dataset, regset):
+            """
+            Scan a syscall instruction and detect the syscall type
+            and arguments.
+            """
+            code = self._get_syscall_code(regs)
+            try:
+                self.code = self.SyscallCode(code)
+            except ValueError:
+                # we are not interested in this syscall
+                return
+            self.in_syscall = True
+            self.pc_syscall = entry.pc
+            self.t_syscall = entry.cycles
+            self.pc_eret = entry.pc + 4
+
+            # create a node at syscall start for those system calls for
+            # which we care about the arguments
+            if self.code.value == self.SyscallCode.SYS_MUNMAP:
+                src_reg = 3 # argument in $c3
+                origin = CheriNodeOrigin.SYS_MUNMAP
+            else:
+                # we do not do anything for other syscalls
+                return None
+
+            data = NodeData()
+            data.cap = CheriCap(regs.cap_reg[src_reg])
+            data.cap.t_alloc = entry.cycles
+            # XXX may want a way to store call pc and return pc
+            data.pc = entry.pc
+            data.origin = origin
+            data.is_kernel = False
+            node = dataset.add_vertex()
+            dataset.vp.data[node] = data
+            # attach the new node to the capability node in src_reg
+            # and replace it in the register set
+            parent = regset[src_reg]
+            dataset.add_edge(parent, node)
+            regset[src_reg] = node
+            return node
+
+        def scan_syscall_end(self, inst, entry, regs, dataset, regset):
+            """
+            Scan registers to produce a syscall end node.
+            """
+            self.in_syscall = False
+
+            # create a node for the syscall start
+            if self.code.value == self.SyscallCode.SYS_MMAP:
+                ret_reg = 3 # return in $c3
+                origin = CheriNodeOrigin.SYS_MMAP
+            else:
+                # we do not do anything for other syscalls
+                return None
+
+            data = NodeData()
+            data.cap = CheriCap(regs.cap_reg[ret_reg])
+            data.cap.t_alloc = entry.cycles
+            # XXX may want a way to store call pc and return pc
+            data.pc = entry.pc
+            data.origin = origin
+            data.is_kernel = False
+            node = dataset.add_vertex()
+            dataset.vp.data[node] = data
+            # attach the new node to the capability node in ret_reg
+            # and replace it in the register set
+            parent = regset[ret_reg]
+            dataset.add_edge(parent, node)
+            regset[ret_reg] = node
+            return node
+
+    class CallContext:
+        pass
 
 
     def __init__(self, dataset, trace):
@@ -171,33 +230,18 @@ class PointerProvenanceParser(CallbackTraceParser):
         to nodes in the provenance tree.
         """
 
-        self.syscall_tracker = self.SyscallTracker()
+        self.syscall_context = self.SyscallContext()
         """Keep state related to system calls entry end return"""
 
-    def scan_all(self, inst, entry, regs, last_regs, idx):
-        """
-        Detect end of syscalls by checking the expected return PC
-        after an eret
-        """
-        if not self.regs_valid:
-            return False
+        self.call_context = self.CallContext()
+        """Keep state related to function calls and call stack"""
 
-        if (self.syscall_tracker.in_syscall and
-            entry.pc == self.syscall_tracker.pc_eret):
-            node = self.syscall_tracker.make_syscall_node(
-                inst, entry, regs, self.dataset, self.regset)
-            logger.debug("Built syscall node %s", node)
-        return False
-
-    def scan_eret(self, inst, entry, regs, last_regs, idx):
+    def _set_initial_regset(self, inst, entry, regs):
         """
-        Detect the first eret that enters the process code
-        and initialise the register set and the roots of the tree.
+        Setup the registers after the first eret
         """
-        if self.regs_valid:
-            return False
         self.regs_valid = True
-        logger.debug("Scan initial register set")
+        logger.debug("Scan initial register set cycle: %d", entry.cycles)
         for idx in range(0, 32):
             cap = regs.cap_reg[idx]
             valid = regs.valid_caps[idx]
@@ -206,6 +250,19 @@ class PointerProvenanceParser(CallbackTraceParser):
                 self.regset[idx] = node
             else:
                 logger.warning("c%d not in initial set", idx)
+                if idx == 29:
+                    node = self.make_root_node(entry, None)
+                    cap = CheriCap()
+                    cap.base = 0
+                    cap.offset = 0
+                    cap.length = 0xffffffffffffffff
+                    cap.permissions = 0xffff # all XXX should we only have EXEC and few other?
+                    cap.valid = True
+                    # set the guessed capability value to the vertex data
+                    # property
+                    self.dataset.vp.data[node].cap = cap
+                    self.regset[idx] = node
+                    logger.warning("Guessing KCC %s", self.dataset.vp.data[node])
                 if idx == 30:
                     node = self.make_root_node(entry, None)
                     self.regset[idx] = node
@@ -213,22 +270,92 @@ class PointerProvenanceParser(CallbackTraceParser):
                     cap.base = 0
                     cap.offset = 0
                     cap.length = 0xffffffffffffffff
-                    cap.permission = (
-                        CheriCapPerm.LOAD | CheriCapPerm.STORE |
-                        CheriCapPerm.EXEC | CheriCapPerm.GLOBAL |
-                        CheriCapPerm.CAP_LOAD | CheriCapPerm.CAP_STORE |
-                        CheriCapPerm.CAP_STORE_LOCAL | CheriCapPerm.SEAL |
-                        CheriCapPerm.SYSTEM_REGISTERS)
+                    # cap.permissions = (
+                    #     CheriCapPerm.LOAD | CheriCapPerm.STORE |
+                    #     CheriCapPerm.EXEC | CheriCapPerm.GLOBAL |
+                    #     CheriCapPerm.CAP_LOAD | CheriCapPerm.CAP_STORE |
+                    #     CheriCapPerm.CAP_STORE_LOCAL | CheriCapPerm.SEAL |
+                    #     CheriCapPerm.SYSTEM_REGISTERS)
+                    cap.permissions = 0xffff # all XXX should we remove EXEC?
+                    cap.valid = True
                     # set the guessed capability value to the vertex data
                     # property
                     self.dataset.vp.data[node].cap = cap
-                    logger.warning("Guessing KDC %s", node)
-        # XXX we should see here the EPCC being moved to PCC
-        # but it is probably not stored in the trace so we take
-        # csetoffset to $c31 (EPCC) update in the instruction
-        # before this.
-        # logger.debug("EPCC b:%x l:%x o:%x", regs.cap_reg[31].base,
-        #              regs.cap_reg[31].length, regs.cap_reg[31].offset)
+                    self.regset[idx] = node
+                    logger.warning("Guessing KDC %s", self.dataset.vp.data[node])
+
+    def _has_exception(self, entry, code=None):
+        """
+        Check if an exception occurred in the given trace entry
+        """
+        if code is not None:
+            return entry.exception == code
+        else:
+            return entry.exception != 31
+
+    def _instr_committed(self, entry):
+        """
+        Check if an instruction has been committed and will
+        not be replayed.
+        """
+        if self._has_exception(entry) and entry.exception != 0:
+            return False
+        return True
+
+    def _do_scan(self, entry):
+        """
+        Check if the scan of an instruction can proceed.
+        This disables scanning until the regiser set is initialized
+        after the first eret and do not scan instructions that did
+        not commit due to exceptions being raised.
+        """
+        if self.regs_valid and self._instr_committed(entry):
+            return True
+        return False
+
+    def scan_all(self, inst, entry, regs, last_regs, idx):
+        """
+        Detect end of syscalls by checking the expected return PC
+        after an eret
+        """
+        if not self._do_scan(entry):
+            return False
+
+        if self._has_exception(entry):
+            # if an exception occurred adjust EPCC node from PCC,
+            # this also handles syscall exceptions.
+            # if the instruction is an eret that is causing an exception
+            # EPCC and PCC do not change and we end up in an handler again
+            logger.debug("except {%d}: update epcc %s, update pcc %s",
+                         entry.cycles,
+                         self.dataset.vp.data[self.regset.pcc],
+                         self.dataset.vp.data[self.regset[29]])
+            self.regset[31] = self.regset.pcc # saved pcc
+            self.regset.pcc = self.regset[29] # pcc <- kcc
+
+        if (self.syscall_context.in_syscall and
+            entry.pc == self.syscall_context.pc_eret):
+            node = self.syscall_context.scan_syscall_end(
+                    inst, entry, regs, self.dataset, self.regset)
+            logger.debug("Built syscall node %s", node)
+        return False
+
+    def scan_eret(self, inst, entry, regs, last_regs, idx):
+        """
+        Detect the first eret that enters the process code
+        and initialise the register set and the roots of the tree.
+        """
+        if not self.regs_valid:
+            self._set_initial_regset(inst, entry, regs)
+
+        if not self._do_scan(entry):
+            return False
+
+        # eret may throw an exception, in which case the nodes
+        # are handled again in scan_all (which is always executed
+        # after per-opcode scan_* methods)
+        logger.debug("eret: update pcc %s", self.dataset.vp.data[self.regset[31]])
+        self.regset.pcc = self.regset[31] # restore saved pcc
         return False
 
     def scan_syscall(self, inst, entry, regs, last_regs, idx):
@@ -236,7 +363,116 @@ class PointerProvenanceParser(CallbackTraceParser):
         Record entering mmap system calls so that we can grab the return
         value at the end
         """
-        self.syscall_tracker.scan_syscall(inst, entry, regs)
+        if not self._do_scan(entry):
+            return False
+
+        self.syscall_context.scan_syscall_start(inst, entry, regs,
+                                                self.dataset, self.regset)
+        return False
+
+    def scan_cclearregs(self, inst, entry, regs, last_regs, idx):
+        """
+        Clear the register set according to the mask.
+        The result can not be immediately found in the trace, it
+        is otherwise spread among all the uses of the registers.
+        """
+        raise NotImplementedError("cclearregs not yet supported")
+        return False
+
+    def _handle_cpreg_get(self, regnum, inst, entry):
+        """
+        When a cgetXXX is found, propagate the node from the special
+        register XXX (i.e. kcc, kdc, ...) to the destination or create a
+        new node if nothing was there.
+
+        :param regnum: the index of the special register in the register set
+        :type regnum: int
+
+        :param inst: parsed instruction
+        :type inst: :class:`cheriplot.core.parser.Instruction`
+
+        :parm entry: trace entry
+        :type entry: :class:`pycheritrace.trace_entry`
+        """
+        if not self._do_scan(entry):
+            return False
+        if self.regset[regnum] is None:
+            # no node was ever created for the register, it contained something
+            # invalid
+            node = self.make_root_node(entry, inst.op0.value,
+                                       time=entry.cycles)
+            self.regset[regnum] = node
+            logger.debug("cpreg_get: new node from $c%d %s",
+                         regnum, self.dataset.vp.data[node])
+        self.regset[inst.op0.cap_index] = self.regset[regnum]
+
+    def _handle_cpreg_set(self, regnum, inst, entry):
+        """
+        When a csetXXX is found, propagate the node to the special
+        register XXX (i.e. kcc, kdc, ...) or create a new node.
+
+        :param regnum: the index of the special register in the register set
+        :type regnum: int
+
+        :param inst: parsed instruction
+        :type inst: :class:`cheriplot.core.parser.Instruction`
+
+        :parm entry: trace entry
+        :type entry: :class:`pycheritrace.trace_entry`
+        """
+        if not self._do_scan(entry):
+            return False
+        if self.regset[inst.op0.cap_index] is None:
+            node = self.make_root_node(entry, inst.op0.value,
+                                       time=entry.cycles)
+            self.regset[inst.op0.cap_index] = node
+            logger.debug("cpreg_set: new node from c<%d> %s",
+                         regnum, self.dataset.vp.data[node])
+        self.regset[regnum] = self.regset[inst.op0.cap_index]
+
+    def scan_cgetepcc(self, inst, entry, regs, last_regs, idx):
+        self._handle_cpreg_get(31, inst, entry)
+        return False
+
+    def scan_csetepcc(self, inst, entry, regs, last_regs, idx):
+        self._handle_cpreg_set(31, inst, entry)
+        return False
+
+    def scan_cgetkcc(self, inst, entry, regs, last_regs, idx):
+        self._handle_cpreg_get(29, inst, entry)
+        return False
+
+    def scan_csetkcc(self, inst, entry, regs, last_regs, idx):
+        self._handle_cpreg_set(29, inst, entry)
+        return False
+
+    def scan_cgetkdc(self, inst, entry, regs, last_regs, idx):
+        self._handle_cpreg_get(30, inst, entry)
+        return False
+
+    def scan_csetkdc(self, inst, entry, regs, last_regs, idx):
+        self._handle_cpreg_set(30, inst, entry)
+        return False
+
+    def scan_cgetdefault(self, inst, entry, regs, last_regs, idx):
+        self._handle_cpreg_get(0, inst, entry)
+        return False
+
+    def scan_csetdefault(self, inst, entry, regs, last_regs, idx):
+        self._handle_cpreg_set(0, inst, entry)
+        return False
+
+    def scan_cgetpcc(self, inst, entry, regs, last_regs, idx):
+        if not self._do_scan(entry):
+            return False
+        if self.regset.pcc is None:
+            # never seen anything in pcc so we create a new node
+            node = self.make_root_node(entry, inst.op0.value,
+                                       time=entry.cycles)
+            self.regset.pcc = node
+            logger.debug("cgetpcc: new node from pcc %s",
+                         regnum, self.dataset.vp.data[node])
+        self.regset[inst.op0.cap_index] = self.regset.pcc
         return False
 
     def scan_csetbounds(self, inst, entry, regs, last_regs, idx):
@@ -250,7 +486,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
-        if not self.regs_valid:
+        if not self._do_scan(entry):
             return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.SETBOUNDS)
         self.regset[inst.op0.cap_index] = node
@@ -267,7 +503,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
-        if not self.regs_valid:
+        if not self._do_scan(entry):
             return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.FROMPTR)
         self.regset[inst.op0.cap_index] = node
@@ -278,19 +514,17 @@ class PointerProvenanceParser(CallbackTraceParser):
         Whenever a capability instruction is found, update
         the mapping from capability register to the provenance
         tree node associated to the capability in it.
-
-        XXX track ccall and creturn properly, also skip csX and clX
-        as we don't care
         """
-        if not self.regs_valid:
+        if not self._do_scan(entry):
             return False
+
         if inst.opcode == "cjr":
             # discard current pcc and replace it
             if self.regset[inst.op0.cap_index] is not None:
                 # we already have a node for the new PCC
                 self.regset.pcc = self.regset[inst.op0.cap_index]
                 pcc_data = self.dataset.vp.data[self.regset.pcc]
-                if not pcc_data.has_perm(CheriCapPerm.EXEC):
+                if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
                     logger.error("Loading PCC without exec permissions? %s %s",
                                  inst, pcc_data)
             else:
@@ -316,7 +550,7 @@ class PointerProvenanceParser(CallbackTraceParser):
                 # we already have a node for the new PCC
                 self.regset.pcc = self.regset[inst.op1.cap_index]
                 pcc_data = self.dataset.vp.data[self.regset.pcc]
-                if not pcc_data.has_perm(CheriCapPerm.EXEC):
+                if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
                     logger.error("Loading PCC without exec permissions? %s %s",
                                  inst, pcc_data)
             else:
@@ -329,7 +563,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         elif inst.opcode == "ccall" or inst.opcode == "creturn":
             # these are handled by software so all register assignments
             # are already parsed there
-            return False            
+            return False
         elif entry.is_store or entry.is_load:
             return False
         else:
@@ -347,7 +581,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         Operand 0 is the register with the new node
         The parent is looked up in memory or a root node is created
         """
-        if not self.regs_valid:
+        if not self._do_scan(entry):
             return False
 
         cd = inst.op0.cap_index
@@ -356,19 +590,28 @@ class PointerProvenanceParser(CallbackTraceParser):
         except KeyError:
             logger.debug("Load c%d from new location 0x%x",
                          cd, entry.memory_address)
-            if not inst.op0.value.valid:
-                # can not create a node from the instruction value
-                # this is ok, using clc for generic data
-                return False
             node = None
 
-        if node is None:
-            # add a node as a root node because we have never
-            # seen the content of this register yet.
-            node = self.make_root_node(entry, inst.op0.value, time=entry.cycles)
-            logger.debug("Found %s value %s from memory load",
-                         inst.op0.name, node)
-        self.regset[cd] = node
+        # if the capability loaded from memory is valid, it
+        # can be safely assumed that it corresponds to the node
+        # stored in the memory_map for that location, if there is
+        # one. If there is no node in the memory_map then a
+        # new node can be created from the valid capability.
+        # Otherwise something has changed the memory location so we
+        # clear the memory_map and the regset entry.
+        if not inst.op0.value.valid:
+            self.regset[cd] = None
+            if node is not None:
+                del self.regset.memory_map[entry.memory_address]
+        else:
+            if node is None:
+                # add a node as a root node because we have never
+                # seen the content of this register yet.
+                node = self.make_root_node(entry, inst.op0.value,
+                                           time=entry.cycles)
+                logger.debug("Found %s value %s from memory load",
+                             inst.op0.name, self.dataset.vp.data[node])
+            self.regset[cd] = node
         return False
 
     def scan_csc(self, inst, entry, regs, last_regs, idx):
@@ -385,21 +628,30 @@ class PointerProvenanceParser(CallbackTraceParser):
         csc:
         Operand 0 is the capability being stored, the node already exists
         """
-        if not self.regs_valid:
+        if not self._do_scan(entry):
             return False
+
         cd = inst.op0.cap_index
         node = self.regset[cd]
-        if node is None and not last_regs.valid_caps[cd]:
-            # add a node as a root node because we have never
-            # seen the content of this register yet
-            node = self.make_root_node(entry, inst.op0.value)
-            self.regset[cd] = node
-            logger.debug("Found %s value %s from memory store",
-                         inst.op0.name, node)
-            return False
-        self.regset.memory_map[entry.memory_address] = node
-        # set the address attribute of the node vertex data property
-        self.dataset.vp.data[node].address[entry.cycles] = entry.memory_address
+
+        if node is None:
+            # may need to create one
+            if inst.op0.value.valid:
+                # add a node as a root node because there is no node
+                # associated with register yet.
+                node = self.make_root_node(entry, inst.op0.value)
+                self.regset[cd] = node
+                logger.debug("Found %s value %s from memory store",
+                             inst.op0.name, node)
+            # else, nothing to do, it is a data access
+        else:
+            # if there is a node associated with the register that is
+            # being stored, save it in the memory_map for the memory location
+            # written by csc
+            self.regset.memory_map[entry.memory_address] = node
+            # set the address attribute of the node vertex data property
+            node_data = self.dataset.vp.data[node]
+            node_data.address[entry.cycles] = entry.memory_address
         return False
 
     def make_root_node(self, entry, cap, time=0, pc=0):
@@ -484,7 +736,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         Try to update the registers-node mapping when a capability
         instruction is executed so that nodes are propagated in
         the registers when their bounds do not change.
-        """        
+        """
         cd = inst.op0
         cb = inst.op1
         if not cd or not cb:
