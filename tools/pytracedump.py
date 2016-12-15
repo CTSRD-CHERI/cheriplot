@@ -46,6 +46,11 @@ def base16_int(value):
         return int(value, base=16)
     return None
 
+def match_mode(value):
+    if (value == "and" or value == "or"):
+        return value
+    return None
+
 class PyTraceDump(Tool):
     """
     Pytracedump is similar to cheri-tracedump although
@@ -64,30 +69,48 @@ class PyTraceDump(Tool):
         self.parser.add_argument("-i", "--info",
                                  help="Print trace info and exit",
                                  action="store_true")
-        self.parser.add_argument("-r", "--regs", help="Dump register content",
+        self.parser.add_argument("-r", "--show-regs", help="Dump register content",
                                  action="store_true")
         self.parser.add_argument("--raw",
                                  help="Show raw hex dump of the instruction",
                                  action="store_true")
-        self.parser.add_argument("-f", "--find",
+        self.parser.add_argument("--instr",
                                  help="Find instruction occurrences")
-        self.parser.add_argument("-p", "--pc", type=base16_int,
+        self.parser.add_argument("--pc", type=base16_int,
                                  help="Find all hits of given PC")
-        self.parser.add_argument("-A", type=int, default=0,
-                                 help="Dump n instructions after a matching one")
-        self.parser.add_argument("-B", type=int, default=0,
-                                 help="Dump n instructions before a matching one")
-        self.parser.add_argument("--follow",
-                                 help="show all the instructions that touch"
+        self.parser.add_argument("--reg",
+                                 help="Show all the instructions that touch"
                                  " a given register")
+        self.parser.add_argument("--mem", type=base16_int,
+                                 help="Show all the instructions that touch"
+                                 " a given memory address")
+        self.parser.add_argument("--exception", type=str,
+                                 help="Show all the instructions that raise"
+                                 " a given exception")
+        self.parser.add_argument("--nop", type=base16_int,
+                                 help="Show all the canonical nops with"
+                                 " given code.")
+        self.parser.add_argument("--match-mode", default="and", type=match_mode,
+                                 help="How to combine multiple match conditions"
+                                 " (and, or) default=and")
+        self.parser.add_argument("-A", type=int, default=0,
+                                 help="Dump n instructions after a"
+                                 " matching one, default=0")
+        self.parser.add_argument("-B", type=int, default=0,
+                                 help="Dump n instructions before a"
+                                 " matching one, default=0")
 
     def _run(self, args):
 
         dump_parser = TraceDumpParser(None, args.trace,
-                                      dump_registers=args.regs,
-                                      find=args.find,
-                                      pc=args.pc,
-                                      follow=args.follow,
+                                      dump_registers=args.show_regs,
+                                      match_opcode=args.instr,
+                                      match_pc=args.pc,
+                                      match_reg=args.reg,
+                                      match_addr=args.mem,
+                                      match_exc=args.exception,
+                                      match_nop=args.nop,
+                                      match_mode=args.match_mode,
                                       before=args.B,
                                       after=args.A,
                                       raw=args.raw)

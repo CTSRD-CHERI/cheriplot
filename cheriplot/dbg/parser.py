@@ -8,6 +8,7 @@ import logging
 from collections import deque
 
 from cheriplot.core.parser import CallbackTraceParser
+from cheriplot.core.provenance import CheriCap
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,10 @@ class TraceDumpMixin:
         elif (entry.capreg_number() != -1):
             return "$c%d" % entry.capreg_number()
 
+    def dump_cap(self, cap):
+        chericap = CheriCap(cap)
+        return str(chericap)
+
     def dump_regs(self, entry, regs, last_regs):
 
         for idx in range(0,31):
@@ -41,18 +46,19 @@ class TraceDumpMixin:
                 real_regnum,
                 regs.gpr[idx]))
         for idx in range(0,32):
-            print("[%d] $c%d = b:%x o:%x l:%x" % (
-                regs.valid_caps[idx],
-                idx,
-                regs.cap_reg[idx].base,
-                regs.cap_reg[idx].offset,
-                regs.cap_reg[idx].length))
+            print("[%d] $c%d = %s" % (regs.valid_caps[idx], idx,
+                                      self.dump_cap(regs.cap_reg[idx])))
 
 
     def dump_instr(self, inst, entry, idx):
-        print("{%d} 0x%x" % (entry.cycles, entry.pc),
-              inst.inst.name,
-              "[ld:%d st:%d]" % (entry.is_load, entry.is_store))
+        if entry.exception != 31:
+            exception = "except:%x" % entry.exception
+        else:
+            # no exception
+            exception = ""
+        print("{%d} 0x%x %s %s" % (entry.cycles, entry.pc, inst.inst.name,
+              exception))
+
 
         if self.raw:
             print("raw: 0x%x", entry.inst)
@@ -73,8 +79,8 @@ class TraceDumpMixin:
         elif (entry.capreg_number() != -1):
             cap_name = inst.cd.name
             cap_value = inst.cd.value
-            print("$%s = b:%x o:%x l:%x" % (
-                cap_name, cap_value.base, cap_value.offset, cap_value.length))
+            print("$%s = %s" % (
+                cap_name, self.dump_cap(cap_value)))
 
 
 class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
@@ -82,37 +88,76 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
     Parser that performs basic lookup on a trace file
     """
 
-    def __init__(self, dataset, trace_path, dump_registers=False, find=None,
-                 pc=None, follow=None, before=0, after=0, **kwargs):
+    def __init__(self, dataset, trace_path, dump_registers=False,
+                 match_opcode=None, match_pc=None, match_reg=None,
+                 match_addr=None, match_exc=None, match_nop=None,
+                 match_mode="and", before=0, after=0, **kwargs):
         """
+        This parser filters the trace according to a set of match
+        conditions. Multiple match conditions can be used at the same time
+        to refine or widen the filter.
+
         :param dump_registers: dump register set after each instruction
         :type dump_registers: bool
-        :param find: find occurrences of given instruction mnemonic
-        :type find: str
-        :param pc: find occurrences of given PC value
-        :type pc: str
-        :param follow: show all instructions that touch the given
+
+        :param match_opcode: find occurrences of given instruction mnemonic
+        :type match_opcode: str
+
+        :param match_pc: find occurrences of given PC value
+        :type match_pc: str
+
+        :param match_reg: show all instructions that touch the given
         register (register name).
-        :type follow: int or str
+        :type match_reg: str
+
+        :param match_addr: show all instructions that touch the given
+        memory location.
+        :type match_addr: int
+
+        :param match_exc: show all instructions that cause the given
+        exception.
+        :type match_addr: int
+
+        :param match_nop: match the given canonical NOP code
+        :type match_addr: int
+
+        :param match_mode: how multiple match args are combined, valid
+        values are "and" and "or"
+        :type match_mode: str
+
         :param before: dump N instructions before the matching one,
         default N=0
         :type before: int
+
         :param after: dump N instructions after the matching one,
         default N=0
+        :type after: int
         """
         super(TraceDumpParser, self).__init__(dataset, trace_path, **kwargs)
 
         self.dump_registers = dump_registers
         """Enable register set dump."""
 
-        self.find_instr = find
+        self.find_instr = match_opcode
         """Find occurrences of this instruction."""
 
-        self.pc = pc
+        self.pc = match_pc
         """Find occurrences of given PC."""
 
-        self.follow_reg = follow
+        self.follow_reg = match_reg
         """Find occurrences of given register."""
+
+        self.follow_addr = match_addr
+        """Find occurences of given memory location."""
+
+        self.match_exc = match_exc
+        """Find occurrences of given exception. The value 'any' is also valid."""
+
+        self.match_nop = match_nop
+        """Find occurrences of given canonical NOP."""
+
+        self.match_mode = match_mode
+        """How to compose multiple match conditions (and, or)."""
 
         self.show_before = before
         """Number of instructions to dump before the matching one."""
@@ -129,46 +174,131 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
         self._kernel_mode = False
         """Keep track of kernel-userspace transitions"""
 
-        if before != 0 or after != 0:
-            assert (pc is not None or
-                    follow is not None or
-                    find is not None), "after and before can only be "\
-                    "specified with matching rules"
+        self._nested_exceptions = 1
+        """Number of nested exceptions. Start at 1 because"""
 
-    def do_dump(self, inst, entry, regs, last_regs, idx):
+        if (match_pc is None and match_reg is None and
+            match_addr is None and match_opcode is None and
+            match_exc is None):
+            # if no match condition is specified the match options
+            # must have the default value
+            self.before = 0
+            self.after = 0
+            self.match_mode = "and"
+
+    def dump_kernel_user_switch(self, entry):
         if self._kernel_mode != entry.is_kernel():
             if entry.is_kernel():
                 print("Enter kernel mode {%d}" % (entry.cycles))
             else:
                 print("Enter user mode {%d}" % (entry.cycles))
             self._kernel_mode = entry.is_kernel()
+
+    def do_dump(self, inst, entry, regs, last_regs, idx):
         # dump instr
         self.dump_instr(inst, entry, idx)
+        if entry.exception != 31:
+            print("Nested exceptions: %d" % self._nested_exceptions)
         if self.dump_registers:
             self.dump_regs(entry, regs, last_regs)
 
+    def _update_match_result(self, match=None, value=None):
+        """
+        Combine the current match result with the value of
+        a test according to the match mode, if value is None
+        return the initial value for the match
+        """
+        if self.match_mode == "and":
+            if value is None:
+                match = True
+            else:
+                match = match and value
+        else:
+            if value is None:
+                match = False
+            else:
+                match = match or value
+        return match
+
+    def _match_instr(self, inst, match):
+        """Check if the current instruction matches"""
+        if self.find_instr is None:
+            return match
+        test_result = self.find_instr == inst.opcode
+        return self._update_match_result(match, test_result)
+
+    def _match_pc(self, inst, match):
+        """Check if the current instruction PC matches"""
+        if self.pc is None:
+            return match
+        test_result = self.pc == inst.entry.pc
+        return self._update_match_result(match, test_result)
+
+    def _match_addr(self, inst, match):
+        """Check if the current load or store address matches"""
+        if self.follow_addr is None:
+            return match
+        if inst.entry.is_load or inst.entry.is_store:
+            match_addr = self.follow_addr == inst.entry.memory_address
+        else:
+            match_addr = False
+        return self._update_match_result(match, match_addr)
+
+    def _match_reg(self, inst, match):
+        """Check if the current instruction uses a register"""
+        if self.follow_reg is None:
+            return match
+        match_reg = False
+        for operand in inst.operands:
+            if not operand.is_register:
+                continue
+            match_reg = operand.name == self.follow_reg
+            if match_reg:
+                break
+        return self._update_match_result(match, match_reg)
+
+    def _match_exception(self, inst, match):
+        """Check if an exception occurred while executing an instruction"""
+        if self.match_exc is None:
+            return match
+        match_exc = False
+        if inst.entry.exception != 31:
+            if self.match_exc == "any":
+                match_exc = True
+            else:
+                match_exc = inst.entry.exception == int(self.match_exc)
+        return self._update_match_result(match, match_exc)
+
+    def _match_nop(self, inst, match):
+        """Check if instruction is a given canonical NOP"""
+        if self.match_nop is None:
+            return match
+        test_result = False
+        if inst.opcode == "lui":
+            test_result = (inst.op0.gpr_index == 0 and
+                           inst.op1.value == self.match_nop)
+        return self._update_match_result(match, test_result)
+
     def scan_all(self, inst, entry, regs, last_regs, idx):
+        self.dump_kernel_user_switch(entry)
         if self._dump_next > 0:
             self._dump_next -= 1
             self.do_dump(inst, entry, regs, last_regs, idx)
         else:
-            match_opc = True
-            match_pc = True
-            match_reg = True
+            match = self._update_match_result()
+            match = self._match_instr(inst, match)
+            match = self._match_pc(inst, match)
+            match = self._match_addr(inst, match)
+            match = self._match_reg(inst, match)
+            match = self._match_exception(inst, match)
+            match = self._match_nop(inst, match)
 
-            if self.find_instr is not None:
-                match_opc = self.find_instr == inst.opcode
-            if self.pc is not None:
-                match_pc = self.pc == entry.pc
-            if self.follow_reg is not None:
-                match_reg = False
-                for operand in inst.operands:
-                    if not operand.is_register:
-                        continue
-                    match_reg = operand.name == self.follow_reg
-                    if match_reg:
-                        break
-            if match_opc and match_pc and match_reg:
+            if entry.exception != 31 or inst.opcode == "syscall":
+                self._nested_exceptions += 1
+            if inst.opcode == "eret":
+                self._nested_exceptions -= 1
+
+            if match:
                 # dump all the instructions in the queue
                 while len(self._entry_history) > 0:
                     old_inst, idx = self._entry_history.popleft()
