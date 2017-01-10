@@ -30,7 +30,7 @@ import logging
 import sys
 
 from matplotlib import pyplot as plt
-from matplotlib import transforms, axes, scale, axis
+from matplotlib import transforms, axes, scale, axis, lines
 from matplotlib.projections import register_projection
 from matplotlib.cbook import iterable
 from matplotlib.ticker import Formatter, FixedLocator, Locator
@@ -58,7 +58,7 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         super(AddressSpaceCollapseTransform, self).__init__(*args, **kwargs)
         self.target_ranges = RangeSet()
         """List of ranges to keep and omit"""
-        
+
         self.omit_scale = 1
         """Scale factor of the omitted address ranges"""
 
@@ -149,11 +149,11 @@ class AddressSpaceCollapseTransform(transforms.Transform):
             return self.get_x_inv(x)
         else:
             return self.get_x(x)
-    
+
     def transform_non_affine(self, datain):
         """
         The transform modifies only the X-axis, Y-axis is identity
-        
+
         datain is a numpy array of size Nx2
         return a numpy array of size Nx2
         """
@@ -191,7 +191,7 @@ class AddressSpaceScale(scale.ScaleBase):
         def __init__(self, scale):
             self.scale = scale
             """The address space scale"""
-        
+
         def __call__(self):
             vmin, vmax = self.axis.get_view_interval()
             return self.tick_values(vmin, vmax)
@@ -218,7 +218,7 @@ class AddressSpaceScale(scale.ScaleBase):
                             # skip tick if they end up too close
                             continue
                     values.append(r.start)
-                    
+
             return values
 
 
@@ -246,20 +246,94 @@ class AddressSpaceScale(scale.ScaleBase):
 scale.register_scale(AddressSpaceScale)
 
 
+class AddressSpaceXTick(axis.XTick):
+
+    def _get_ticklabel_line(self):
+        axis_trans = self.axes.get_xaxis_transform(which="tick1")
+        text_trans = self._get_text1_transform()[0]
+        tick_position = axis_trans.transform((self.tick1line.get_xdata()[0],
+                                              self.tick1line.get_ydata()[0]))
+        label_position = text_trans.transform(self.label1.get_position())
+        x = (tick_position[0], label_position[0])
+        y = (tick_position[1], label_position[1])
+        line = lines.Line2D(x, y, linestyle="solid", color="black")
+        return line
+
+    # @allow_rasterization
+    def draw(self, renderer):
+        super(AddressSpaceXTick, self).draw(renderer)
+
+        line = self._get_ticklabel_line()
+        line.draw(renderer)
+
+
 class AddressSpaceXAxis(axis.XAxis):
     """
     Custom XAxis for the AddressSpace projection
     """
-    
-    def _get_tick(self, **kwargs):
+
+    def _get_tick(self, major):
         """
         Force labels to be vertical
         """
-        tick = super(AddressSpaceXAxis, self)._get_tick(**kwargs)
+        if major:
+            tick_kw = self._major_tick_kw
+        else:
+            tick_kw = self._minor_tick_kw
+        tick = AddressSpaceXTick(self.axes, 0, '', major=major, **tick_kw)
         prop = {"rotation": "vertical"}
         tick.label1.update(prop)
         tick.label2.update(prop)
         return tick
+
+    def _update_ticks(self, renderer):
+        ticks = super(AddressSpaceXAxis, self)._update_ticks(renderer)
+
+        # get list of bounding boxes for major and minor ticks (with labels)
+        bboxes, bboxes2 = self._get_tick_bboxes(ticks, renderer)
+
+        # iterate over each major tick and move it to avoid overlapping with
+        # other ticklabels
+        def _shift_ticklabel(ticks, idx, new_x):
+            prev_idx = max(idx - 1, 0)
+            next_idx = min(idx + 1, len(ticks))
+            logger.debug("START shift_ticklabel %d %d %d", prev_idx, idx, next_idx)
+            (prev_bbox, bbox, next_bbox), _ = self._get_tick_bboxes(
+                (ticks[prev_idx], ticks[idx], ticks[next_idx]), renderer)
+            # direction > 0 when moving to the right
+            direction = new_x - bbox.x0
+            logger.debug("shift direction: %d", direction >= 0)
+
+            # shift the tick
+            _xxx, y = ticks[idx].label1.get_position()
+            inv = ticks[idx].label1.get_transform().inverted()
+            new_loc, _ = inv.transform((new_x, 0))
+            ticks[idx].label1.set_position((new_loc, y))
+            logger.debug("shift tick %d: %s -> %s", idx, _xxx, new_loc)
+
+            # get updated bbox
+            (bbox,), _ = self._get_tick_bboxes([ticks[idx]], renderer)
+            if idx > 0 and bbox.overlaps(prev_bbox) and direction < 0:
+                new_x0 = prev_bbox.x0 - (prev_bbox.x1 - bbox.x0) / 2
+                _shift_ticklabel(ticks, prev_idx, new_x0)
+            if idx < len(ticks) and bbox.overlaps(next_bbox) and direction > 0:
+                new_x0 = next_bbox.x0 + (bbox.x1 - next_bbox.x0) / 2
+                logger.debug("overlap next")
+                _shift_ticklabel(ticks, next_idx, new_x0)
+            logger.debug("END shift_ticklabel %d %d %d", prev_idx, idx, next_idx)
+
+        for idx in range(0, len(ticks) - 1):
+            # for idx in range(0, 4):
+            logger.debug("Ticks %d, %d", idx, idx + 1)
+            (bbox, next_bbox), _ = self._get_tick_bboxes(
+                [ticks[idx], ticks[idx + 1]], renderer)
+            if bbox.overlaps(next_bbox):
+                delta = (bbox.x1 - next_bbox.x0) / 2
+                logger.debug("Bbox overlap %d: %s -> %s", idx, bbox.x0, bbox.x0 - delta)
+                _shift_ticklabel(ticks, idx, bbox.x0 - delta)
+                logger.debug("Bbox overlap %d: %s -> %s", idx + 1, next_bbox.x0, next_bbox.x0 + delta)
+                _shift_ticklabel(ticks, idx + 1, next_bbox.x0 + delta)
+        return ticks
 
     def _get_pixel_distance_along_axis(self, where, perturb):
         """
@@ -267,23 +341,7 @@ class AddressSpaceXAxis(axis.XAxis):
         """
         return 0.0
 
-    def set_ticks(self, ticks, minor=False):
-        logger.debug("force ticks %s", ticks)
-        ticks = self.convert_units(ticks)
-        if len(ticks) > 1:
-            xleft, xright = self.get_view_interval()
-            if xright > xleft:
-                self.set_view_interval(min(ticks), max(ticks))
-            else:
-                self.set_view_interval(max(ticks), min(ticks))
-        if minor:
-            self.set_minor_locator(FixedLocator(ticks))
-            return self.get_minor_ticks(len(ticks))
-        else:
-            self.set_major_locator(FixedLocator(ticks))
-            return self.get_major_ticks(len(ticks))
 
-    
 class AddressSpaceAxes(axes.Axes):
     """
     Axes class for various plots involving considerations on
@@ -325,10 +383,10 @@ class AddressSpaceAxes(axes.Axes):
         """
         Override transform initialization
         """
-        
+
         # axis coords to display coords
         self.transAxes = transforms.BboxTransformTo(self.bbox)
-        
+
         # X and Y axis scaling
         self.transScale = transforms.TransformWrapper(
             transforms.IdentityTransform())
@@ -357,7 +415,7 @@ class AddressSpaceAxes(axes.Axes):
         """
         Generic omit or include
 
-        XXX: 
+        XXX:
         - rename to a more meaningful name
         - only take the omit range list, the other list is never used
         """
