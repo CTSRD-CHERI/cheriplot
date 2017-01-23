@@ -110,7 +110,7 @@ class Operand:
             reg_num = self.info.register_number
             if reg_num == 0:
                 return 0
-            elif reg_num < 32:                
+            elif reg_num < 32:
                 if not self.instr._regset.valid_gprs[reg_num - 1]:
                     logger.debug("Taking GPR value $%d from invalid register",
                                    reg_num)
@@ -236,10 +236,10 @@ class Instruction:
 
         :param inst: pycheritrace disassembler instruction
         :type inst: :class:`pycheritrace.instruction_info`
-        :param regset: register set after the execution 
+        :param regset: register set after the execution
         of the instruction
         :type regset: :class:`pycheritrace.register_set`
-        :param prev_regset: register set before the execution 
+        :param prev_regset: register set before the execution
         of the instruction
         :type prev_regset: :class:`pycheritrace.register_set`
         """
@@ -268,7 +268,7 @@ class Instruction:
         # XXX may make operand parsing lazy to save parsing time
         self.operands = []
         """List of instruction operands :class:`.Operand`"""
-        
+
         for op in inst.operands:
             self.operands.append(Operand(op, self))
 
@@ -277,7 +277,7 @@ class Instruction:
         if len(self.operands) > n:
             return self.operands[n]
         return None
-            
+
     @property
     def op0(self):
         """Shorthand getter for operand 0."""
@@ -420,7 +420,7 @@ class CallbackTraceParser(TraceParser):
         e.g. scan_cap_load is called whenever a load from memory through
         a capability is found.
 
-        Each instruction opcode can have a callback in the form 
+        Each instruction opcode can have a callback in the form
         scan_<opcode>.
 
         :param start: index of the first trace entry to scan

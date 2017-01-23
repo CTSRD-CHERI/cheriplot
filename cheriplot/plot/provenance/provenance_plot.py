@@ -31,7 +31,7 @@ import pickle
 from graph_tool.all import Graph, load_graph
 
 from cheriplot.utils import ProgressPrinter
-from cheriplot.core.provenance import GraphManager, CheriNodeOrigin
+from cheriplot.core.provenance import CheriNodeOrigin
 from cheriplot.plot.plot_base import Plot
 
 from cheriplot.plot.provenance.parser import PointerProvenanceParser
@@ -92,7 +92,7 @@ class PointerProvenancePlot(Plot):
             progress.advance()
         self.dataset.remove_vertex(remove_list)
         progress.finish()
-        
+
         num_nodes = self.dataset.num_vertices()
         logger.debug("Filtered kernel nodes, remaining %d", num_nodes)
         progress = ProgressPrinter(
