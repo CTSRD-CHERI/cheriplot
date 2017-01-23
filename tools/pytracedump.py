@@ -46,11 +46,6 @@ def base16_int(value):
         return int(value, base=16)
     return None
 
-def match_mode(value):
-    if (value == "and" or value == "or"):
-        return value
-    return None
-
 class PyTraceDump(Tool):
     """
     Pytracedump is similar to cheri-tracedump although
@@ -90,9 +85,12 @@ class PyTraceDump(Tool):
         self.parser.add_argument("--nop", type=base16_int,
                                  help="Show all the canonical nops with"
                                  " given code.")
-        self.parser.add_argument("--match-mode", default="and", type=match_mode,
-                                 help="How to combine multiple match conditions"
-                                 " (and, or) default=and")
+        self.parser.add_argument("--match-any", action="store_true",
+                                 help="Return a trace entry when matches any"
+                                 " of the conditions")
+        self.parser.add_argument("--match-all", action="store_true",
+                                 help="Return a trace entry when matches all"
+                                 " the conditions (default)")
         self.parser.add_argument("-A", type=int, default=0,
                                  help="Dump n instructions after a"
                                  " matching one, default=0")
@@ -102,6 +100,12 @@ class PyTraceDump(Tool):
 
     def _run(self, args):
 
+        if args.match_any:
+            match_mode = "or"
+        else:
+            # args.match_all
+            match_mode = "and"
+
         dump_parser = TraceDumpParser(None, args.trace,
                                       dump_registers=args.show_regs,
                                       match_opcode=args.instr,
@@ -110,7 +114,7 @@ class PyTraceDump(Tool):
                                       match_addr=args.mem,
                                       match_exc=args.exception,
                                       match_nop=args.nop,
-                                      match_mode=args.match_mode,
+                                      match_mode=match_mode,
                                       before=args.B,
                                       after=args.A,
                                       raw=args.raw)
