@@ -51,12 +51,10 @@ class CdfPlotTool(PlotTool):
                                  nargs="*")
 
     def _run(self, args):
-        plot = PointerSizeCdfPlot(args.trace)
+        plot = PointerSizeCdfPlot(args.trace, args.cache)
 
         plot.add_traces(args.additional_traces)
 
-        if args.cache:
-            plot.set_caching(True)
         if args.outfile:
             plot.save(args.outfile)
         else:

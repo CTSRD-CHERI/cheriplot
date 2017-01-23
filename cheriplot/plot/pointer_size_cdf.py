@@ -105,7 +105,7 @@ class PointerSizeCdfPlot(Plot):
             self.parsers.append(self.init_parser(dataset, trace))
     
     def build_dataset(self):
-        if self._caching:
+        if self.caching:
             fname = self._get_cache_file()
             try:
                 with open(fname, "rb") as fd:
