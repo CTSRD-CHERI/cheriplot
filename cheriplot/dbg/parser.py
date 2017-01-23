@@ -56,8 +56,8 @@ class TraceDumpMixin:
         else:
             # no exception
             exception = ""
-        print("{%d} 0x%x %s %s" % (entry.cycles, entry.pc, inst.inst.name,
-              exception))
+        print("{%d:%d} 0x%x %s %s" % (entry.asid, entry.cycles, entry.pc,
+                                      inst.inst.name, exception))
 
 
         if self.raw:
@@ -174,9 +174,6 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
         self._kernel_mode = False
         """Keep track of kernel-userspace transitions"""
 
-        self._nested_exceptions = 1
-        """Number of nested exceptions. Start at 1 because"""
-
         if (match_pc is None and match_reg is None and
             match_addr is None and match_opcode is None and
             match_exc is None):
@@ -189,16 +186,14 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
     def dump_kernel_user_switch(self, entry):
         if self._kernel_mode != entry.is_kernel():
             if entry.is_kernel():
-                print("Enter kernel mode {%d}" % (entry.cycles))
+                print("Enter kernel mode {%d:%d}" % (entry.asid, entry.cycles))
             else:
-                print("Enter user mode {%d}" % (entry.cycles))
+                print("Enter user mode {%d:%d}" % (entry.asid, entry.cycles))
             self._kernel_mode = entry.is_kernel()
 
     def do_dump(self, inst, entry, regs, last_regs, idx):
         # dump instr
         self.dump_instr(inst, entry, idx)
-        if entry.exception != 31:
-            print("Nested exceptions: %d" % self._nested_exceptions)
         if self.dump_registers:
             self.dump_regs(entry, regs, last_regs)
 
@@ -292,11 +287,6 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
             match = self._match_reg(inst, match)
             match = self._match_exception(inst, match)
             match = self._match_nop(inst, match)
-
-            if entry.exception != 31 or inst.opcode == "syscall":
-                self._nested_exceptions += 1
-            if inst.opcode == "eret":
-                self._nested_exceptions -= 1
 
             if match:
                 # dump all the instructions in the queue
