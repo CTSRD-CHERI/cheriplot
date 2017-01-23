@@ -27,17 +27,20 @@
 
 import numpy as np
 import logging
+import graph_tool as gt
 
 from matplotlib import pyplot as plt
-from matplotlib import collections, transforms, patches, text
+from matplotlib import collections, transforms, patches
 from matplotlib.colors import colorConverter
 
 from cheriplot.utils import ProgressPrinter
 from cheriplot.core.addrspace_axes import Range
+from cheriplot.core.provenance import (
+    CheriCapPerm, CheriNodeOrigin, NodeData, CheriCap)
 from cheriplot.core.vmmap import VMMap
-from cheriplot.core.provenance import CheriCapPerm, CheriNodeOrigin
 from cheriplot.plot.patch import PatchBuilder, OmitRangeSetBuilder
 from cheriplot.plot.provenance.provenance_plot import PointerProvenancePlot
+from cheriplot.plot.provenance.vmmap import VMMapPatchBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +60,6 @@ class ColorCodePatchBuilder(PatchBuilder):
 
         self.y_unit = 10**-6
         """Unit on the y-axis"""
-
-        self._omit_collection = np.empty((1,2,2))
-        """Collection of elements in omit ranges"""
-
-        self._keep_collection = np.empty((1,2,2))
-        """Collection of elements in keep ranges"""
 
         # permission composition shorthands
         load_store = CheriCapPerm.LOAD | CheriCapPerm.STORE
@@ -100,9 +97,6 @@ class ColorCodePatchBuilder(PatchBuilder):
 
         self._patches = None
         """List of enerated patches"""
-
-        self._arrow_collection = []
-        """Collection of arrow coordinates"""
 
     def _build_patch(self, node_range, y, perms):
         """
@@ -144,9 +138,6 @@ class ColorCodePatchBuilder(PatchBuilder):
 
         #invalidate collections
         self._patches = None
-        # # build arrows
-        # for child in node:
-        #     self._build_provenance_arrow(node, child)
 
     def get_patches(self):
         if self._patches:
@@ -179,69 +170,6 @@ class ColorCodePatchBuilder(PatchBuilder):
                     perm_string = "None"
                 legend[1].append(perm_string)
         return legend
-
-
-class VMMapPatchBuilder(PatchBuilder):
-    """
-    Build the patches that highlight the vmmap boundaries in the
-    AddressMapPlot
-    """
-
-    def __init__(self):
-        super(VMMapPatchBuilder, self).__init__()
-
-        self.y_max = np.inf
-        """Max value on the y-axis computed by the AddressMapPlot"""
-
-        self.patches = []
-        """List of rectangles"""
-
-        self.patch_colors = []
-        """List of colors for the patches"""
-
-        self.annotations = []
-        """Text labels"""
-
-        self._colors = {
-            "": colorConverter.to_rgb("#bcbcbc"),
-            "r": colorConverter.to_rgb("k"),
-            "w": colorConverter.to_rgb("y"),
-            "x": colorConverter.to_rgb("m"),
-            "rw": colorConverter.to_rgb("c"),
-            "rx": colorConverter.to_rgb("b"),
-            "wx": colorConverter.to_rgb("g"),
-            "rwx": colorConverter.to_rgb("r")
-        }
-        """Map section permission to line colors"""
-
-    def inspect(self, vmentry):
-        rect = patches.Rectangle((vmentry.start, 0),
-                                 vmentry.end - vmentry.start, self.y_max)
-        self.patches.append(rect)
-        self.patch_colors.append(self._colors[vmentry.perms])
-
-        label_position = ((vmentry.start + vmentry.end) / 2, self.y_max / 2)
-        vme_path = str(vmentry.path).split("/")[-1] if str(vmentry.path) else ""
-        if not vme_path and vmentry.grows_down:
-            vme_path = "stack"
-        vme_label = "%s %s" % (vmentry.perms, vme_path)
-        label = text.Text(text=vme_label, rotation="vertical",
-                          position=label_position,
-                          horizontalalignment="center",
-                          verticalalignment="center")
-        self.annotations.append(label)
-
-
-    def params(self, **kwargs):
-        self.y_max = kwargs.get("y_max", self.y_max)
-
-    def get_patches(self):
-        coll = collections.PatchCollection(self.patches, alpha=0.1,
-                                           facecolors=self.patch_colors)
-        return [coll]
-
-    def get_annotations(self):
-        return self.annotations
 
 
 class AddressMapOmitBuilder(OmitRangeSetBuilder):
@@ -297,6 +225,11 @@ class AddressMapPlot(PointerProvenancePlot):
     def __init__(self, *args, **kwargs):
         super(AddressMapPlot, self).__init__(*args, **kwargs)
 
+        fig = plt.figure(figsize=(15,10))
+        self.ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
+                               projection="custom_addrspace")
+        """Axes used for the plot"""
+
         self.patch_builder = ColorCodePatchBuilder()
         """
         Helper object that builds the plot components.
@@ -310,14 +243,16 @@ class AddressMapPlot(PointerProvenancePlot):
         See :class:`.AddressMapOmitBuilder`
         """
 
-        self.vmmap_patch_builder = VMMapPatchBuilder()
+        self.vmmap_patch_builder = VMMapPatchBuilder(self.ax)
         """
         Helper object that builds patches to display VM map regions.
-        See :class:`.VMMapPatchBuilder`
         """
 
         self.vmmap = None
         """VMMap object representing the process memory map"""
+
+        self.viewport_padding = 0.02
+        """Padding added to the bounding box of the viewport (% units)"""
 
     def set_vmmap(self, mapfile):
         """
@@ -329,24 +264,21 @@ class AddressMapPlot(PointerProvenancePlot):
     def build_dataset(self):
         super(AddressMapPlot, self).build_dataset()
 
-        highmap = {}
-        logger.info("Search for capability manipulations in high userspace memory")
-        for node in self.dataset.vertices():
-            data = self.dataset.vp.data[node]
-            if data.cap.base > 0x161000000:
-                if data.pc not in highmap:
-                    highmap[data.pc] = node
-                    logger.info("found high userspace entry %s, pc:0x%x", data, data.pc)
+        # this was used for debugging, now can reuse it to inspect weird kernel-space stuff
+        # highmap = {}
+        # logger.info("Search for capability manipulations in high userspace memory")
+        # for node in self.dataset.vertices():
+        #     data = self.dataset.vp.data[node]
+        #     if data.cap.base > 0x161000000:
+        #         if data.pc not in highmap:
+        #             highmap[data.pc] = node
+        #             logger.info("found high userspace entry %s, pc:0x%x", data, data.pc)
 
-    def plot(self):
+    def _prepare_patches(self):
         """
-        Create the address-map plot
+        Prepare the patches and address ranges in the patch_builder
+        and range_builder.
         """
-
-        fig = plt.figure(figsize=(15,10))
-        ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
-                          projection="custom_addrspace")
-
         dataset_progress = ProgressPrinter(self.dataset.num_vertices(),
                                            desc="Adding nodes")
         for item in self.dataset.vertices():
@@ -356,49 +288,199 @@ class AddressMapPlot(PointerProvenancePlot):
             dataset_progress.advance()
         dataset_progress.finish()
 
-        view_box = self.patch_builder.get_bbox()
-        xmin = view_box.xmin * 0.98
-        xmax = view_box.xmax * 1.02
-        ymin = view_box.ymin * 0.98
-        ymax = view_box.ymax * 1.02
-
         if self.vmmap:
-            self.vmmap_patch_builder.params(y_max=ymax)
+            logger.debug("Generate mmap regions")
             for vme in self.vmmap:
                 self.vmmap_patch_builder.inspect(vme)
                 self.range_builder.inspect_range(Range(vme.start, vme.end))
 
+    def plot(self):
+        """
+        Create the address-map plot
+        """
+
+        self._prepare_patches()
+
+        # add some padding to the viewport
+        view_box = self.patch_builder.get_bbox()
+        xmin = view_box.xmin * (1 - self.viewport_padding)
+        xmax = view_box.xmax * (1 + self.viewport_padding)
+        ymin = view_box.ymin * (1 - self.viewport_padding)
+        ymax = view_box.ymax * (1 + self.viewport_padding)
+
         logger.debug("Nodes %d, ranges %d", self.dataset.num_vertices(),
                      len(self.range_builder.ranges))
 
+        # add all the patches to the axes and set the omit
+        # ranges
         for collection in self.patch_builder.get_patches():
-            ax.add_collection(collection)
-        ax.set_omit_ranges(self.range_builder.get_omit_ranges())
+            self.ax.add_collection(collection)
+        self.ax.set_omit_ranges(self.range_builder.get_omit_ranges())
+
         if self.vmmap:
             for collection in self.vmmap_patch_builder.get_patches():
-                ax.add_collection(collection)
+                self.ax.add_collection(collection)
             for label in self.vmmap_patch_builder.get_annotations():
-                ax.add_artist(label)
+                self.ax.add_artist(label)
 
-        logger.debug("X limits: (%d, %d)", xmin, xmax)
-        ax.set_xlim(xmin, xmax)
-        logger.debug("Y limits: (%d, %d)", ymin, ymax)
-        y_pad = ymax * 0.02
-        ax.set_ylim(ymin - y_pad, ymax + y_pad)
+        self.ax.set_xlim(xmin, xmax)
+        self.ax.set_ylim(ymin, ymax)
         # manually set xticks based on the vmmap if we can
         if self.vmmap:
             start_ticks = [vme.start for vme in self.vmmap]
             end_ticks = [vme.end for vme in self.vmmap]
-            ticks = sorted(start_ticks + end_ticks)
+            ticks = sorted(set(start_ticks + end_ticks))
             # current_ticks = ax.get_ticks()
             logger.debug("address map ticks %s", ["0x%x" % t for t in ticks])
-            ax.set_xticks(ticks)
+            self.ax.set_xticks(ticks)
 
-        ax.invert_yaxis()
-        ax.legend(*self.patch_builder.get_legend(), loc="best")
-        ax.set_xlabel("Virtual Address")
-        ax.set_ylabel("Time (millions of cycles)")
+        self.ax.invert_yaxis()
+        self.ax.legend(*self.patch_builder.get_legend(), loc="best")
+        self.ax.set_xlabel("Virtual Address")
+        self.ax.set_ylabel("Time (millions of cycles)")
 
         logger.debug("Plot build completed")
         plt.savefig(self._get_plot_file())
-        return fig
+
+
+class SyscallPatchBuilder(PatchBuilder):
+    """
+    The patch generator build the matplotlib patches for each
+    syscall node
+
+    The nodes are rendered as lines with a different color depending
+    on the system call type.
+    """
+
+    def __init__(self):
+        super(SyscallPatchBuilder, self).__init__()
+
+        self.y_unit = 10**-6
+        """Unit on the y-axis"""
+
+        self._patches = None
+        """Cached list of generated patches"""
+
+        self._mmap_rects = []
+        """Rectangles representing mmap-munmap pairs"""
+
+    def inspect(self, node):
+        if node.cap.bound < node.cap.base:
+            raise RuntimeError("Invalid capability range %s", node)
+        bottom_y = node.cap.t_alloc * self.y_unit
+        top_y = node.cap.t_free * self.y_unit
+
+        if top_y < 0:
+            # t_free is not valid
+            top_y = bottom_y # for now don't bother looking for the max y
+        rect = patches.Rectangle((node.cap.base, bottom_y),
+                                 node.cap.length, top_y - bottom_y)
+        self._mmap_rects.append(rect)
+
+        #invalidate collections
+        self._patches = None
+
+    def get_patches(self):
+        if self._patches:
+            return self._patches
+        self._patches = []
+
+        coll = collections.PatchCollection(self._mmap_rects)
+        self._patches = [coll]
+        return self._patches
+
+    def get_legend(self):
+        if not self._patches:
+            self.get_patches()
+        legend = (self._patches, ["mmap"])
+        return legend
+
+
+class SyscallAddressMapPlot(AddressMapPlot):
+    """
+    Address map plot that only shows system calls
+    """
+
+    def __init__(self, *args, **kwargs):
+        self.syscall_graph = None
+        """Graph of syscall nodes"""
+
+        super(SyscallAddressMapPlot, self).__init__(*args, **kwargs)
+
+        self.patch_builder = SyscallPatchBuilder()
+        """Patch builder for syscall nodes"""
+
+    def init_dataset(self):
+        dataset = super(SyscallAddressMapPlot, self).init_dataset()
+        self.syscall_graph = gt.Graph(directed=True)
+        vdata = self.syscall_graph.new_vertex_property("object")
+        self.syscall_graph.vp["data"] = vdata
+        return dataset
+
+    def build_dataset(self):
+        """
+        Load the provenance graph and only retain SYS_* nodes with
+        relevant alloc and free times.
+
+        XXX This is a PoC, the actual transformation should be done
+        on the provenance graph directly
+        XXX Make a generic graph transformation module based on visitors
+        """
+        super(SyscallAddressMapPlot, self).build_dataset()
+        logger.info("Filter syscall nodes and merge mmap/munmap")
+
+        class _Visitor(gt.BFSVisitor):
+            pass
+
+        for node in self.dataset.vertices():
+            data = self.dataset.vp.data[node]
+            if data.origin == CheriNodeOrigin.SYS_MMAP:
+                # look for munmap in the subtree, if none
+                # is found the map survives until the process
+                # exits
+                syscall_node = self.syscall_graph.add_vertex()
+                sys_node_data = NodeData()
+                sys_node_data.cap = CheriCap()
+                sys_node_data.cap.base = data.cap.base
+                sys_node_data.cap.length = data.cap.length
+                sys_node_data.cap.offset = data.cap.offset
+                sys_node_data.cap.permissions = data.cap.permissions
+                sys_node_data.cap.objtype = data.cap.objtype
+                sys_node_data.cap.valid = data.cap.valid
+                sys_node_data.cap.sealed = data.cap.sealed
+                sys_node_data.cap.t_alloc = data.cap.t_alloc
+                sys_node_data.origin = data.origin
+                sys_node_data.pc = data.pc
+                sys_node_data.is_kernel = data.is_kernel
+                self.syscall_graph.vp.data[syscall_node] = sys_node_data
+
+                _visitor = _Visitor()
+                for descendant in gt.search.bfs_search(self.dataset, node, _visitor):
+                    descendant_data = self.dataset.vp.data[descendant]
+                    if descendant_data.origin == CheriNodeOrigin.SYS_MUNMAP:
+                        if sys_node_data.cap.t_free != -1:
+                            logger.error("Multiple MUNMAP for a single mapped block")
+                            raise RuntimeError("Multiple MUNMAP for a single mapped block")
+                        sys_node_data.cap.t_free = descendant_data.cap.t_alloc
+
+    def _prepare_patches(self):
+        """
+        Prepare the patches and address ranges in the patch_builder
+        and range_builder.
+        """
+        dataset_progress = ProgressPrinter(self.dataset.num_vertices(),
+                                           desc="Adding nodes")
+        for item in self.syscall_graph.vertices():
+            data = self.syscall_graph.vp.data[item]
+            self.patch_builder.inspect(data)
+            self.range_builder.inspect(data)
+            dataset_progress.advance()
+        dataset_progress.finish()
+
+        if self.vmmap:
+            logger.debug("Generate mmap regions")
+            view_box = self.patch_builder.get_bbox()
+            ymax = view_box.ymax * (1 + self.viewport_padding)
+            for vme in self.vmmap:
+                self.vmmap_patch_builder.inspect(vme)
+                self.range_builder.inspect_range(Range(vme.start, vme.end))
