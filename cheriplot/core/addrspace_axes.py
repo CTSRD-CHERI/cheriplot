@@ -296,7 +296,7 @@ class AddressSpaceXAxis(axis.XAxis):
         # other ticklabels
         def _shift_ticklabel(ticks, idx, new_x):
             prev_idx = max(idx - 1, 0)
-            next_idx = min(idx + 1, len(ticks))
+            next_idx = min(idx + 1, len(ticks) - 1)
             logger.debug("START shift_ticklabel %d %d %d", prev_idx, idx, next_idx)
             (prev_bbox, bbox, next_bbox), _ = self._get_tick_bboxes(
                 (ticks[prev_idx], ticks[idx], ticks[next_idx]), renderer)
@@ -509,6 +509,7 @@ class AddressSpaceAxes(axes.Axes):
                          Range(r[0], r[1], Range.T_OMIT))
         all_ranges = self._map_omit(Range(0, np.inf))
         self.xaxis.get_transform().update_range(all_ranges)
+
 
 register_projection(AddressSpaceAxes)
 
