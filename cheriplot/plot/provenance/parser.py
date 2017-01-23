@@ -83,18 +83,19 @@ class PointerProvenanceParser(CallbackTraceParser):
             """
             self.reg_nodes[idx] = val
 
-        def __repr__(self):
-            """
-            XXX broken: needs access to the dataset to get vertex data
-            """
-            dump = StringIO()
-            dump.write("RegisterSet snapshot:\n")
-            for idx, node in enumerate(self.reg_nodes):
-                if node:
-                    dump.write("$c%d = b:0x%x l:0x%x o:0x%x t:%d\n" % (
-                        idx, node.base, node.length, node.offset, node.t_alloc))
-                else:
-                    dump.write("$c%d = Not mapped\n" % idx)
+        # def __repr__(self):
+        #     """
+        #     XXX broken: needs access to the dataset to get vertex data
+        #     but not really needed here
+        #     """
+        #     dump = StringIO()
+        #     dump.write("RegisterSet snapshot:\n")
+        #     for idx, node in enumerate(self.reg_nodes):
+        #         if node:
+        #             dump.write("$c%d = b:0x%x l:0x%x o:0x%x t:%d\n" % (
+        #                 idx, node.base, node.length, node.offset, node.t_alloc))
+        #         else:
+        #             dump.write("$c%d = Not mapped\n" % idx)
 
     class SyscallContext:
         """
@@ -264,6 +265,7 @@ class PointerProvenanceParser(CallbackTraceParser):
                     self.regset[idx] = node
                     logger.warning("Guessing KCC %s", self.dataset.vp.data[node])
                 if idx == 30:
+                    # guess the value of KDC and use this in the initial register set
                     node = self.make_root_node(entry, None)
                     self.regset[idx] = node
                     cap = CheriCap()
@@ -276,10 +278,8 @@ class PointerProvenanceParser(CallbackTraceParser):
                     #     CheriCapPerm.CAP_LOAD | CheriCapPerm.CAP_STORE |
                     #     CheriCapPerm.CAP_STORE_LOCAL | CheriCapPerm.SEAL |
                     #     CheriCapPerm.SYSTEM_REGISTERS)
-                    cap.permissions = 0xffff # all XXX should we remove EXEC?
+                    cap.permissions = 0xffff # all
                     cap.valid = True
-                    # set the guessed capability value to the vertex data
-                    # property
                     self.dataset.vp.data[node].cap = cap
                     self.regset[idx] = node
                     logger.warning("Guessing KDC %s", self.dataset.vp.data[node])
@@ -475,6 +475,9 @@ class PointerProvenanceParser(CallbackTraceParser):
         self.regset[inst.op0.cap_index] = self.regset.pcc
         return False
 
+    def scan_cgetpccsetoffset(self, inst, entry, regs, last_regs, idx):
+        return self.scan_cgetpcc(inst, entry, regs, last_regs, idx)
+
     def scan_csetbounds(self, inst, entry, regs, last_regs, idx):
         """
         Each csetbounds is a new pointer allocation
@@ -527,6 +530,7 @@ class PointerProvenanceParser(CallbackTraceParser):
                 if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
                     logger.error("Loading PCC without exec permissions? %s %s",
                                  inst, pcc_data)
+                    raise RuntimeError("Loading PCC without exec permissions")
             else:
                 # we should create a node here but this should really
                 # not be happening, the node is None only when the
@@ -553,6 +557,7 @@ class PointerProvenanceParser(CallbackTraceParser):
                 if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
                     logger.error("Loading PCC without exec permissions? %s %s",
                                  inst, pcc_data)
+                    raise RuntimeError("Loading PCC without exec permissions")
             else:
                 # we should create a node here but this should really
                 # not be happening, the node is None only when the
