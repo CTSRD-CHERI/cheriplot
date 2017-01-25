@@ -346,8 +346,6 @@ class AddressSpaceAxes(axes.Axes):
     """
     Axes class for various plots involving considerations on
     address-spaces
-
-    XXX constrain panning in the address range [0, 0xff..ff]
     """
 
     name = "custom_addrspace"
@@ -361,7 +359,7 @@ class AddressSpaceAxes(axes.Axes):
         self.omit_filters = RangeSet()
         self.include_filters = RangeSet()
         self.mode = AddressSpaceAxes.DEFAULT_INCLUDE
-        self.transAS = None
+        self._status_message = ""
         kwargs["xscale"] = "scale_addrspace"
         super(AddressSpaceAxes, self).__init__(*args, **kwargs)
 
@@ -396,14 +394,9 @@ class AddressSpaceAxes(axes.Axes):
         self.transLimits = transforms.BboxTransformFrom(
             transforms.TransformedBbox(self.viewLim, self.transScale))
 
-        # address space non-uniform X scaling
-        # self.transAS = AddressSpaceCollapseTransform()
-
         # data to display coordinates
         self.transData = self.transScale + (
             self.transLimits + self.transAxes)
-        # self.transData = self.transAS + self.transScale + (
-        #     self.transLimits + self.transAxes)
 
         # blended transforms for xaxis and yaxis
         self._xaxis_transform = transforms.blended_transform_factory(
@@ -509,6 +502,20 @@ class AddressSpaceAxes(axes.Axes):
                          Range(r[0], r[1], Range.T_OMIT))
         all_ranges = self._map_omit(Range(0, np.inf))
         self.xaxis.get_transform().update_range(all_ranges)
+
+    def set_status_message(self, message):
+        """
+        Set the status message to show in the status bar along with
+        the (x,y) coordinates of the mouse
+        """
+        self._status_message = message
+
+    def format_coord(self, x, y):
+        """
+        Add the status message to the status bar format string
+        """
+        xy_fmt = super(AddressSpaceAxes, self).format_coord(x, y)
+        return "%s %s" % (xy_fmt, self._status_message)
 
 
 register_projection(AddressSpaceAxes)

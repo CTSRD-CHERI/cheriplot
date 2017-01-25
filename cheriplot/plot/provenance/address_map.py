@@ -26,8 +26,11 @@
 #
 
 import numpy as np
+import scipy as sp
 import logging
 import graph_tool as gt
+
+from sortedcontainers import SortedDict
 
 from matplotlib import pyplot as plt
 from matplotlib import collections, transforms, patches
@@ -38,13 +41,14 @@ from cheriplot.core.addrspace_axes import Range
 from cheriplot.core.provenance import (
     CheriCapPerm, CheriNodeOrigin, NodeData, CheriCap)
 from cheriplot.core.vmmap import VMMap
-from cheriplot.plot.patch import PatchBuilder, OmitRangeSetBuilder
+from cheriplot.plot.patch import (
+    PickablePatchBuilder, PatchBuilder, OmitRangeSetBuilder)
 from cheriplot.plot.provenance.provenance_plot import PointerProvenancePlot
 from cheriplot.plot.provenance.vmmap import VMMapPatchBuilder
 
 logger = logging.getLogger(__name__)
 
-class ColorCodePatchBuilder(PatchBuilder):
+class ColorCodePatchBuilder(PickablePatchBuilder):
     """
     The patch generator build the matplotlib patches for each
     capability node.
@@ -55,8 +59,8 @@ class ColorCodePatchBuilder(PatchBuilder):
     creates the lines for the nodes.
     """
 
-    def __init__(self):
-        super(ColorCodePatchBuilder, self).__init__()
+    def __init__(self, figure):
+        super(ColorCodePatchBuilder, self).__init__(figure, None)
 
         self.y_unit = 10**-6
         """Unit on the y-axis"""
@@ -98,6 +102,9 @@ class ColorCodePatchBuilder(PatchBuilder):
         self._patches = None
         """List of enerated patches"""
 
+        self._node_map = SortedDict()
+        """Maps the Y axis coordinate to the graph node at that position"""
+
     def _build_patch(self, node_range, y, perms):
         """
         Build patch for the given range and type and add it
@@ -122,6 +129,9 @@ class ColorCodePatchBuilder(PatchBuilder):
         self._collection_map["call"].append(line)
 
     def inspect(self, node):
+        """
+        Inspect a graph vertex and create the patches for it.
+        """
         if node.cap.bound < node.cap.base:
             logger.warning("Skip overflowed node %s", node)
             return
@@ -135,6 +145,8 @@ class ColorCodePatchBuilder(PatchBuilder):
             self._build_call_patch(keep_range, node_y, node.origin)
         else:
             self._build_patch(keep_range, node_y, node.cap.permissions)
+
+        self._node_map[node.cap.t_alloc] = node
 
         #invalidate collections
         self._patches = None
@@ -170,6 +182,51 @@ class ColorCodePatchBuilder(PatchBuilder):
                     perm_string = "None"
                 legend[1].append(perm_string)
         return legend
+
+    def on_click(self, event):
+        """
+        Attempt to retreive the data in less than O(n) for better
+        interactivity at the expense of having to hold a dictionary of
+        references to nodes for each t_alloc.
+        Note that t_alloc is unique for each capability node as it
+        is the cycle count, so it can be used as the key.
+        """
+        ax = event.inaxes
+        if ax is None:
+            return
+
+        # back to data coords without scaling
+        y_coord = int(event.ydata / self.y_unit)
+        y_max = self._bbox.ymax / self.y_unit
+        # tolerance for y distance, 0.25 units
+        epsilon = 0.25 / self.y_unit
+
+        # try to get the node closer to the y_coord
+        # in the fast way
+        # For now fall-back to a reduced linear search but would be
+        # useful to be able to index lines with an R-tree?
+        idx_min = self._node_map.bisect_left(max(0, y_coord - epsilon))
+        idx_max = self._node_map.bisect_right(min(y_max , y_coord + epsilon))
+        iter_keys = self._node_map.islice(idx_min, idx_max)
+        # the closest node to the click position
+        # initialize it with the first node in the search range
+        try:
+            pick_target = self._node_map[next(iter_keys)]
+        except StopIteration:
+            # no match found
+            ax.set_status_message("")
+            return
+
+        for key in iter_keys:
+            node = self._node_map[key]
+            if (node.cap.base <= event.xdata and
+                node.cap.bound >= event.xdata and
+                abs(y_coord - key) < abs(y_coord - pick_target.cap.t_alloc)):
+                # the click event is within the node bounds and
+                # the node Y is closer to the click event than
+                # the previous pick_target
+                pick_target = node
+        ax.set_status_message(pick_target)
 
 
 class AddressMapOmitBuilder(OmitRangeSetBuilder):
@@ -230,7 +287,7 @@ class AddressMapPlot(PointerProvenancePlot):
                                projection="custom_addrspace")
         """Axes used for the plot"""
 
-        self.patch_builder = ColorCodePatchBuilder()
+        self.patch_builder = ColorCodePatchBuilder(fig)
         """
         Helper object that builds the plot components.
         See :class:`.ColorCodePatchBuilder`
@@ -261,24 +318,12 @@ class AddressMapPlot(PointerProvenancePlot):
         """
         self.vmmap = VMMap(mapfile)
 
-    def build_dataset(self):
-        super(AddressMapPlot, self).build_dataset()
-
-        # this was used for debugging, now can reuse it to inspect weird kernel-space stuff
-        # highmap = {}
-        # logger.info("Search for capability manipulations in high userspace memory")
-        # for node in self.dataset.vertices():
-        #     data = self.dataset.vp.data[node]
-        #     if data.cap.base > 0x161000000:
-        #         if data.pc not in highmap:
-        #             highmap[data.pc] = node
-        #             logger.info("found high userspace entry %s, pc:0x%x", data, data.pc)
-
     def _prepare_patches(self):
         """
         Prepare the patches and address ranges in the patch_builder
         and range_builder.
         """
+
         dataset_progress = ProgressPrinter(self.dataset.num_vertices(),
                                            desc="Adding nodes")
         for item in self.dataset.vertices():

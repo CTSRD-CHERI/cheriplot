@@ -127,8 +127,9 @@ class CheriCap:
         off = "%x" % self.offset if self.offset is not None else "-"
         perms = self.str_perm()
         objtype = "%x" % self.objtype if self.objtype is not None else "-"
-        return "[b:%s o:%s l:%s p:(%s) t:%s v:%s s:%s]" % (
-            base, off, leng, perms, objtype, self.valid, self.sealed)
+        return "[b:%s o:%s l:%s p:(%s) t:%s v:%s s:%s] t_alloc:%d t_free:%d" % (
+            base, off, leng, perms, objtype, self.valid, self.sealed,
+            self.t_alloc, self.t_free)
 
     def has_perm(self, perm):
         """

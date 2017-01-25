@@ -37,30 +37,28 @@ logger = logging.getLogger(__name__)
 class OmitRangeSetBuilder:
     """
     The rangeset generator creates the ranges of address-space in
-    which we are not interested
+    which we are not interested.
     """
 
     def __init__(self):
         self.ranges = RangeSet()
-        """List of uninteresting ranges of address-space"""
-        
+        """List of uninteresting ranges of address-space."""
+
         self.size_limit = 2**12
-        """Minimum distance between omitted address-space ranges"""
-        
+        """Minimum distance between omitted address-space ranges."""
+
         # omit everything if there is nothing to show
         self.ranges.append(Range(0, np.inf, Range.T_OMIT))
 
     def __iter__(self):
-        """
-        Allow convenient iteration over the ranges in the builder
-        """
+        """Allow convenient iteration over the ranges in the builder."""
         return iter(self.ranges)
 
     def _update_regions(self, node_range):
         """
         Handle the insertion of a new address range to :attr:`ranges`
         by merging overlapping or contiguous ranges.
-        The behaviour is modified by :attr:`size_limit`
+        The behaviour is modified by :attr:`size_limit`.
 
         :param node_range: Range specifying the new region
         :type node_range: :class:`cheriplot.core.Range`
@@ -98,9 +96,9 @@ class OmitRangeSetBuilder:
     def inspect(self, data):
         """
         Inspect a data item and update internal
-        set of ranges
+        set of ranges.
 
-        This is intended to be overridden by subclasses
+        This is intended to be overridden by subclasses.
 
         :param data: a item of the dataset to be processed
         :type data: object
@@ -110,9 +108,9 @@ class OmitRangeSetBuilder:
     def get_omit_ranges(self):
         """
         Return an array of address ranges that do not contain
-        interesting data evaluated by :meth:`inspect`
+        interesting data evaluated by :meth:`inspect`.
 
-        This is intended to be overridden by subclasses
+        This is intended to be overridden by subclasses.
 
         :return: a list of (start, end) pairs defining each address
         range that should be considered uninteresting
@@ -128,16 +126,16 @@ class PatchBuilder:
     """
 
     def __init__(self):
-        
+
         self._bbox = transforms.Bbox.from_bounds(0, 0, 0, 0)
-        """Bounding box of the artists in the collections"""
+        """Bounding box of the artists in the collections."""
 
     def inspect(self, data):
         """
         Inspect a data item and update internal
-        set of ranges
+        set of patches.
 
-        This is intended to be overridden by subclasses
+        This is intended to be overridden by subclasses.
 
         :param data: a item of the dataset to be processed
         :type data: object
@@ -147,9 +145,9 @@ class PatchBuilder:
     def get_patches(self):
         """
         Return a list of patches to draw for the data
-        evaluated by :meth:`inspect`
+        evaluated by :meth:`inspect`.
 
-        This is intended to be overridden by subclasses
+        This is intended to be overridden by subclasses.
 
         :return: a list of matplotlib artists that will be added to
         the Axes
@@ -160,7 +158,7 @@ class PatchBuilder:
     def get_bbox(self):
         """
         Return the bounding box of the data produced, this is useful
-        to get the limits in the X and Y of the data
+        to get the limits in the X and Y of the data.
 
         :return: a bounding box containing all the artists returned by
         :meth:`get_patches`
@@ -170,9 +168,44 @@ class PatchBuilder:
 
     def get_legend(self):
         """
-        Generate legend for the patches produced
-        
+        Generate legend for the patches produced.
+
         :return: a 2-tuple that can be used as Axes.legend arguments
         :rtype: tuple
         """
         return None
+
+
+class PickablePatchBuilder(PatchBuilder):
+    """
+    Patch builder with additional support for picking
+    the objects from the canvas.
+    """
+
+    def __init__(self, figure, dataset):
+        super(PickablePatchBuilder, self).__init__()
+        self._figure = figure
+        """The figure used to register the event handler."""
+
+        self._dataset = dataset
+        """
+        The plot dataset is needed to lookup data associated
+        with the item picked in the UI.
+        """
+
+        self._figure.canvas.mpl_connect("button_release_event", self.on_click)
+
+    def on_click(self, event):
+        """
+        Handle the click event on the canvas to check which object is being
+        selected.
+        We do not use the matplotlib "pick_event" because for collections it
+        scans the whole collection to find the artist, we may want to do it
+        faster (but can still call the picker on the collection patches).
+        Also matplotlib does not allow to bind external data
+        (e.g. the graph node) to the object so we would have to do
+        that here anyway.
+
+        This is intended to be overridden by subclasses.
+        """
+        return
