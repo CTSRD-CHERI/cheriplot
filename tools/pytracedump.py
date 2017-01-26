@@ -52,8 +52,20 @@ class PyTraceDump(Tool):
     it has some additional features.
     """
 
-    description="Dump CHERI binary trace "\
-                 "(python version of cheri-tracedump)."
+    description = """
+    Dump CHERI binary trace (python version of cheri-tracedump).
+    Each instruction entry has the following format:
+    {<ASID>:<instruction_cycle_number>} <PC> <instr_mnemonic> <operands>
+    
+    Memory accesses show the referenced address in the line below:
+    <target_register> = [<hex_addr>] or [<hex_addr>] = <source_register>
+
+    Capabilities as displayed in the following format:
+    [b:<base> o:<offset> l:<length> p:<permission> t:<obj_type> v:<valid> s:<sealed>]
+    t_alloc and t_free are only relevant in the provenance graph.
+
+    When dumping the register set, the format of each entry is the following:
+    [<register_value_valid>] <register> = <value>"""
 
     def init_arguments(self):
         super(PyTraceDump, self).init_arguments()

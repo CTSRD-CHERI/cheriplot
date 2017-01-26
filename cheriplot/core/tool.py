@@ -40,7 +40,8 @@ class Tool:
     description = ""
 
     def __init__(self):
-        self.parser = ap.ArgumentParser(description=self.description)
+        self.parser = ap.ArgumentParser(description=self.description,
+                                        formatter_class=ap.RawTextHelpFormatter)
         self.init_arguments()
 
     def init_arguments(self):
@@ -118,5 +119,7 @@ class PlotTool(Tool):
         self.parser.add_argument("-c", "--cache",
                                  help="Enable caching of the parsed trace",
                                  action="store_true")
-        self.parser.add_argument("-o", "--outfile", help="Save plot to file")
+        self.parser.add_argument("-o", "--outfile",
+                                 help="Save plot to file, see matplotlib for "\
+                                 "supported formats (svg, png, pgf...)")
         
