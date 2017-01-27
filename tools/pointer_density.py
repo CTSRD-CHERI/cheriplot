@@ -54,6 +54,9 @@ class DensityPlotTool(PlotTool):
         else:
             plot.show()
 
-if __name__ == "__main__":
+def main():
     tool = DensityPlotTool()
     tool.run()
+
+if __name__ == "__main__":
+    main()

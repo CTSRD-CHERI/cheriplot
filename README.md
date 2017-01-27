@@ -62,17 +62,17 @@ qwattash@host $ xz helloworld.cvtrace # (optionally compress trace to save space
 
 ### Inspecting traces
 
-All tools provided by cheriplot are in the `tools/` subdirectory in the tree.
+All tools provided by cheriplot are in the `tools/` subdirectory in the tree, they are installed as follows:
 
-- pytracedump
+- cheriplot-tracedump
   Provides generic inspection of binary traces, can dump registers and apply various filters
-- pointer_provenance
+- cheriplot-pointer-provenance
   Main tool for pointer provenance plots, currently only the `--asmap` and `--pfreq` plots are supported, others are WIP.
-- pointer_oob
+- cheriplot-pointer-oob
   Looks for capability manipulations that generate an out-of-bound offset that would trigger an error if dereferenced.
-- pointer_density
+- cheriplot-pointer-density
   Plots the number of capabilites stored (number of accesses by csc, there may be overcounting if there are a lot of store to the same location) vs the virtual address with page granularity.
-- pointer_size_cdf
+- cheriplot-capsize-cdf
   CDF plot of the capability size.
 
 Note that most plots support the `-c` switch that enables caching of intermediate data structures such as the provenance graph, so that subsequent calls will not scan again the trace

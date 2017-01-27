@@ -82,6 +82,9 @@ class ProvenancePlotTool(PlotTool):
 
         plot.show()
 
-if __name__ == "__main__":
+def main():
     tool = ProvenancePlotTool()
     tool.run()
+
+if __name__ == "__main__":
+    main()

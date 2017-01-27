@@ -138,6 +138,9 @@ class PyTraceDump(Tool):
         end = args.end if args.end is not None else len(dump_parser)
         dump_parser.parse(start, end)
 
-if __name__ == "__main__":
+def main():
     tool = PyTraceDump()
     tool.run()
+
+if __name__ == "__main__":
+    main()

@@ -54,6 +54,9 @@ class OutOfBoundPlotTool(PlotTool):
         else:
             plot.show()
 
-if __name__ == "__main__":
+def main():
     tool = OutOfBoundPlotTool()
     tool.run()
+
+if __name__ == "__main__":
+    main()
