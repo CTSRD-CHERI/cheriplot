@@ -94,6 +94,8 @@ class PyTraceDump(Tool):
         self.parser.add_argument("--exception", type=str,
                                  help="Show all the instructions that raise"
                                  " a given exception")
+        self.parser.add_argument("--syscall", type=int,
+                                 help="Show all the syscalls with given code")
         self.parser.add_argument("--nop", type=base16_int,
                                  help="Show all the canonical nops with"
                                  " given code.")
@@ -126,6 +128,7 @@ class PyTraceDump(Tool):
                                       match_addr=args.mem,
                                       match_exc=args.exception,
                                       match_nop=args.nop,
+                                      match_syscall=args.syscall,
                                       match_mode=match_mode,
                                       before=args.B,
                                       after=args.A,

@@ -91,7 +91,8 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
     def __init__(self, dataset, trace_path, dump_registers=False,
                  match_opcode=None, match_pc=None, match_reg=None,
                  match_addr=None, match_exc=None, match_nop=None,
-                 match_mode="and", before=0, after=0, **kwargs):
+                 match_syscall=None, match_mode="and", before=0,
+                 after=0, **kwargs):
         """
         This parser filters the trace according to a set of match
         conditions. Multiple match conditions can be used at the same time
@@ -120,6 +121,9 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
 
         :param match_nop: match the given canonical NOP code
         :type match_addr: int
+
+        :param match_syscall: match the given syscall code
+        :type match_sycall: int
 
         :param match_mode: how multiple match args are combined, valid
         values are "and" and "or"
@@ -155,6 +159,9 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
 
         self.match_nop = match_nop
         """Find occurrences of given canonical NOP."""
+
+        self.match_syscall = match_syscall
+        """Find occurrences of the given syscall"""
 
         self.match_mode = match_mode
         """How to compose multiple match conditions (and, or)."""
@@ -264,6 +271,17 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
                 match_exc = inst.entry.exception == int(self.match_exc)
         return self._update_match_result(match, match_exc)
 
+    def _match_syscall(self, inst, regs, match):
+        """Check if this instruction is a syscall with given code"""
+        if self.match_syscall is None:
+            return match
+        match_syscall = False
+        if inst.opcode == "syscall" and inst.entry.exception == 8:
+            # system call code is in v0
+            if regs.valid_caps[2] and regs.cap_reg[2] == self.match_syscall:
+                match_syscall = True
+        return self._update_match_result(match, match_syscall)
+
     def _match_nop(self, inst, match):
         """Check if instruction is a given canonical NOP"""
         if self.match_nop is None:
@@ -275,8 +293,8 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
         return self._update_match_result(match, test_result)
 
     def scan_all(self, inst, entry, regs, last_regs, idx):
-        self.dump_kernel_user_switch(entry)
         if self._dump_next > 0:
+            self.dump_kernel_user_switch(entry)
             self._dump_next -= 1
             self.do_dump(inst, entry, regs, last_regs, idx)
         else:
@@ -287,8 +305,10 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
             match = self._match_reg(inst, match)
             match = self._match_exception(inst, match)
             match = self._match_nop(inst, match)
+            match = self._match_syscall(inst, regs, match)
 
             if match:
+                self.dump_kernel_user_switch(entry)
                 # dump all the instructions in the queue
                 while len(self._entry_history) > 0:
                     old_inst, idx = self._entry_history.popleft()
