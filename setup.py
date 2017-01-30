@@ -12,5 +12,6 @@ setup(name="cheriplot",
               "cheriplot-pointer-density = tools.pointer_density:main",
               "cheriplot-pointer-oob = tools.pointer_oob:main",
               "cheriplot-capsize-cdf = tools.pointer_size_cdf:main",
+              "cheriplot-capsize-bars = tools.reference_histogram:main",
           ]
       })

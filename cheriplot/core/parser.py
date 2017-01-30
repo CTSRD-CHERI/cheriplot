@@ -79,7 +79,7 @@ class Operand:
     Helper class used to parse memory operands
     """
 
-    def __init__(self, op_info, instr):
+    def __init__(self, op_info, instr, is_target=False):
 
         self.info = op_info
         """The operand_info structure for this operand"""
@@ -92,6 +92,9 @@ class Operand:
 
         self.is_immediate = op_info.is_immediate
         """Operand is immediate?"""
+
+        self.is_destination = is_target
+        """Is the operand the target of the instruction?"""
 
     @property
     def name(self):
@@ -108,21 +111,34 @@ class Operand:
             return self.info.immediate
         elif self.is_register:
             reg_num = self.info.register_number
+
+            # select the correct register set to take the value
+            # this is important when we modify the source register e.g.
+            # daddiu $2, $2, 1
+            # the source value is in prev_regset while the destination
+            # value is in the current regset
+            if self.is_destination:
+                regset = self.instr._regset
+            else:
+                regset = self.instr._prev_regset
+
             if reg_num == 0:
+                # $zero is always zero
                 return 0
+
             elif reg_num < 32:
-                if not self.instr._regset.valid_gprs[reg_num - 1]:
+                if not regset.valid_gprs[reg_num - 1]:
                     logger.debug("Taking GPR value $%d from invalid register",
                                    reg_num)
-                return self.instr._regset.gpr[reg_num - 1]
+                return regset.gpr[reg_num - 1]
             elif reg_num < 64:
                 logger.warning("Floating point registers not yet supported")
                 return 0
             else:
-                if not self.instr._regset.valid_caps[reg_num - 64]:
+                if not regset.valid_caps[reg_num - 64]:
                     logger.debug("Taking CAP value $c%d from invalid register",
                                    reg_num - 64)
-                return self.instr._regset.cap_reg[reg_num - 64]
+                return regset.cap_reg[reg_num - 64]
         else:
             logger.error("Operand type not supported")
             raise ValueError("Operand type not supported")
@@ -255,22 +271,18 @@ class Instruction:
         self.entry = entry
         """Trace entry of the instruction"""
 
-        self._parsed = False
-        """Flag indicating whether :meth:`parse` has been called."""
-
         parts = inst.name.split("\t")
         self.opcode = parts[1]
         """Instruction opcode"""
-
-        # if inst.type == inst.instruction_type.memory_access:
-        # last two operands are offset+register
 
         # XXX may make operand parsing lazy to save parsing time
         self.operands = []
         """List of instruction operands :class:`.Operand`"""
 
-        for op in inst.operands:
-            self.operands.append(Operand(op, self))
+        for idx, op in enumerate(inst.operands):
+            is_target = (idx == 0)
+            parsed_op = Operand(op, self, is_target)
+            self.operands.append(parsed_op)
 
     def _op_n(self, n):
         """Shorthand getter for operand N."""

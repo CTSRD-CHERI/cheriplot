@@ -54,7 +54,7 @@ class CheriNodeOrigin(IntEnum):
     Enumeration of the possible originators of
     nodes in the provenance graph.
     """
-    
+
     UNKNOWN = -1
     ROOT = 0
     # instructions
@@ -86,10 +86,10 @@ class CheriCap:
         """
         self.base = pct_cap.base if pct_cap else None
         """Capability base."""
-        
+
         self.length = pct_cap.length if pct_cap else None
         """Capability length."""
-        
+
         self.offset = pct_cap.offset if pct_cap else None
         """Capability offset."""
 
@@ -192,6 +192,13 @@ class NodeData:
         of times (cycle number) when the node is stored to that
         location.
         """
+
+        self.deref = {"load": [], "store": [], "call": []}
+        """
+        Store all the offsets (including duplicates) that are dereferenced
+        for this capability node.
+        """
+
         self.cap = None
         """Cheri capability data, see :class:`.CheriCap`."""
 

@@ -293,13 +293,17 @@ class PointerProvenanceParser(CallbackTraceParser):
         else:
             return entry.exception != 31
 
-    def _instr_committed(self, entry):
+    def _instr_committed(self, inst, entry, regs, last_regs):
         """
         Check if an instruction has been committed and will
         not be replayed.
+
         """
-        if self._has_exception(entry) and entry.exception != 0:
-            return False
+        # XXX disable it because things break when the exception does
+        # not roll-back the instruction, there is no way of detecting
+        # this so we just assume that it can happen.
+        # if self._has_exception(entry) and entry.exception != 0:
+        #     return False
         return True
 
     def _do_scan(self, entry):
@@ -348,13 +352,11 @@ class PointerProvenanceParser(CallbackTraceParser):
         if not self.regs_valid:
             self._set_initial_regset(inst, entry, regs)
 
-        if not self._do_scan(entry):
-            return False
-
         # eret may throw an exception, in which case the nodes
         # are handled again in scan_all (which is always executed
         # after per-opcode scan_* methods)
-        logger.debug("eret: update pcc %s", self.dataset.vp.data[self.regset[31]])
+        logger.debug("eret {%d}: update pcc %s", entry.cycles,
+                     self.dataset.vp.data[self.regset[31]])
         self.regset.pcc = self.regset[31] # restore saved pcc
         return False
 
@@ -363,7 +365,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         Record entering mmap system calls so that we can grab the return
         value at the end
         """
-        if not self._do_scan(entry):
+        if not self.regs_valid:
             return False
 
         self.syscall_context.scan_syscall_start(inst, entry, regs,
@@ -575,6 +577,64 @@ class PointerProvenanceParser(CallbackTraceParser):
             self.update_regs(inst, entry, regs, last_regs)
         return False
 
+    def _handle_dereference(self, inst, entry, ptr_reg):
+        """
+        Store offset at time of dereference of a given capability.
+        """
+        try:
+            node = self.regset[ptr_reg]
+        except KeyError:
+            logger.error("{%d} Dereference unknown capability %s",
+                         entry.cycles, inst)
+            raise RuntimeError("Dereference unknown capability")
+        if node is None:
+            logger.error("{%d} Dereference unknown capability %s",
+                         entry.cycles, inst)
+            raise RuntimeError("Dereference unknown capability")
+        node_data = self.dataset.vp.data[node]
+        # instead of the capability register offset we use the
+        # entry memory_address so we capture any extra offset in
+        # the instruction as well
+        if entry.is_load:
+            node_data.deref["load"].append(entry.memory_address)
+        elif entry.is_store:
+            node_data.deref["store"].append(entry.memory_address)
+        else:
+            if not self._has_exception(entry):
+                logger.error("Dereference is neither a load or a store %s", inst)
+                raise RuntimeError("Dereference is neither a load nor a store")
+
+    def scan_cap_load(self, inst, entry, regs, last_regs, idx):
+        """
+        Store all offsets at time of dereference of a given capability.
+        """
+        if not self._do_scan(entry):
+            return False
+
+        # get the register with the address capability
+        # this may be a normal capability load or a linked-load
+        if inst.opcode.startswith("cll"):
+            ptr_reg = inst.op1.cap_index
+        else:
+            ptr_reg = inst.op3.cap_index
+        self._handle_dereference(inst, entry, ptr_reg)
+        return False
+
+    def scan_cap_store(self, inst, entry, regs, last_regs, idx):
+        """
+        Store all offsets at time of dereference of a given capability.
+        """
+        if not self._do_scan(entry):
+            return False
+        # get the register with the address capability
+        # this may be a normal capability store or an atomic-store
+        if inst.opcode != "csc" and inst.opcode.startswith("csc"):
+            ptr_reg = inst.op2.cap_index
+        else:
+            ptr_reg = inst.op3.cap_index
+        self._handle_dereference(inst, entry, ptr_reg)
+        return False
+
     def scan_clc(self, inst, entry, regs, last_regs, idx):
         """
         If a capability is loaded in a register we need to find
@@ -609,14 +669,21 @@ class PointerProvenanceParser(CallbackTraceParser):
             if node is not None:
                 del self.regset.memory_map[entry.memory_address]
         else:
-            if node is None:
-                # add a node as a root node because we have never
-                # seen the content of this register yet.
-                node = self.make_root_node(entry, inst.op0.value,
-                                           time=entry.cycles)
-                logger.debug("Found %s value %s from memory load",
-                             inst.op0.name, self.dataset.vp.data[node])
-            self.regset[cd] = node
+            # check if the load instruction has committed
+            old_cd = CheriCap(last_regs.cap_reg[cd])
+            curr_cd = CheriCap(regs.cap_reg[cd])
+            if old_cd != curr_cd:
+                # the destination register was updated so the
+                # instruction did commit
+
+                if node is None:
+                    # add a node as a root node because we have never
+                    # seen the content of this register yet.
+                    node = self.make_root_node(entry, inst.op0.value,
+                                               time=entry.cycles)
+                    logger.debug("Found %s value %s from memory load",
+                                 inst.op0.name, self.dataset.vp.data[node])
+                self.regset[cd] = node
         return False
 
     def scan_csc(self, inst, entry, regs, last_regs, idx):
@@ -639,17 +706,16 @@ class PointerProvenanceParser(CallbackTraceParser):
         cd = inst.op0.cap_index
         node = self.regset[cd]
 
-        if node is None:
-            # may need to create one
-            if inst.op0.value.valid:
-                # add a node as a root node because there is no node
-                # associated with register yet.
+
+        if inst.op0.value.valid:
+            # if this is not a data access
+
+            if node is None and not self._has_exception(entry):
+                # need to create one
                 node = self.make_root_node(entry, inst.op0.value)
                 self.regset[cd] = node
                 logger.debug("Found %s value %s from memory store",
                              inst.op0.name, node)
-            # else, nothing to do, it is a data access
-        else:
             # if there is a node associated with the register that is
             # being stored, save it in the memory_map for the memory location
             # written by csc
@@ -657,6 +723,7 @@ class PointerProvenanceParser(CallbackTraceParser):
             # set the address attribute of the node vertex data property
             node_data = self.dataset.vp.data[node]
             node_data.address[entry.cycles] = entry.memory_address
+
         return False
 
     def make_root_node(self, entry, cap, time=0, pc=0):

@@ -74,6 +74,8 @@ All tools provided by cheriplot are in the `tools/` subdirectory in the tree, th
   Plots the number of capabilites stored (number of accesses by csc, there may be overcounting if there are a lot of store to the same location) vs the virtual address with page granularity.
 - cheriplot-capsize-cdf
   CDF plot of the capability size.
+- cheriplot-capsize-bars
+  Stacked bar plot prototype showing the size of capabilities that cover each memory mapped region in the address space. There are two variants, one takes into account all capabilities found from CSETBOUNDS and CFROMPTR and each capability is counted for a VM entry if it can be dereferenced there. The second takes into account the capabilities that are dereferenced (load and store) in each VM entry.
 
 Note that most plots support the `-c` switch that enables caching of intermediate data structures such as the provenance graph, so that subsequent calls will not scan again the trace
 which is time-consuming task.

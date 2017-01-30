@@ -29,6 +29,7 @@ import logging
 import pickle
 
 from graph_tool.all import Graph, load_graph
+from graph_tool.search import bfs_search
 
 from cheriplot.utils import ProgressPrinter
 from cheriplot.core.provenance import CheriNodeOrigin
@@ -90,7 +91,7 @@ class PointerProvenancePlot(Plot):
                 # XXX we should remove the whole subtree!!
                 remove_list.append(node)
             progress.advance()
-        self.dataset.remove_vertex(remove_list)
+        self.dataset.remove_vertex(remove_list, fast=True)
         progress.finish()
 
         num_nodes = self.dataset.num_vertices()
@@ -129,7 +130,7 @@ class PointerProvenancePlot(Plot):
                     logger.error("Found node with more than a single parent %s",
                                  parent)
                     raise RuntimeError("Too many parents for a node")
-        self.dataset.remove_vertex(remove_list)
+        self.dataset.remove_vertex(remove_list, fast=True)
         progress.finish()
 
         num_nodes = self.dataset.num_vertices()
