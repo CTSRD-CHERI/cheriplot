@@ -28,9 +28,9 @@
 import numpy as np
 import logging
 
-from graph_tool.all import *
-
 from matplotlib import pyplot as plt
+
+from graph_tool.all import GraphView, bfs_iterator, graph_draw, arf_layout
 
 from cheriplot.plot.provenance.provenance_plot import PointerProvenancePlot
 
@@ -73,4 +73,78 @@ class PointerTreePlot(PointerProvenancePlot):
         # nx.draw_networkx_labels(self.dataset, pos, labels, font_size=5)
 
         plt.axis("off")
+        plt.savefig(self._get_plot_file())
+
+
+class ProvenanceTreePlot(PointerProvenancePlot):
+    """
+    Plot a part of the provenance tree with the given node(s).
+    The idea here is to have a capability that we know and we
+    ask where in the provenace tree it is, so we want to see
+    the parents up to the root and all children.
+    """
+
+    def __init__(self, target_cap, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.fig, self.ax = self.init_axes()
+        
+        self.target_cap = target_cap
+        """The cycles number of the capability to display"""
+
+        self.view = None
+
+    def init_axes(self):
+        """Build the figure and axes for the plot."""
+        plt.switch_backend("cairo")
+        fig = plt.figure(figsize=(15,10))
+        ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,])
+        return (fig, ax)
+
+    def build_dataset(self):
+        # mask the graph nodes that are neither predecessors nor
+        # successors of the target node
+        super().build_dataset()
+
+        # find the target vertex with the given target capability t_alloc
+        target = None
+        for v in self.dataset.vertices():
+            data = self.dataset.vp.data[v]
+            if data.cap.t_alloc == self.target_cap:
+                target = v
+                break
+        if target is None:
+            logger.error("No node with %d creation time found", self.target_cap)
+            raise RuntimeError("Node not found")
+
+        # get related (successors and predecessors) nodes
+        related = [target]
+        pred = target
+        while pred is not None:
+            pred_iter = pred.in_neighbours()
+            try:
+                # there should always be only one predecessor or none here
+                pred = next(pred_iter)
+                related.append(pred)
+            except StopIteration:
+                pred = None
+
+        for edge in bfs_iterator(self.dataset, target):
+            related.append(edge.target())
+
+        logger.debug("Related nodes %s", related)
+
+        self.view = GraphView(self.dataset, vfilt=lambda v: v in related)
+        
+
+    def plot(self):
+
+        layout = arf_layout(self.view)
+        # also arf_layout? not sure how easy is to draw a tree with multiple roots
+        # if we want to see features there
+
+        self.ax.set_axis_off()
+
+        graph_draw(self.view, pos=layout, mplfig=self.ax)
+        logger.debug("Plot done")
         plt.savefig(self._get_plot_file())

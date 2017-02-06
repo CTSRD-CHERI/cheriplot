@@ -37,7 +37,7 @@ import pstats
 
 from cheriplot.core.tool import PlotTool
 from cheriplot.plot.provenance import (
-    PointerTreePlot, AddressMapPlot, PointedAddressFrequencyPlot,
+    ProvenanceTreePlot, AddressMapPlot, PointedAddressFrequencyPlot,
     SyscallAddressMapPlot)
 
 logger = logging.getLogger(__name__)
@@ -48,8 +48,10 @@ class ProvenancePlotTool(PlotTool):
 
     def init_arguments(self):
         super(ProvenancePlotTool, self).init_arguments()
-        self.parser.add_argument("--tree", help="Draw a provenance tree plot",
-                                 action="store_true")
+        self.parser.add_argument("--tree", help="Draw the part of the provenance"
+                                 " tree that contains the given capability"
+                                 " (identified by the cycle number)",
+                                 type=int)
         self.parser.add_argument("--asmap",
                                  help="Draw an address-map plot (default)",
                                  action="store_true")
@@ -65,7 +67,7 @@ class ProvenancePlotTool(PlotTool):
 
     def _run(self, args):
         if args.tree:
-            plot = PointerTreePlot(args.trace, args.cache)
+            plot = ProvenanceTreePlot(args.tree, args.trace, args.cache)
         elif args.pfreq:
             plot = PointedAddressFrequencyPlot(args.trace, args.cache)
             if args.vmmap_file:
