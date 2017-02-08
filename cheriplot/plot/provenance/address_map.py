@@ -26,7 +26,6 @@
 #
 
 import numpy as np
-import scipy as sp
 import logging
 import graph_tool as gt
 
