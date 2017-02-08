@@ -1,5 +1,5 @@
 #-
-# Copyright (c) 2016 Alfredo Mazzinghi
+# Copyright (c) 2016-2017 Alfredo Mazzinghi
 # All rights reserved.
 #
 # This software was developed by SRI International and the University of
@@ -247,12 +247,12 @@ class PointerProvenanceParser(CallbackTraceParser):
             cap = regs.cap_reg[idx]
             valid = regs.valid_caps[idx]
             if valid:
-                node = self.make_root_node(entry, cap)
+                node = self.make_root_node(entry, cap, pc=0)
                 self.regset[idx] = node
             else:
                 logger.warning("c%d not in initial set", idx)
                 if idx == 29:
-                    node = self.make_root_node(entry, None)
+                    node = self.make_root_node(entry, None, pc=0)
                     cap = CheriCap()
                     cap.base = 0
                     cap.offset = 0
@@ -266,7 +266,7 @@ class PointerProvenanceParser(CallbackTraceParser):
                     logger.warning("Guessing KCC %s", self.dataset.vp.data[node])
                 if idx == 30:
                     # guess the value of KDC and use this in the initial register set
-                    node = self.make_root_node(entry, None)
+                    node = self.make_root_node(entry, None, pc=0)
                     self.regset[idx] = node
                     cap = CheriCap()
                     cap.base = 0
@@ -313,7 +313,8 @@ class PointerProvenanceParser(CallbackTraceParser):
         after the first eret and do not scan instructions that did
         not commit due to exceptions being raised.
         """
-        if self.regs_valid and self._instr_committed(entry):
+        # if self.regs_valid and self._instr_committed(entry):
+        if self.regs_valid:
             return True
         return False
 
@@ -322,7 +323,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         Detect end of syscalls by checking the expected return PC
         after an eret
         """
-        if not self._do_scan(entry):
+        if not self.regs_valid:
             return False
 
         if self._has_exception(entry):
@@ -683,6 +684,7 @@ class PointerProvenanceParser(CallbackTraceParser):
                                                time=entry.cycles)
                     logger.debug("Found %s value %s from memory load",
                                  inst.op0.name, self.dataset.vp.data[node])
+                    self.regset.memory_map[entry.memory_address] = node
                 self.regset[cd] = node
         return False
 
@@ -706,16 +708,17 @@ class PointerProvenanceParser(CallbackTraceParser):
         cd = inst.op0.cap_index
         node = self.regset[cd]
 
-
         if inst.op0.value.valid:
             # if this is not a data access
 
-            if node is None and not self._has_exception(entry):
+            if node is None:
                 # need to create one
-                node = self.make_root_node(entry, inst.op0.value)
+                node = self.make_root_node(entry, inst.op0.value,
+                                           time=entry.cycles)
                 self.regset[cd] = node
                 logger.debug("Found %s value %s from memory store",
                              inst.op0.name, node)
+
             # if there is a node associated with the register that is
             # being stored, save it in the memory_map for the memory location
             # written by csc
@@ -726,7 +729,7 @@ class PointerProvenanceParser(CallbackTraceParser):
 
         return False
 
-    def make_root_node(self, entry, cap, time=0, pc=0):
+    def make_root_node(self, entry, cap, time=0, pc=None):
         """
         Create a root node of the provenance graph and add it to the dataset.
 
@@ -746,7 +749,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         # if pc is 0 indicate that we do not have a specific
         # instruction for this
         data.cap.t_alloc = time
-        data.pc = pc
+        data.pc = entry.pc if pc is None else pc
         data.origin = CheriNodeOrigin.ROOT
         data.is_kernel = entry.is_kernel()
 
