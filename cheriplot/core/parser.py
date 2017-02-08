@@ -130,6 +130,7 @@ class Operand:
                 if not regset.valid_gprs[reg_num - 1]:
                     logger.debug("Taking GPR value $%d from invalid register",
                                    reg_num)
+                    return None
                 return regset.gpr[reg_num - 1]
             elif reg_num < 64:
                 logger.warning("Floating point registers not yet supported")
@@ -138,6 +139,7 @@ class Operand:
                 if not regset.valid_caps[reg_num - 64]:
                     logger.debug("Taking CAP value $c%d from invalid register",
                                    reg_num - 64)
+                    return None
                 return regset.cap_reg[reg_num - 64]
         else:
             logger.error("Operand type not supported")
@@ -171,9 +173,16 @@ class Operand:
             return "<Op %s>" % self.value
         elif self.is_register:
             if self.is_capability:
-                value = "[b:0x%x, o:0x%x, l:0x%x, v:%d]" % (
-                    self.value.base, self.value.offset,
-                    self.value.length, self.value.valid)
+                if self.value is None:
+                    # the value is None if the operand was fetched
+                    # from an invalid register in the cheritrace
+                    # regset
+                    value = "reg_invalid"
+                else:
+                    value = "[b:0x%x, o:0x%x, l:0x%x, v:%d, s:%d]" % (
+                        self.value.base, self.value.offset,
+                        self.value.length, self.value.valid,
+                        self.value.unsealed, )
             else:
                 value = self.value
             return "<Op $%s = %s>" % (self.name, value)
@@ -423,6 +432,15 @@ class CallbackTraceParser(TraceParser):
         callbacks = self._callbacks.get(inst.opcode, []) + callbacks
         return callbacks
 
+    def _parse_exception(self, entry, regs, disasm, idx):
+        """
+        Callback invoked when an instruction could not be parsed
+        XXX make this debug because the mul instruction always fails
+        and it is too verbose but should report it as a warning/error
+        """
+        logger.debug("Error parsing instruction #%d pc:0x%x: %s raw: 0x%x",
+                     entry.cycles, entry.pc, disasm.name, entry.inst)
+
     def parse(self, start=None, end=None):
         """
         Parse the trace
@@ -454,10 +472,7 @@ class CallbackTraceParser(TraceParser):
                     self._last_regs = regs
                 inst = Instruction(disasm, entry, regs, self._last_regs)
             except Exception as e:
-                # XXX make this debug because the mul instruction always fails
-                # and it is too verbose but should report it as a warning/error
-                logger.debug("Error parsing instruction #%d pc:0x%x: %s raw: 0x%x",
-                             entry.cycles, entry.pc, disasm.name, entry.inst)
+                self._parse_exception(entry, regs, disasm, idx)
                 return False
 
             ret = False

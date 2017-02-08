@@ -78,9 +78,6 @@ class PyTraceDump(Tool):
                                  action="store_true")
         self.parser.add_argument("-r", "--show-regs", help="Dump register content",
                                  action="store_true")
-        self.parser.add_argument("--raw",
-                                 help="Show raw hex dump of the instruction",
-                                 action="store_true")
         self.parser.add_argument("--instr",
                                  help="Find instruction occurrences")
         self.parser.add_argument("--pc", type=base16_int,
@@ -131,8 +128,7 @@ class PyTraceDump(Tool):
                                       match_syscall=args.syscall,
                                       match_mode=match_mode,
                                       before=args.B,
-                                      after=args.A,
-                                      raw=args.raw)
+                                      after=args.A)
         if args.info:
             print("Trace size: %d" % len(dump_parser))
             exit()
