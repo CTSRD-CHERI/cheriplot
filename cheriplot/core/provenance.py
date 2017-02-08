@@ -1,5 +1,5 @@
 #-
-# Copyright (c) 2016 Alfredo Mazzinghi
+# Copyright (c) 2016-2017 Alfredo Mazzinghi
 # All rights reserved.
 #
 # This software was developed by SRI International and the University of
@@ -76,6 +76,7 @@ class CheriCap:
     """
 
     MAX_ADDR = 0xffffffffffffffff
+    MAX_OTYPE = 0x00ffffff
 
     def __init__(self, pct_cap=None):
         """
@@ -96,7 +97,7 @@ class CheriCap:
         self.permissions = pct_cap.permissions if pct_cap else None
         """Capability permissions bitmap."""
 
-        self.objtype = pct_cap.type if pct_cap else None
+        self.objtype = pct_cap.type & self.MAX_OTYPE if pct_cap else None
         """Capability object type."""
 
         self.valid = pct_cap.valid if pct_cap else False
@@ -162,6 +163,24 @@ class CheriCap:
             perm_string = "None"
         return perm_string
 
+    def __eq__(self, other):
+        """
+        Override equality test to have a shorthand way to 
+        compare capability equality.
+        """
+        return (self.base == other.base and
+                self.length == other.length and
+                self.offset == other.offset and
+                self.permissions == other.permissions and
+                self.objtype == other.objtype and
+                self.valid == other.valid and
+                self.sealed == other.sealed and
+                self.t_alloc == other.t_alloc and
+                self.t_free == other.t_free)
+
+    def __ne__(self, other):
+        return not self == other
+
 
 class NodeData:
     """
@@ -182,7 +201,7 @@ class NodeData:
         data.cap = CheriCap(op.value)
         data.cap.t_alloc = op.instr.entry.cycles
         data.pc = op.instr.entry.pc
-        data.is_kernel = bool(op.instr.entry.is_kernel)
+        data.is_kernel = op.instr.entry.is_kernel()
         return data
 
     def __init__(self):
