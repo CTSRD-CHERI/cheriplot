@@ -29,7 +29,6 @@ import logging
 import pickle
 
 from graph_tool.all import Graph, load_graph
-from graph_tool.search import bfs_search
 
 from cheriplot.utils import ProgressPrinter
 from cheriplot.core.provenance import CheriNodeOrigin
@@ -78,20 +77,26 @@ class PointerProvenancePlot(Plot):
 
         num_nodes = self.dataset.num_vertices()
         logger.debug("Total nodes %d", num_nodes)
-        progress = ProgressPrinter(num_nodes, desc="Remove kernel nodes")
+        progress = ProgressPrinter(num_nodes, desc="Search kernel nodes")
         remove_list = []
-        vertex_data = self.dataset.vp.data
 
         for node in self.dataset.vertices():
             # remove null capabilities
             # remove operations in kernel mode
+            vertex_data = self.dataset.vp.data
             node_data = vertex_data[node]
-            if ((node_data.pc and node_data.pc >= 0xFFFFFFFF0000000) or
+
+            if ((node_data.pc != 0 and node_data.is_kernel) or
                 (node_data.cap.length == 0 and node_data.cap.base == 0)):
-                # XXX we should remove the whole subtree!!
+                # XXX we should remove the whole subtree?
                 remove_list.append(node)
             progress.advance()
-        self.dataset.remove_vertex(remove_list, fast=True)
+        progress.finish()
+
+        progress = ProgressPrinter(len(remove_list), desc="Remove kernel nodes")
+        for v in reversed(sorted(remove_list)):
+            self.dataset.remove_vertex(v, fast=True)
+            progress.advance()
         progress.finish()
 
         num_nodes = self.dataset.num_vertices()
@@ -130,7 +135,12 @@ class PointerProvenancePlot(Plot):
                     logger.error("Found node with more than a single parent %s",
                                  parent)
                     raise RuntimeError("Too many parents for a node")
-        self.dataset.remove_vertex(remove_list, fast=True)
+        progress.finish()
+
+        progress = ProgressPrinter(len(remove_list), desc="Remove merged nodes")
+        for v in reversed(sorted(remove_list)):
+            self.dataset.remove_vertex(v, fast=True)
+            progress.advance()
         progress.finish()
 
         num_nodes = self.dataset.num_vertices()
