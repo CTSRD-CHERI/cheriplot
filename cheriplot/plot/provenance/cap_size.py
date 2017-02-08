@@ -62,13 +62,18 @@ class CapSizeHistogramPlot(PointerProvenancePlot):
         self.vmmap = None
         """VMMap object representing the process memory map."""
 
-        self.vm_histograms = []
+        self.norm_histograms = []
         """
-        List of histograms for each vmmap entry. Each entry is
-        a tuple (hist, bin_edges)
+        List of normalized histograms for each vmmap entry.
         """
 
-        self.n_bins = list(range(0, 41, 10)) + [64]
+        self.abs_histograms = []
+        """
+        List of histograms for each vmmap entry.
+        """
+
+        # self.n_bins = list(range(0, 41, 10)) + [64]
+        self.n_bins = [0, 10, 20, 21, 22, 23, 64]
         """Bin edges for capability size, notice that the size is log2."""
 
     def init_axes(self):
@@ -92,19 +97,24 @@ class CapSizeHistogramPlot(PointerProvenancePlot):
         """
         Make the vertical bar plot based on the processed dataset
         """
-        
-        histogram_data = np.array(self.vm_histograms)
+        histogram_data = np.array(self.norm_histograms)
 
-        # 10 is the number of bins, just test it with 10 for now
-        bottom = np.zeros(len(self.vm_histograms))
-        positions = range(1, 2*len(self.vm_histograms) + 1, 2)
+        bottom = np.zeros(len(self.norm_histograms))
+        positions = range(1, 2*len(self.norm_histograms) + 1, 2)
         legend_handles = []
         legend_labels = []
+
         for bin_idx, bin_limit in enumerate(self.n_bins[1:]):
             color = np.random.rand(3,1)
             bar_slices = self.ax.bar(positions, histogram_data[:,bin_idx],
                                      bottom=bottom, color=color)
-            legend_handles.append(bar_slices[0])            
+            for bar, abs_hist in zip(bar_slices.patches, self.abs_histograms):
+                # write the absolute count count at the left of each bar
+                text_x = bar.get_x() - bar.get_width() / 2
+                text_y = bar.get_y() + bar.get_height() / 2
+                self.ax.text(text_x, text_y, "%d" % abs_hist[bin_idx],
+                             ha="center", va="center", rotation="vertical")
+            legend_handles.append(bar_slices[0])
             legend_labels.append("Size: 2^%d" % bin_limit)
             bottom = bottom + histogram_data[:,bin_idx]
         # place labels
@@ -138,7 +148,7 @@ class CapSizeCreationPlot(CapSizeHistogramPlot):
         """Process the provenance graph to extract histogram data."""
         super(CapSizeCreationPlot, self).build_dataset()
 
-        # indexes in the vmmap and in the vm_histograms are
+        # indexes in the vmmap and in the norm_histograms are
         # the same.
         vm_ranges = [Range(v.start, v.end) for v in self.vmmap]
 
@@ -160,17 +170,16 @@ class CapSizeCreationPlot(CapSizeHistogramPlot):
             logger.debug("hist entry len %d", len(data))
             data = np.array(data) + 1
             data = np.log2(data)
-            logger.debug("hist entry log len %d", len(data))
             h, b = np.histogram(data, bins=self.n_bins)
-            logger.debug("hist entry bins %d, tot:%d", len(h), np.sum(h))
             # append normalized histogram to the list
-            self.vm_histograms.append(h / np.sum(h))
+            self.abs_histograms.append(h)
+            self.norm_histograms.append(h / np.sum(h))
 
 
 class CapSizeDerefPlot(CapSizeHistogramPlot):
     """
     Histogram plot that takes into account capabilities at dereference time.
-    The address space is split in the same was as in 
+    The address space is split in the same was as in
     :class:`CapSizeCreationPlot` but the each capability is assigned to
     a memory-mapped region based on its offset when it is dereferenced.
     Note that there is an amount of overcounting due to locations that
@@ -181,7 +190,7 @@ class CapSizeDerefPlot(CapSizeHistogramPlot):
         """Process the provenance graph to extract histogram data."""
         super(CapSizeDerefPlot, self).build_dataset()
 
-        # indexes in the vmmap and in the vm_histograms are
+        # indexes in the vmmap and in the norm_histograms are
         # the same.
         vm_ranges = [Range(v.start, v.end) for v in self.vmmap]
 
@@ -205,12 +214,13 @@ class CapSizeDerefPlot(CapSizeHistogramPlot):
             data = np.log2(data)
             h, b = np.histogram(data, bins=self.n_bins)
             total_addrs = np.sum(h)
+            self.abs_histograms.append(h)
             if total_addrs == 0:
                 # no dereferences in this region
-                self.vm_histograms.append(h)
+                self.norm_histograms.append(h)
             else:
                 # append normalized histogram to the list
-                self.vm_histograms.append(h / total_addrs)
+                self.norm_histograms.append(h / total_addrs)
 
 
 class CapSizeCallPlot(CapSizeHistogramPlot):
@@ -224,7 +234,7 @@ class CapSizeCallPlot(CapSizeHistogramPlot):
         """Process the provenance graph to extract histogram data."""
         super(CapSizeCallPlot, self).build_dataset()
 
-        # indexes in the vmmap and in the vm_histograms are
+        # indexes in the vmmap and in the norm_histograms are
         # the same.
         vm_ranges = [Range(v.start, v.end) for v in self.vmmap]
 
@@ -248,9 +258,10 @@ class CapSizeCallPlot(CapSizeHistogramPlot):
             data = np.log2(data)
             h, b = np.histogram(data, bins=self.n_bins)
             total_addrs = np.sum(h)
+            self.abs_histograms.append(h)
             if total_addrs == 0:
                 # no dereferences in this region
-                self.vm_histograms.append(h)
+                self.norm_histograms.append(h)
             else:
                 # append normalized histogram to the list
-                self.vm_histograms.append(h / total_addrs)
+                self.norm_histograms.append(h / total_addrs)
