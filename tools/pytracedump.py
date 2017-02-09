@@ -81,7 +81,11 @@ class PyTraceDump(Tool):
         self.parser.add_argument("--instr",
                                  help="Find instruction occurrences")
         self.parser.add_argument("--pc", type=base16_int,
-                                 help="Find all hits of given PC")
+                                 help="Find all instructions with of given PC")
+        self.parser.add_argument("--pc-after", type=base16_int,
+                                 help="Find all instructions with PC higher than the given one")
+        self.parser.add_argument("--pc-before", type=base16_int,
+                                 help="Find all instructions with PC lower than the given one")
         self.parser.add_argument("--reg",
                                  help="Show all the instructions that touch"
                                  " a given register")
@@ -96,6 +100,9 @@ class PyTraceDump(Tool):
         self.parser.add_argument("--nop", type=base16_int,
                                  help="Show all the canonical nops with"
                                  " given code.")
+        self.parser.add_argument("--perms", type=base16_int,
+                                 help="Find instructions that touch capabilities"
+                                 " with the given permission bits set.")
         self.parser.add_argument("--match-any", action="store_true",
                                  help="Return a trace entry when matches any"
                                  " of the conditions")
@@ -117,15 +124,24 @@ class PyTraceDump(Tool):
             # args.match_all
             match_mode = "and"
 
+        if args.pc:
+            pc_start = args.pc
+            pc_end = args.pc
+        else:
+            pc_start = args.pc_after
+            pc_end = args.pc_before
+
         dump_parser = TraceDumpParser(None, args.trace,
                                       dump_registers=args.show_regs,
                                       match_opcode=args.instr,
-                                      match_pc=args.pc,
+                                      match_pc_start=pc_start,
+                                      match_pc_end=pc_end,
                                       match_reg=args.reg,
                                       match_addr=args.mem,
                                       match_exc=args.exception,
                                       match_nop=args.nop,
                                       match_syscall=args.syscall,
+                                      match_perm=args.perms,
                                       match_mode=match_mode,
                                       before=args.B,
                                       after=args.A)

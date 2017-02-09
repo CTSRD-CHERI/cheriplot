@@ -8,7 +8,7 @@ import logging
 from collections import deque
 
 from cheriplot.core.parser import CallbackTraceParser
-from cheriplot.core.provenance import CheriCap
+from cheriplot.core.provenance import CheriCap, CheriCapPerm
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +89,10 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
     """
 
     def __init__(self, dataset, trace_path, dump_registers=False,
-                 match_opcode=None, match_pc=None, match_reg=None,
-                 match_addr=None, match_exc=None, match_nop=None,
-                 match_syscall=None, match_mode="and", before=0,
-                 after=0, **kwargs):
+                 match_opcode=None, match_pc_start=None, match_pc_end=None,
+                 match_reg=None, match_addr=None, match_exc=None,
+                 match_nop=None, match_syscall=None, match_perm=None,
+                 match_mode="and", before=0, after=0, **kwargs):
         """
         This parser filters the trace according to a set of match
         conditions. Multiple match conditions can be used at the same time
@@ -104,8 +104,11 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
         :param match_opcode: find occurrences of given instruction mnemonic
         :type match_opcode: str
 
-        :param match_pc: find occurrences of given PC value
-        :type match_pc: str
+        :param match_pc_start: find occurrences with PC higher than this
+        :type match_pc_start: int
+
+        :param match_pc_end: find occurrences with PC lower than this
+        :type match_pc_end: int
 
         :param match_reg: show all instructions that touch the given
         register (register name).
@@ -124,6 +127,9 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
 
         :param match_syscall: match the given syscall code
         :type match_sycall: int
+
+        :param match_perm: match the given syscall permission bits
+        :type match_perm: int
 
         :param match_mode: how multiple match args are combined, valid
         values are "and" and "or"
@@ -145,8 +151,11 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
         self.find_instr = match_opcode
         """Find occurrences of this instruction."""
 
-        self.pc = match_pc
-        """Find occurrences of given PC."""
+        self.pc_start = match_pc_start
+        """Find occurrences with pc higher than start."""
+
+        self.pc_end = match_pc_end
+        """Find occurrences with pc lower than end."""
 
         self.follow_reg = match_reg
         """Find occurrences of given register."""
@@ -162,6 +171,11 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
 
         self.match_syscall = match_syscall
         """Find occurrences of the given syscall"""
+
+        self.match_perm = match_perm
+        """
+        Find occurrences of capabilities with (at least) the given permission
+        """
 
         self.match_mode = match_mode
         """How to compose multiple match conditions (and, or)."""
@@ -181,7 +195,7 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
         self._kernel_mode = False
         """Keep track of kernel-userspace transitions"""
 
-        if (match_pc is None and match_reg is None and
+        if (match_pc_start is None and match_pc_end and match_reg is None and
             match_addr is None and match_opcode is None and
             match_exc is None):
             # if no match condition is specified the match options
@@ -231,9 +245,13 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
 
     def _match_pc(self, inst, match):
         """Check if the current instruction PC matches"""
-        if self.pc is None:
+        if self.pc_start is None and self.pc_end is None:
             return match
-        test_result = self.pc == inst.entry.pc
+        test_result = False
+        if self.pc_start is not None and self.pc_start <= inst.entry.pc:
+            test_result = True
+        if self.pc_end is not None and self.pc_end >= inst.entry.pc:
+            test_result = True
         return self._update_match_result(match, test_result)
 
     def _match_addr(self, inst, match):
@@ -282,6 +300,23 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
                 match_syscall = True
         return self._update_match_result(match, match_syscall)
 
+    def _match_perm(self, inst, match):
+        """Check if this instruction uses capabilities with the given perms"""
+        if self.match_perm is None:
+            return match
+        match_perm = False
+        for operand in inst.operands:
+            if not operand.is_capability:
+                continue
+            if operand.value is None:
+                # the register in the register set is not valid
+                continue
+            cap_reg = CheriCap(operand.value)
+            match_perm = cap_reg.has_perm(self.match_perm)
+            if match_perm:
+                break
+        return self._update_match_result(match, match_perm)
+
     def _match_nop(self, inst, match):
         """Check if instruction is a given canonical NOP"""
         if self.match_nop is None:
@@ -306,6 +341,7 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
             match = self._match_exception(inst, match)
             match = self._match_nop(inst, match)
             match = self._match_syscall(inst, regs, match)
+            match = self._match_perm(inst, match)
 
             if match:
                 self.dump_kernel_user_switch(entry)
