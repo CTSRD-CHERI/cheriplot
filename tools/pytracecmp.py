@@ -43,10 +43,7 @@ class PyTraceCmp(Tool):
 
     def init_arguments(self):
         super().init_arguments()
-        # self.parser.add_argument("-s", "--start", type=int, default=None,
-        #                          help="Start at given offset")
-        # self.parser.add_argument("-e", "--end", type=int, default=None,
-        #                          help="Stop at given offset")
+        self.parser.add_argument("trace", help="Path to trace file")
         self.parser.add_argument("-t", "--txt", help="Text trace to compare",
                                  required=True)
         self.parser.add_argument("-p", "--pc-only", action="store_true",

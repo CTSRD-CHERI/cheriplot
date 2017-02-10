@@ -1,5 +1,5 @@
 #-
-# Copyright (c) 2016 Alfredo Mazzinghi
+# Copyright (c) 2016-2017 Alfredo Mazzinghi
 # All rights reserved.
 #
 # This software was developed by SRI International and the University of
@@ -32,7 +32,6 @@ This will probably be split in multiple tools or at least
 change name to pycheridbg.
 """
 
-import sys
 import argparse
 import logging
 
@@ -69,6 +68,7 @@ class PyTraceDump(Tool):
 
     def init_arguments(self):
         super(PyTraceDump, self).init_arguments()
+        self.parser.add_argument("trace", help="Path to trace file")
         self.parser.add_argument("-s", "--start", type=int, default=None,
                                  help="Start at given offset")
         self.parser.add_argument("-e", "--end", type=int, default=None,

@@ -51,7 +51,6 @@ class Tool:
         This adds some default arguments for verbose logging, 
         profiling and the trace file path.
         """
-        self.parser.add_argument("trace", help="Path to trace file")
         self.parser.add_argument("-v", "--verbose", help="Show debug output",
                             action="store_true")
         self.parser.add_argument("--log", help="Set logfile path")
@@ -115,7 +114,8 @@ class Tool:
 class PlotTool(Tool):
 
     def init_arguments(self):
-        super(PlotTool, self).init_arguments()
+        super().init_arguments()
+        self.parser.add_argument("trace", help="Path to trace file")
         self.parser.add_argument("-c", "--cache",
                                  help="Enable caching of the parsed trace",
                                  action="store_true")
