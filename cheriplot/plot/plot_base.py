@@ -42,6 +42,9 @@ class Plot:
 
         self.caching = cache
         """dataset caching enable """
+
+        self.fig, self.ax = self.init_axes()
+        """Axes and figure to use"""
         
         self.dataset = self.init_dataset()
         """Parsed dataset"""
@@ -59,7 +62,16 @@ class Plot:
         if self.plot_file:
             return self.plot_file
         classname = self.__class__.__name__.lower()
-        return "%s_%s.pgf" % (self.tracefile, classname)
+        return "%s_%s.svg" % (self.tracefile, classname)
+
+    def init_axes(self):
+        """
+        Build the figure and axes for the plot
+        :return: tuple containing the figure and the axes
+        """
+        fig = plt.figure(figsize=(15,10))
+        ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,])
+        return (fig, ax)
 
     def init_parser(self, dataset, tracefile):
         """

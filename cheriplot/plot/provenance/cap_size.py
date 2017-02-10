@@ -57,8 +57,6 @@ class CapSizeHistogramPlot(PointerProvenancePlot):
     def __init__(self, *args, **kwargs):
         super(CapSizeHistogramPlot, self).__init__(*args, **kwargs)
 
-        self.fig, self.ax = self.init_axes()
-
         self.vmmap = None
         """VMMap object representing the process memory map."""
 
@@ -79,7 +77,6 @@ class CapSizeHistogramPlot(PointerProvenancePlot):
     def init_axes(self):
         """
         Build the figure and axes for the plot
-        XXX move this to the Plot base class
         """
         fig = plt.figure(figsize=(15,10))
         ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
