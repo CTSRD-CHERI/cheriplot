@@ -8,7 +8,7 @@ import logging
 from collections import deque
 
 from cheriplot.core.parser import CallbackTraceParser
-from cheriplot.core.provenance import CheriCap, CheriCapPerm
+from cheriplot.core.provenance import CheriCap
 
 logger = logging.getLogger(__name__)
 
@@ -247,11 +247,11 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
         """Check if the current instruction PC matches"""
         if self.pc_start is None and self.pc_end is None:
             return match
-        test_result = False
-        if self.pc_start is not None and self.pc_start <= inst.entry.pc:
-            test_result = True
-        if self.pc_end is not None and self.pc_end >= inst.entry.pc:
-            test_result = True
+        test_result = True
+        if self.pc_start is not None and self.pc_start > inst.entry.pc:
+            test_result = False
+        if self.pc_end is not None and self.pc_end < inst.entry.pc:
+            test_result = False
         return self._update_match_result(match, test_result)
 
     def _match_addr(self, inst, match):
