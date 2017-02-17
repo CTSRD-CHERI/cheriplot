@@ -441,7 +441,7 @@ class CallbackTraceParser(TraceParser):
         logger.debug("Error parsing instruction #%d pc:0x%x: %s raw: 0x%x",
                      entry.cycles, entry.pc, disasm.name, entry.inst)
 
-    def parse(self, start=None, end=None):
+    def parse(self, start=None, end=None, direction=0):
         """
         Parse the trace
 
@@ -457,6 +457,8 @@ class CallbackTraceParser(TraceParser):
         :type start: int
         :param end: index of the last trace entry to scan
         :type end: int
+        :param direction: scan direction (forward = 0, backward=1)
+        :type direction: int
         """
 
         if start is None:
@@ -489,7 +491,7 @@ class CallbackTraceParser(TraceParser):
             self._last_regs = regs
             return ret
 
-        self.trace.scan(_scan, start, end)
+        self.trace.scan(_scan, start, end, direction)
         self.progress.finish()
 
 
