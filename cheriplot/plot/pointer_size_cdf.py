@@ -63,9 +63,10 @@ class PointerSizeCdfPlot(Plot):
     """
     
     def __init__(self, trace, *args, **kwargs):
-        super(PointerSizeCdfPlot, self).__init__(trace, *args, **kwargs)
         self.traces = [trace]
         """Store all the trace files"""
+        super().__init__(trace, *args, **kwargs)
+
         self.parsers = [self.parser]
         """For each trace file there is a different parser"""
         self.datasets = [self.dataset]
@@ -86,9 +87,11 @@ class PointerSizeCdfPlot(Plot):
 
     def _get_plot_file(self):
         classname = self.__class__.__name__.lower()
-        return "%s_%s.pgf" % (self.tracefile, classname)
+        return "%s_%s.png" % (self.tracefile, classname)
 
     def init_parser(self, dataset, tracefile):
+        if self.caching and os.path.exists(self._get_cache_file()):
+            return None
         return PointerParser(dataset, tracefile)
 
     def init_dataset(self):

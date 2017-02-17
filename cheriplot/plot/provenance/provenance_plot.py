@@ -27,6 +27,7 @@
 
 import logging
 import pickle
+import os
 
 from graph_tool.all import Graph, load_graph
 
@@ -50,6 +51,9 @@ class PointerProvenancePlot(Plot):
         """Tells whether we need to rebuild the dataset when caching."""
 
     def init_parser(self, dataset, tracefile):
+        if self.caching and os.path.exists(self._get_cache_file()):
+            # if caching we will nevere use this
+            return None
         return PointerProvenanceParser(dataset, tracefile)
 
     def init_dataset(self):
