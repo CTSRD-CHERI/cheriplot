@@ -28,8 +28,8 @@
 import numpy as np
 import logging
 
-from io import StringIO
 from enum import IntEnum
+from functools import reduce
 
 from cheriplot.core.parser import CallbackTraceParser, Instruction
 from cheriplot.core.provenance import (
@@ -57,7 +57,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         the latter allows us to set the CapNode.address for
         a newly allocated capability.
         """
-        def __init__(self):
+        def __init__(self, graph):
             self.reg_nodes = np.empty(32, dtype=object)
             """Graph node associated with each register."""
 
@@ -66,6 +66,9 @@ class PointerProvenanceParser(CallbackTraceParser):
 
             self.pcc = None
             """Current pcc node"""
+
+            self.graph = graph
+            """The provenance graph"""
 
         def __getitem__(self, idx):
             """
@@ -81,21 +84,20 @@ class PointerProvenanceParser(CallbackTraceParser):
             currently associated to a capability register with the
             given register number.
             """
+            # if the current value of the register set is short-lived
+            # (never stored anywhere and not in any other regset node)
+            # then it is effectively lost and "deallocated"
+            # if self.reg_nodes[idx] is not None:
+            #     n_refs = np.count_nonzero(self.reg_nodes == self.reg_nodes[idx])
+            #     node_data = self.graph.vp.data[self.reg_nodes[idx]]
+            #     # XXX may refine this by checking the memory_map to see if the
+            #     # node is still there
+            #     n_refs += len(node_data.address)
+            #     if n_refs == 1:
+            #         # can safely set the t_free
+            #         disable because we need a way to actually get the current cycle
             self.reg_nodes[idx] = val
 
-        # def __repr__(self):
-        #     """
-        #     XXX broken: needs access to the dataset to get vertex data
-        #     but not really needed here
-        #     """
-        #     dump = StringIO()
-        #     dump.write("RegisterSet snapshot:\n")
-        #     for idx, node in enumerate(self.reg_nodes):
-        #         if node:
-        #             dump.write("$c%d = b:0x%x l:0x%x o:0x%x t:%d\n" % (
-        #                 idx, node.base, node.length, node.offset, node.t_alloc))
-        #         else:
-        #             dump.write("$c%d = Not mapped\n" % idx)
 
     class SyscallContext:
         """
@@ -225,7 +227,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         is completely initialised.
         """
 
-        self.regset = self.RegisterSet()
+        self.regset = self.RegisterSet(dataset)
         """
         Register set that maps capability registers
         to nodes in the provenance tree.
