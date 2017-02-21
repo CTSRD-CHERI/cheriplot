@@ -279,14 +279,9 @@ class AddressMapPlot(PointerProvenancePlot):
     """
 
     def __init__(self, *args, **kwargs):
-        super(AddressMapPlot, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
-        fig = plt.figure(figsize=(15,10))
-        self.ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
-                               projection="custom_addrspace")
-        """Axes used for the plot"""
-
-        self.patch_builder = ColorCodePatchBuilder(fig)
+        self.patch_builder = ColorCodePatchBuilder(self.fig)
         """
         Helper object that builds the plot components.
         See :class:`.ColorCodePatchBuilder`
@@ -309,6 +304,16 @@ class AddressMapPlot(PointerProvenancePlot):
 
         self.viewport_padding = 0.02
         """Padding added to the bounding box of the viewport (% units)"""
+
+    def init_axes(self):
+        """
+        Build the figure and axes for the plot
+        :return: tuple containing the figure and the axes
+        """
+        fig = plt.figure(figsize=(15,10))
+        ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
+                          projection="custom_addrspace")
+        return (fig, ax)
 
     def set_vmmap(self, mapfile):
         """
@@ -379,12 +384,17 @@ class AddressMapPlot(PointerProvenancePlot):
             self.ax.set_xticks(ticks)
 
         self.ax.invert_yaxis()
-        self.ax.legend(*self.patch_builder.get_legend(), loc="best")
         self.ax.set_xlabel("Virtual Address")
         self.ax.set_ylabel("Time (millions of cycles)")
 
+        # build the legend and place it above the plot axes # loc = "best"
+        self.ax.legend(*self.patch_builder.get_legend(),
+                       bbox_to_anchor=(0., 1.02, 1., 0.102), loc=3,
+                       ncol=9, mode="expand", borderaxespad=0.)
+
         logger.debug("Plot build completed")
         plt.savefig(self._get_plot_file())
+        logger.debug("Plot written to file")
 
 
 class SyscallPatchBuilder(PatchBuilder):
