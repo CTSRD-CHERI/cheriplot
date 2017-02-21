@@ -86,8 +86,6 @@ class ProvenanceTreePlot(PointerProvenancePlot):
 
     def __init__(self, target_cap, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        self.fig, self.ax = self.init_axes()
         
         self.target_cap = target_cap
         """The cycles number of the capability to display"""
