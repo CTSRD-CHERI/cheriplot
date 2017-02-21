@@ -64,7 +64,7 @@ class PointOmitBuilder(OmitRangeSetBuilder):
         """
         Build a 64-byte range around each point that is not omitted
         """
-        point_range = Range(point - 2**11, point + 2**11,
+        point_range = Range(point - 2**5, point + 2**5,
                             Range.T_KEEP)
         self._update_regions(point_range)
 
@@ -79,6 +79,8 @@ class PointOmitBuilder(OmitRangeSetBuilder):
             self._update_regions(l_range)
             self._update_regions(r_range)
         else:
+            node_range.rtype = Range.T_KEEP
+            node_range = Range(node_range.start, node_range.end, Range.T_KEEP)
             self._update_regions(node_range)
 
 
@@ -148,9 +150,6 @@ class ExecCapLoadStoreScatterPlot(PointerProvenancePlot):
         addrs = np.fromiter(iter(self.store_addr_map.values()), dtype=float)
         cycles = np.fromiter(iter(self.store_addr_map.keys()), dtype=float)
         points = np.vstack([addrs, cycles]).transpose()
-        logger.debug("Nodes with exec perms: %s", points.shape)
-
-        self.ax.set_omit_ranges(self.range_builder.get_omit_ranges())
         self.ax.plot(points[:,0], points[:,1], 'o', markersize=2)
 
         if self.vmmap:
@@ -167,3 +166,5 @@ class ExecCapLoadStoreScatterPlot(PointerProvenancePlot):
             end_ticks = [vme.end for vme in self.vmmap]
             ticks = sorted(set(start_ticks + end_ticks))
             self.ax.set_xticks(ticks)
+
+        self.ax.set_omit_ranges(self.range_builder.get_omit_ranges())
