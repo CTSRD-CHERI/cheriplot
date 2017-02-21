@@ -46,7 +46,7 @@ class CheriCapPerm(IntEnum):
     CAP_STORE = 1 << 5
     CAP_STORE_LOCAL = 1 << 6
     SEAL = 1 << 7
-    SYSTEM_REGISTERS = 1 << 10
+    SYSTEM_REGISTERS = 1 << 10 | 1 << 8 # XXXAM qemu currently uses 8, spec says 10
 
 
 class CheriNodeOrigin(IntEnum):
@@ -207,9 +207,8 @@ class NodeData:
     def __init__(self):
         self.address = {}
         """
-        Map the address where the node is stored to a list
-        of times (cycle number) when the node is stored to that
-        location.
+        Map the time when the capability is stored in memory to
+        the address where it is stored location.
         """
 
         self.deref = {"load": [], "store": [], "call": []}
