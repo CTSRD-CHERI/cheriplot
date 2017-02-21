@@ -44,6 +44,7 @@ class ProvenanceGraphInspector:
                  match_pc_end=None, match_mem_start=None, match_mem_end=None,
                  match_deref_start=None, match_deref_end=None,
                  match_syscall=None, match_perms=None, match_otype=None,
+                 match_alloc_start=None, match_alloc_end=None,
                  match_any=None):
 
         self.graph = load_graph(graph_file)
@@ -59,6 +60,8 @@ class ProvenanceGraphInspector:
         self.match_mem_end = match_mem_end
         self.match_deref_start = match_deref_start
         self.match_deref_end = match_deref_end
+        self.match_alloc_start = match_alloc_start
+        self.match_alloc_end = match_alloc_end
         self.match_syscall = match_syscall
         self.match_perms = match_perms
         self.match_otype = match_otype
@@ -152,6 +155,14 @@ class ProvenanceGraphInspector:
         result = vdata.cap.objtype == self.match_otype
         return self._update_match_result(match, result)
 
+    def _match_alloc(self, vdata, match):
+        if self.match_alloc_start == None and self.match_alloc_end == None:
+            return match
+        result = self._check_limits(self.match_alloc_start,
+                                    self.match_alloc_end,
+                                    vdata.cap.t_alloc)
+        return self._update_match_result(match, result)
+
     def dump(self):
 
         for v in self.graph.vertices():
@@ -162,6 +173,7 @@ class ProvenanceGraphInspector:
             match = self._match_pc(vdata, match)
             match = self._match_mem(vdata, match)
             match = self._match_deref(vdata, match)
+            match = self._match_alloc(vdata, match)
             match = self._match_syscall(vdata, match)
             match = self._match_perms(vdata, match)
             match = self._match_otype(vdata, match)

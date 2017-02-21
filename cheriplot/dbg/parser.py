@@ -97,51 +97,6 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
         This parser filters the trace according to a set of match
         conditions. Multiple match conditions can be used at the same time
         to refine or widen the filter.
-
-        :param dump_registers: dump register set after each instruction
-        :type dump_registers: bool
-
-        :param match_opcode: find occurrences of given instruction mnemonic
-        :type match_opcode: str
-
-        :param match_pc_start: find occurrences with PC higher than this
-        :type match_pc_start: int
-
-        :param match_pc_end: find occurrences with PC lower than this
-        :type match_pc_end: int
-
-        :param match_reg: show all instructions that touch the given
-        register (register name).
-        :type match_reg: str
-
-        :param match_addr: show all instructions that touch the given
-        memory location.
-        :type match_addr: int
-
-        :param match_exc: show all instructions that cause the given
-        exception.
-        :type match_addr: int
-
-        :param match_nop: match the given canonical NOP code
-        :type match_addr: int
-
-        :param match_syscall: match the given syscall code
-        :type match_sycall: int
-
-        :param match_perm: match the given syscall permission bits
-        :type match_perm: int
-
-        :param match_mode: how multiple match args are combined, valid
-        values are "and" and "or"
-        :type match_mode: str
-
-        :param before: dump N instructions before the matching one,
-        default N=0
-        :type before: int
-
-        :param after: dump N instructions after the matching one,
-        default N=0
-        :type after: int
         """
         super(TraceDumpParser, self).__init__(dataset, trace_path, **kwargs)
 

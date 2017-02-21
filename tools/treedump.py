@@ -72,6 +72,15 @@ class TreeDump(Tool):
                                  help="Find all nodes created at PC <= "
                                  "the one provided")
 
+        self.parser.add_argument("--time", type=int,
+                                 help="Find all nodes created at given time")
+        self.parser.add_argument("--time-after", type=int,
+                                 help="Find all nodes created at time >= "
+                                 "the one provided")
+        self.parser.add_argument("--time-before", type=int,
+                                 help="Find all nodes created at time <= "
+                                 "the one provided")
+
         self.parser.add_argument("--mem", type=base16_int,
                                  help="Show all nodes stored at a given "
                                  "memory address")
@@ -114,6 +123,8 @@ class TreeDump(Tool):
             match_mem_end=args.mem if args.mem else args.mem_before,
             match_deref_start=args.deref if args.deref else args.deref_after,
             match_deref_end=args.deref if args.deref else args.deref_before,
+            match_alloc_start=args.time if args.time else args.time_after,
+            match_alloc_end=args.time if args.time else args.time_before,
             match_syscall=args.syscall,
             match_perms=args.perms,
             match_otype=args.otype,
