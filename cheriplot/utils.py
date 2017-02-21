@@ -62,4 +62,4 @@ class ProgressPrinter:
         """
         if logger.getEffectiveLevel() < self.level:
             return
-        print("")
+        print("\n")

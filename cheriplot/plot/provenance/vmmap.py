@@ -45,7 +45,7 @@ class VMMapPatchBuilder(PatchBuilder):
         """
         Construct the VM-map patch builder.
 
-        :param axes: the address-space axes where the patches 
+        :param axes: the address-space axes where the patches
         will be rendered
         :type axes: :class:`matplotlib.axes.Axes`
         """
@@ -90,6 +90,7 @@ class VMMapPatchBuilder(PatchBuilder):
         self.patches.append(rect)
         self.patch_colors.append(self._colors[vmentry.perms])
 
+        # the label position is centered based on the axes transform
         label_position = ((vmentry.start + vmentry.end) / 2, self.label_y)
         vme_path = str(vmentry.path).split("/")[-1] if str(vmentry.path) else ""
         if not vme_path and vmentry.grows_down:

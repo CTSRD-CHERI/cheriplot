@@ -60,7 +60,8 @@ class TreeDump(Tool):
         """
 
         self.parser.add_argument("graph", help="Path to graph-tool gt file")
-        self.parser.add_argument("-r", "--show-regs", help="Dump register content",
+        self.parser.add_argument("-r", "--show-regs",
+                                 help="Dump register content",
                                  action="store_true")
         self.parser.add_argument("--origin", help=origin_help)
         self.parser.add_argument("--pc", type=base16_int,
