@@ -28,6 +28,7 @@
 import logging
 
 import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -44,67 +45,92 @@ class VMMap:
 
         @property
         def start(self):
-            return self.vmmap[self.index][0]
+            return self.vmmap["start"][self.index]
+            # return self.vmmap[self.index][0]
 
         @property
         def end(self):
-            return self.vmmap[self.index][1]
+            return self.vmmap["end"][self.index]
+            # return self.vmmap[self.index][1]
 
         @property
         def offset(self):
-            return self.vmmap[self.index][2]
+            if "offset" in self.vmmap.columns:
+                return self.vmmap["offset"][self.index]
+            else:
+                return 0
+            # return self.vmmap[self.index][2]
 
         @property
         def perm_read(self):
-            return "r" in str(self.vmmap[self.index][3])
+            return "r" in self.vmmap["perm"][self.index]
 
         @property
         def perm_write(self):
-            return "w" in str(self.vmmap[self.index][3])
+            return "w" in self.vmmap["perm"][self.index]
 
         @property
         def perm_exec(self):
-            return "x" in str(self.vmmap[self.index][3])
+            return "x" in self.vmmap["perm"][self.index]
 
         @property
         def perms(self):
-            return self.vmmap[self.index][3].strip()
+            return self.vmmap["perm"][self.index].strip()
 
         @property
         def resident(self):
-            return self.vmmap[self.index][4]
+            return self.vmmap["res"][self.index]
 
         @property
         def priv_resident(self):
-            return self.vmmap[self.index][5]
+            return self.vmmap["pres"][self.index]
 
         @property
         def refcount(self):
-            return self.vmmap[self.index][6]
+            return self.vmmap["ref"][self.index]
 
         @property
         def shadow(self):
-            return self.vmmap[self.index][7]
+            return self.vmmap["shd"][self.index]
 
         @property
         def grows_down(self):
-            return "D" in self.vmmap[self.index][8]
+            return "D" in self.vmmap["flag"][self.index]
 
         @property
         def path(self):
-            return self.vmmap[self.index][10].strip()
+            return self.vmmap["path"][self.index].strip()
 
     def __init__(self, map_file):
 
         try:
             self.map_file = open(map_file, "r")
+            # try to guess the format of the file
+            line = self.map_file.readline()
+            try:
+                line.index(",")
+                has_csv_delim = True
+            except ValueError:
+                has_csv_delim = False
         except IOError:
             logger.error("Can not open %s", map_file)
             raise
 
-        dtype_spec = np.dtype("u8,u8,u8,U16,u8,u8,u8,u8,U16,U16,U1024")
-        self.vmmap = np.genfromtxt(map_file, delimiter=',',
-                                   dtype=dtype_spec)
+        if has_csv_delim:
+            logger.info("Try to load vmmap_dump memory map file")
+            vmmap_dump_cols = ["start", "end", "offset", "perm", "res", "pres",
+                               "ref", "shd", "flag", "tp", "path"]
+            self.vmmap = pd.read_csv(map_file, names=vmmap_dump_cols)
+            # dtype_spec = np.dtype("u8,u8,u8,U16,u8,u8,u8,u8,U16,U16,U1024")
+            # self.vmmap = np.genfromtxt(map_file, delimiter=',',
+            #                            dtype=dtype_spec)
+        else:
+            logger.info("Try to load procstat memory map file")
+            procstat_cols = ["pid", "start", "end", "perm", "res", "pres",
+                             "ref", "shd", "flag", "tp", "path"]
+            self.vmmap = pd.read_table(map_file, names=procstat_cols,
+                                       sep="\s+")
+        self.vmmap = self.vmmap.fillna("")
         logger.debug(self.vmmap)
 
     def is_stack(self, vmmap_row):
