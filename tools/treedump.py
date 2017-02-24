@@ -49,6 +49,13 @@ class TreeDump(Tool):
     in a non-graphical way and to perform filtering operations on the nodes in the tree.
     """
 
+    def make_range_arg(self, argname, argtype, helpmsg):
+        self.parser.add_argument("--%s" % argname, type=argtype, help=helpmsg)
+        self.parser.add_argument("--%s-after" % argname, type=argtype,
+                                 help="%s >= the value provided" % helpmsg)
+        self.parser.add_argument("--%s-before" % argname, type=argtype,
+                                 help="%s <= the value provided" % helpmsg)
+
     def init_arguments(self):
         super().init_arguments()
 
@@ -60,47 +67,15 @@ class TreeDump(Tool):
         """
 
         self.parser.add_argument("graph", help="Path to graph-tool gt file")
-        self.parser.add_argument("-r", "--show-regs",
-                                 help="Dump register content",
-                                 action="store_true")
         self.parser.add_argument("--origin", help=origin_help)
-        self.parser.add_argument("--pc", type=base16_int,
-                                 help="Find all nodes created at given PC")
-        self.parser.add_argument("--pc-after", type=base16_int,
-                                 help="Find all nodes created at PC >= "
-                                 "the one provided")
-        self.parser.add_argument("--pc-before", type=base16_int,
-                                 help="Find all nodes created at PC <= "
-                                 "the one provided")
-
-        self.parser.add_argument("--time", type=int,
-                                 help="Find all nodes created at given time")
-        self.parser.add_argument("--time-after", type=int,
-                                 help="Find all nodes created at time >= "
-                                 "the one provided")
-        self.parser.add_argument("--time-before", type=int,
-                                 help="Find all nodes created at time <= "
-                                 "the one provided")
-
-        self.parser.add_argument("--mem", type=base16_int,
-                                 help="Show all nodes stored at a given "
-                                 "memory address")
-        self.parser.add_argument("--mem-after", type=base16_int,
-                                 help="Show all nodes stored at address >= "
-                                 "memory address")
-        self.parser.add_argument("--mem-before", type=base16_int,
-                                 help="Show all nodes stored at address <= "
-                                 "memory address")
-
-        self.parser.add_argument("--deref", type=base16_int,
-                                 help="Show all nodes dereferenced at a given "
-                                 "memory address")
-        self.parser.add_argument("--deref-after", type=base16_int,
-                                 help="Show all nodes dereferenced at address "
-                                 ">= memory address")
-        self.parser.add_argument("--deref-before", type=base16_int,
-                                 help="Show all nodes dereferenced at address "
-                                 "<= memory address")
+        self.make_range_arg("pc", base16_int,
+                            "Find all nodes created at PC")
+        self.make_range_arg("time", int, "Find all nodes created at given time")
+        self.make_range_arg("mem", base16_int,
+                            "Show all nodes stored at a memory address")
+        self.make_range_arg("deref", base16_int,
+                            "Show all nodes dereferenced at a memory address")
+        self.make_range_arg("size", base16_int, "Show nodes with length SIZE")
 
         self.parser.add_argument("--syscall", type=int, help="Show all syscall nodes")
         self.parser.add_argument("--perms", type=base16_int,
@@ -112,6 +87,9 @@ class TreeDump(Tool):
                                  help="Return a trace entry when matches any"
                                  " of the conditions, otherwise all conditions"
                                  " must be verified.", default=False)
+        self.parser.add_argument("--show-predecessors", action="store_true",
+                                 help="Show the predecessors of a "
+                                 "matching capability")
 
     def _run(self, args):
 
@@ -126,10 +104,13 @@ class TreeDump(Tool):
             match_deref_end=args.deref if args.deref else args.deref_before,
             match_alloc_start=args.time if args.time else args.time_after,
             match_alloc_end=args.time if args.time else args.time_before,
+            match_len_start=args.size if args.size else args.size_after,
+            match_len_end=args.size if args.size else args.size_before,
             match_syscall=args.syscall,
             match_perms=args.perms,
             match_otype=args.otype,
-            match_any=args.match_any
+            match_any=args.match_any,
+            show_predecessors=args.show_predecessors
         )
 
         inspect.dump()

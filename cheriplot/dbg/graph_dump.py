@@ -45,7 +45,8 @@ class ProvenanceGraphInspector:
                  match_deref_start=None, match_deref_end=None,
                  match_syscall=None, match_perms=None, match_otype=None,
                  match_alloc_start=None, match_alloc_end=None,
-                 match_any=None):
+                 match_len_start=None, match_len_end=None,
+                 match_any=None, show_predecessors=False):
 
         self.graph = load_graph(graph_file)
         """The graph to dump."""
@@ -62,11 +63,13 @@ class ProvenanceGraphInspector:
         self.match_deref_end = match_deref_end
         self.match_alloc_start = match_alloc_start
         self.match_alloc_end = match_alloc_end
+        self.match_len_start = match_len_start
+        self.match_len_end = match_len_end
         self.match_syscall = match_syscall
         self.match_perms = match_perms
         self.match_otype = match_otype
         self.match_any = match_any
-
+        self.dump_predecessors = show_predecessors
 
     def _check_origin_arg(self, match_origin):
         if match_origin == None:
@@ -163,6 +166,19 @@ class ProvenanceGraphInspector:
                                     vdata.cap.t_alloc)
         return self._update_match_result(match, result)
 
+    def _match_len(self, vdata, match):
+        if self.match_len_start == None and self.match_len_end == None:
+            return match
+        result = self._check_limits(self.match_len_start,
+                                    self.match_len_end,
+                                    vdata.cap.length)
+        return self._update_match_result(match, result)
+
+    def _dump_vertex(self, vdata):
+        return "%s stored: %d, deref-load: %d deref-store: %d" % (
+            vdata, len(vdata.address), len(vdata.deref["load"]),
+            len(vdata.deref["store"]))
+
     def dump(self):
 
         for v in self.graph.vertices():
@@ -174,9 +190,24 @@ class ProvenanceGraphInspector:
             match = self._match_mem(vdata, match)
             match = self._match_deref(vdata, match)
             match = self._match_alloc(vdata, match)
+            match = self._match_len(vdata, match)
             match = self._match_syscall(vdata, match)
             match = self._match_perms(vdata, match)
             match = self._match_otype(vdata, match)
 
             if match:
-                print("%s" % vdata)
+                print(self._dump_vertex(vdata))
+                if self.dump_predecessors:
+                    current = v
+                    while True:
+                        try:
+                            # assume that there is always 1 or 0
+                            # predecessors
+                            pred = next(current.in_neighbours())
+                            current = pred
+                            vdata = self.graph.vp.data[pred]
+                            print("^")
+                            print("|")
+                            print("+- %s" % self._dump_vertex(vdata))
+                        except StopIteration:
+                            break
