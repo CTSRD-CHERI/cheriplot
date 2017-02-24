@@ -121,7 +121,7 @@ class Plot:
         Show plot in a new window
         """
         self.build_dataset()
-        fig = self.plot()
+        self.plot()
         plt.show()
 
     def save(self, path):
@@ -129,6 +129,6 @@ class Plot:
         Save plot to file
         """
         self.build_dataset()
-        fig = self.plot()
+        self.plot()
         plt.savefig(path)
         

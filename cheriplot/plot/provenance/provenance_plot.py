@@ -72,6 +72,7 @@ class PointerProvenancePlot(Plot):
         """
         if self.caching:
             try:
+                logger.debug("Load cached provenance graph")
                 self.dataset = load_graph(self._get_cache_file())
             except IOError:
                 self.parser.parse()
@@ -149,3 +150,24 @@ class PointerProvenancePlot(Plot):
 
         num_nodes = self.dataset.num_vertices()
         logger.debug("Merged (cfromptr + csetbounds), remaining %d", num_nodes)
+        progress = ProgressPrinter(num_nodes, desc="Find short-lived cfromptr")
+        remove_list = []
+
+        for node in self.dataset.vertices():
+            progress.advance()
+            node_data = self.dataset.vp.data[node]
+
+            if (node_data.origin == CheriNodeOrigin.FROMPTR and
+                len(node_data.address) == 0 and
+                len(node_data.deref["load"]) == 0 and
+                len(node_data.deref["load"]) == 0):
+                # remove cfromptr that are never stored or used in
+                # a dereference
+                remove_list.append(node)
+        progress.finish()
+
+        progress = ProgressPrinter(len(remove_list), desc="Remove marked nodes")
+        for v in reversed(sorted(remove_list)):
+            self.dataset.remove_vertex(v, fast=True)
+            progress.advance()
+        progress.finish()

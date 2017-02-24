@@ -46,7 +46,8 @@ class CheriCapPerm(IntEnum):
     CAP_STORE = 1 << 5
     CAP_STORE_LOCAL = 1 << 6
     SEAL = 1 << 7
-    SYSTEM_REGISTERS = 1 << 10 | 1 << 8 # XXXAM qemu currently uses 8, spec says 10
+    # XXXAM qemu currently uses 8, spec says 10
+    SYSTEM_REGISTERS = 1 << 10 | 1 << 8
 
 
 class CheriNodeOrigin(IntEnum):
@@ -60,14 +61,13 @@ class CheriNodeOrigin(IntEnum):
     # instructions
     SETBOUNDS = 1
     FROMPTR = 2
+    ANDPERM = 3
     # aggregate nodes
-    PTR_SETBOUNDS = 3
+    PTR_SETBOUNDS = 4
     # system calls
     # the start and end are flags
-    SYS_START = 0x1000
-    SYS_END = 0x2000
-    SYS_MMAP = 4
-    SYS_MUNMAP = 5
+    SYS_MMAP = 5
+    SYS_MUNMAP = 6
 
 
 class CheriCap:

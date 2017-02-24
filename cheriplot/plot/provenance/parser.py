@@ -517,6 +517,21 @@ class PointerProvenanceParser(CallbackTraceParser):
         self.regset[inst.op0.cap_index] = node
         return False
 
+    def scan_candperm(self, inst, entry, regs, last_regs, idx):
+        """
+        Each candperm is a new pointer allocation and is recorded
+        as a new node in the provenance tree.
+
+        candperm:
+        Operand 0 is the register with the new node
+        Operand 1 is the register with the parent node
+        """
+        if not self._do_scan(entry):
+            return False
+        node = self.make_node(entry, inst, origin=CheriNodeOrigin.ANDPERM)
+        self.regset[inst.op0.cap_index] = node
+        return False
+
     def scan_cap(self, inst, entry, regs, last_regs, idx):
         """
         Whenever a capability instruction is found, update
