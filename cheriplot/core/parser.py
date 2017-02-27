@@ -39,6 +39,7 @@ import pycheritrace as pct
 
 from enum import Enum
 from itertools import repeat, chain
+from cached_property import cached_property
 
 # experimental
 from multiprocessing import RawValue, Process
@@ -284,37 +285,37 @@ class Instruction:
         self.opcode = parts[1]
         """Instruction opcode"""
 
-        # XXX may make operand parsing lazy to save parsing time
-        self.operands = []
-        """List of instruction operands :class:`.Operand`"""
-
-        for idx, op in enumerate(inst.operands):
+    @cached_property
+    def operands(self):
+        op_list = []
+        for idx, op in enumerate(self.inst.operands):
             is_target = (idx == 0)
-            parsed_op = Operand(op, self, is_target)
-            self.operands.append(parsed_op)
+            op_list.append(Operand(op, self, is_target))
+        return op_list
 
     def _op_n(self, n):
         """Shorthand getter for operand N."""
-        if len(self.operands) > n:
-            return self.operands[n]
+        if len(self.inst.operands) > n:
+            is_target = (n == 0)
+            return Operand(self.inst.operands[n], self, is_target)
         return None
 
-    @property
+    @cached_property
     def op0(self):
         """Shorthand getter for operand 0."""
         return self._op_n(0)
 
-    @property
+    @cached_property
     def op1(self):
         """Shorthand getter for operand 1."""
         return self._op_n(1)
 
-    @property
+    @cached_property
     def op2(self):
         """Shorthand getter for operand 2."""
         return self._op_n(2)
 
-    @property
+    @cached_property
     def op3(self):
         """Shorthand getter for operand 3."""
         return self._op_n(3)
@@ -466,8 +467,15 @@ class CallbackTraceParser(TraceParser):
         if end is None:
             end = len(self)
 
+        # fast progress processing, calling progress.advance() in each
+        # _scan call is too expensive
+        progress_points = list(range(start, end, int((end - start) / 100) + 1))
+        progress_points.append(end)
+
         def _scan(entry, regs, idx):
-            self.progress.advance()
+            if idx >= progress_points[0]:
+                progress_points.pop(0)
+                self.progress.advance(to=idx)
             disasm = self._dis.disassemble(entry.inst)
             try:
                 if self._last_regs is None:

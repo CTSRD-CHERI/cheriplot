@@ -39,17 +39,33 @@ class ProgressPrinter:
     def __init__(self, end, desc="Progress", start=0, step=1,
                  level=logging.INFO):
         self.start = start
-        self.end = end
-        self.desc = desc
-        self.progress = 0
-        self.curr = 0
-        self.step = step
-        self.level = level
+        """Start value of progress counter"""
 
-    def advance(self, step=1):
+        self.end = end
+        """End value of progress counter"""
+
+        self.desc = desc
+        """Counter description"""
+
+        self.progress = 0
+        """Current % progress"""
+
+        self.curr = 0
+        """Current counter value"""
+
+        self.step = step
+        """Counter increment step"""
+
+        self.level = level
+        """Log level"""
+
+    def advance(self, step=1, to=None):
         if logger.getEffectiveLevel() > self.level:
             return
-        self.curr += step
+        if to is not None:
+            self.curr = to
+        else:
+            self.curr += step
         progress = int(self.curr * 100 / (self.end - self.start))
         if (progress != self.progress):
             self.progress = progress
