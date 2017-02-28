@@ -82,9 +82,9 @@ class PointerProvenancePlot(Plot):
 
         num_nodes = self.dataset.num_vertices()
         logger.debug("Total nodes %d", num_nodes)
-        progress = ProgressPrinter(num_nodes, desc="Search kernel nodes")
-        remove_list = []
+        vertex_mask = self.dataset.new_vertex_property("bool")
 
+        progress = ProgressPrinter(num_nodes, desc="Search kernel nodes")
         for node in self.dataset.vertices():
             # remove null capabilities
             # remove operations in kernel mode
@@ -93,22 +93,17 @@ class PointerProvenancePlot(Plot):
 
             if ((node_data.pc != 0 and node_data.is_kernel) or
                 (node_data.cap.length == 0 and node_data.cap.base == 0)):
-                # XXX we should remove the whole subtree?
-                remove_list.append(node)
+                vertex_mask[node] = True
             progress.advance()
         progress.finish()
 
-        progress = ProgressPrinter(len(remove_list), desc="Remove kernel nodes")
-        for v in reversed(sorted(remove_list)):
-            self.dataset.remove_vertex(v, fast=True)
-            progress.advance()
-        progress.finish()
+        self.dataset.set_vertex_filter(vertex_mask, inverted=True)
+        vertex_mask = self.dataset.copy_property(vertex_mask)
 
         num_nodes = self.dataset.num_vertices()
         logger.debug("Filtered kernel nodes, remaining %d", num_nodes)
         progress = ProgressPrinter(
             num_nodes, desc="Merge (cfromptr + csetbounds) sequences")
-        remove_list = []
 
         for node in self.dataset.vertices():
             progress.advance()
@@ -132,42 +127,36 @@ class PointerProvenancePlot(Plot):
                 node_data.origin = CheriNodeOrigin.PTR_SETBOUNDS
                 if parent.in_degree() == 1:
                     next_parent = next(parent.in_neighbours())
-                    remove_list.append(parent)
+                    vertex_mask[parent] = True
                     self.dataset.add_edge(next_parent, node)
                 elif parent.in_degree() == 0:
-                    remove_list.append(parent)
+                    vertex_mask[parent] = True
                 else:
                     logger.error("Found node with more than a single parent %s",
                                  parent)
                     raise RuntimeError("Too many parents for a node")
         progress.finish()
 
-        progress = ProgressPrinter(len(remove_list), desc="Remove merged nodes")
-        for v in reversed(sorted(remove_list)):
-            self.dataset.remove_vertex(v, fast=True)
-            progress.advance()
-        progress.finish()
+        self.dataset.set_vertex_filter(vertex_mask, inverted=True)
+        vertex_mask = self.dataset.copy_property(vertex_mask)
 
         num_nodes = self.dataset.num_vertices()
         logger.debug("Merged (cfromptr + csetbounds), remaining %d", num_nodes)
         progress = ProgressPrinter(num_nodes, desc="Find short-lived cfromptr")
-        remove_list = []
 
         for node in self.dataset.vertices():
             progress.advance()
             node_data = self.dataset.vp.data[node]
 
-            if (node_data.origin == CheriNodeOrigin.FROMPTR and
-                len(node_data.address) == 0 and
-                len(node_data.deref["load"]) == 0 and
-                len(node_data.deref["load"]) == 0):
-                # remove cfromptr that are never stored or used in
-                # a dereference
-                remove_list.append(node)
+            if node_data.origin == CheriNodeOrigin.FROMPTR:
+                vertex_mask[node] = True
+            # if (node_data.origin == CheriNodeOrigin.FROMPTR and
+            #     len(node_data.address) == 0 and
+            #     len(node_data.deref["load"]) == 0 and
+            #     len(node_data.deref["load"]) == 0):
+            #     # remove cfromptr that are never stored or used in
+            #     # a dereference
+            #     remove_list.append(node)
         progress.finish()
 
-        progress = ProgressPrinter(len(remove_list), desc="Remove marked nodes")
-        for v in reversed(sorted(remove_list)):
-            self.dataset.remove_vertex(v, fast=True)
-            progress.advance()
-        progress.finish()
+        self.dataset.set_vertex_filter(vertex_mask, inverted=True)
