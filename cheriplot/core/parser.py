@@ -31,21 +31,21 @@ Parser for cheri trace files based on the cheritrace library.
 
 import os
 import math
-import re
 import numpy as np
+import exrex
 import logging
 
 import pycheritrace as pct
 
 from enum import Enum
-from itertools import repeat, chain
 from cached_property import cached_property
+from itertools import chain
 
 # experimental
 from multiprocessing import RawValue, Process
 from ctypes import py_object
 
-from ..utils import ProgressPrinter
+from cheriplot.utils import ProgressPrinter
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +217,8 @@ class Instruction:
         """Capability flow control."""
         I_CAP_CPREG = "cap_cpreg"
         """Manipulation of reserved coprocessor registers"""
+        I_CAP_CMP = "cap_cmp"
+        """Capability comparison"""
         I_CAP_OTHER = "cap_other"
         """Other capability instruction not in previous classes."""
         I_CAP = "cap"
@@ -224,19 +226,17 @@ class Instruction:
 
     # map each instruction class to a set of opcodes
     iclass_map = {
-        IClass.I_CAP_LOAD: [
-            "clc", "clb", "clh", "clw",
-            "cld", "clhu", "clwu", "cllc",
-            "cllb", "cllh", "cllw", "clld",
-            "cllhu", "cllwu"],
-        IClass.I_CAP_STORE: [
-            "csc", "csb", "csh", "csw",
-            "csd", "cscc", "cscb", "csch",
-            "cscw", "cscd"],
+        IClass.I_CAP_LOAD: list(chain(
+            exrex.generate("cl[dc][ri]?|cl[bhw][u]?[ri]?"),
+            exrex.generate("cll[cd]|cll[bhw][u]?"))),
+        IClass.I_CAP_STORE: list(chain(
+            exrex.generate("cs[bhwdc][ri]?"),
+            exrex.generate("csc[cbhwd]"))),
         IClass.I_CAP_CAST: [
             "ctoptr", "cfromptr"],
         IClass.I_CAP_ARITH: [
-            "cincoffset", "csetoffset", "csub"],
+            "cincoffset", "csetoffset", "csub",
+            "cincbase"],
         IClass.I_CAP_BOUND: [
             "csetbounds", "csetboundsexact"],
         IClass.I_CAP_FLOW: [
@@ -244,13 +244,15 @@ class Instruction:
             "ccall", "creturn"],
         IClass.I_CAP_CPREG: [
             "csetdefault", "cgetdefault", "cgetepcc", "csetepcc",
-            "cgetkcc", "csetkcc", "cgetkdc", "csetkdc", "cgetpcc"],
+            "cgetkcc", "csetkcc", "cgetkdc", "csetkdc", "cgetpcc",
+            "cgetpccsetoffset"],
+        IClass.I_CAP_CMP: [
+            "ceq", "cne", "clt", "cle", "cltu", "cleu", "cexeq"],
         IClass.I_CAP_OTHER: [
             "cgetperm", "cgettype", "cgetbase", "cgetlen",
             "cgettag", "cgetsealed", "cgetoffset",
-            "cgetpccsetoffset", "cseal", "cunseal", "candperm",
-            "ccleartag", "cclearregs", "ceq", "cne", "clt",
-            "cle", "cltu","cleu", "cexeq",
+            "cseal", "cunseal", "candperm",
+            "ccleartag", "cclearregs",
             "cgetcause", "csetcause", "ccheckperm", "cchecktype",
             "clearlo", "clearhi", "cclearlo", "cclearhi",
             "fpclearlo", "fpclearhi", "cmove"]

@@ -625,6 +625,10 @@ class PointerProvenanceParser(CallbackTraceParser):
     def scan_cap_load(self, inst, entry, regs, last_regs, idx):
         """
         Store all offsets at time of dereference of a given capability.
+
+        clX[u] have pointer argument in op3
+        clXr and clXi have pointer argument in op2
+        cllX have pointer argument in op1
         """
         if not self._do_scan(entry):
             return False
@@ -634,32 +638,38 @@ class PointerProvenanceParser(CallbackTraceParser):
         if inst.opcode.startswith("cll"):
             ptr_reg = inst.op1.cap_index
         else:
-            ptr_reg = inst.op3.cap_index
+            if inst.opcode[-1] == "r" or inst.opcode[-1] == "i":
+                ptr_reg = inst.op2.cap_index
+            else:
+                ptr_reg = inst.op3.cap_index
         self._handle_dereference(inst, entry, ptr_reg)
         return False
 
     def scan_cap_store(self, inst, entry, regs, last_regs, idx):
         """
         Store all offsets at time of dereference of a given capability.
+
+        csX have pointer argument in op3
+        csXr and csXi have pointer argument in op2
+        cscX conditionals use op2
         """
         if not self._do_scan(entry):
             return False
         # get the register with the address capability
         # this may be a normal capability store or an atomic-store
         if inst.opcode != "csc" and inst.opcode.startswith("csc"):
+            # atomic
             ptr_reg = inst.op2.cap_index
         else:
-            ptr_reg = inst.op3.cap_index
+            if inst.opcode[-1] == "r" or inst.opcode[-1] == "i":
+                ptr_reg = inst.op2.cap_index
+            else:
+                ptr_reg = inst.op3.cap_index
         self._handle_dereference(inst, entry, ptr_reg)
         return False
 
     def scan_clc(self, inst, entry, regs, last_regs, idx):
         """
-        If a capability is loaded in a register we need to find
-        a node for it or create one. The address map is used to
-        lookup nodes that have been stored at the load memory
-        address.
-
         clc:
         Operand 0 is the register with the new node
         The parent is looked up in memory or a root node is created
@@ -705,6 +715,9 @@ class PointerProvenanceParser(CallbackTraceParser):
                 self.regset[cd] = node
         return False
 
+    scan_clcr = scan_clc
+    scan_clci = scan_clc
+
     def scan_csc(self, inst, entry, regs, last_regs, idx):
         """
         Record the locations where a capability node is stored.
@@ -745,6 +758,9 @@ class PointerProvenanceParser(CallbackTraceParser):
             node_data.address[entry.cycles] = entry.memory_address
 
         return False
+
+    scan_cscr = scan_csc
+    scan_csci = scan_csc
 
     def make_root_node(self, entry, cap, time=0, pc=None):
         """
