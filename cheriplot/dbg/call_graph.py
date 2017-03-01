@@ -62,6 +62,8 @@ class CallGraphTraceParser(CallbackTraceParser):
 
         super().__init__(None, trace_path, **kwargs)
 
+        self._backtrace_num = 0
+
         self.cache = cache
         """Are we caching?"""
 
@@ -110,6 +112,9 @@ class CallGraphTraceParser(CallbackTraceParser):
 
     def check_depth(self):
         """Check backtrace depth and decide whether to stop backtracing"""
+        if self.backtrace_depth != None:
+            if self.backtrace_depth <= self._backtrace_num:
+                return True
         return False
 
     def add_call(self, target, time, pc):
@@ -170,6 +175,7 @@ class CallGraphTraceParser(CallbackTraceParser):
         e = self.cgm.graph.add_edge(self.root, target_vertex)
         self.cgm.t_call[e].append(time)
         self.cgm.backtrace[e] = time
+        self._backtrace_num += 1
 
     def scan_cjalr(self, inst, entry, regs, last_regs, idx):
         # check that the call matches the last return instruction

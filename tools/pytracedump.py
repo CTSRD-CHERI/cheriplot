@@ -203,7 +203,7 @@ class PyTraceDump(Tool):
 
     def _backtrace(self, args):
 
-        if len(args.sym) > 0 and args.vmmap is None:
+        if args.sym != None and len(args.sym) > 0 and args.vmmap == None:
             logger.error("--sym files can be specified only if the process "
                          "memory map is given (-m)")
             return
@@ -222,8 +222,9 @@ class PyTraceDump(Tool):
             parser = CallGraphTraceParser(args.trace, args.cache,
                                           depth=args.depth)
             parser.parse(args.start, args.end)
-            add_symbols = CallGraphAddSymbols(parser.cgm, args.sym, args.vmmap)
-            parser.cgm.bfs_transform(add_symbols)
+            if args.vmmap:
+                add_symbols = CallGraphAddSymbols(parser.cgm, args.sym, args.vmmap)
+                parser.cgm.bfs_transform(add_symbols)
             if args.bt:
                 call_graph_backtrace(parser)
             else:
