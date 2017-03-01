@@ -64,6 +64,8 @@ class TreeDump(Tool):
         - csetbounds: nodes created via csetbounds
         - cfromptr: nodes created via cfromptr
         - ptrbounds: merged adjacent cfromptr+csetbounds
+        - andperm: nodes created via candperm
+        - mmap: nodes created by sys_mmap return
         """
 
         self.parser.add_argument("graph", help="Path to graph-tool gt file")

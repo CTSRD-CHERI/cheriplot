@@ -82,6 +82,10 @@ class ProvenanceGraphInspector:
             self.match_origin = CheriNodeOrigin.FROMPTR
         elif match_origin == "ptrbounds":
             self.match_origin = CheriNodeOrigin.PTR_SETBOUNDS
+        elif match_origin == "andperm":
+            self.match_origin = CheriNodeOrigin.ANDPERM
+        elif match_origin == "mmap":
+            self.match_origin = CheriNodeOrigin.SYS_MMAP
         else:
             raise ValueError("Invalid match_origin parameter")
 
