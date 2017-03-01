@@ -96,7 +96,7 @@ class CallGraphTraceParser(CallbackTraceParser):
             start = 0
         if end == None:
             end = len(self)
-        logger.debug("Scan trace %s", self.path)
+        logger.info("Scan trace %s", self.path)
         super().parse(start, end, 1)
         if self.cache:
             logger.info("Save call graph to %s", self._get_cache_file())

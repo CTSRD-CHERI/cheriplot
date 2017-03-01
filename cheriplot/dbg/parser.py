@@ -90,9 +90,9 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
 
     def __init__(self, dataset, trace_path, dump_registers=False,
                  match_opcode=None, match_pc_start=None, match_pc_end=None,
-                 match_reg=None, match_addr=None, match_exc=None,
-                 match_nop=None, match_syscall=None, match_perm=None,
-                 match_mode="and", before=0, after=0, **kwargs):
+                 match_reg=None, match_addr_start=None, match_addr_end=None,
+                 match_exc=None, match_nop=None, match_syscall=None,
+                 match_perm=None, match_mode="and", before=0, after=0, **kwargs):
         """
         This parser filters the trace according to a set of match
         conditions. Multiple match conditions can be used at the same time
@@ -115,8 +115,11 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
         self.follow_reg = match_reg
         """Find occurrences of given register."""
 
-        self.follow_addr = match_addr
-        """Find occurences of given memory location."""
+        self.match_addr_start = match_addr_start
+        """Find occurences of accesses beyond this memory location."""
+
+        self.match_addr_end = match_addr_end
+        """Find occurences of accesses before this memory location."""
 
         self.match_exc = match_exc
         """Find occurrences of given exception. The value 'any' is also valid."""
@@ -191,6 +194,14 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
                 match = match or value
         return match
 
+    def _check_limits(self, start, end, value):
+        result = True
+        if start != None and start > value:
+            result = False
+        if end != None and end < value:
+            result = False
+        return result
+
     def _match_instr(self, inst, match):
         """Check if the current instruction matches"""
         if self.find_instr is None:
@@ -211,10 +222,12 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
 
     def _match_addr(self, inst, match):
         """Check if the current load or store address matches"""
-        if self.follow_addr is None:
+        if self.match_addr_start is None and self.match_addr_end is None:
             return match
         if inst.entry.is_load or inst.entry.is_store:
-            match_addr = self.follow_addr == inst.entry.memory_address
+            match_addr = self._check_limits(self.match_addr_start,
+                                            self.match_addr_end,
+                                            inst.entry.memory_address)
         else:
             match_addr = False
         return self._update_match_result(match, match_addr)

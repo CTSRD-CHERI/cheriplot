@@ -105,6 +105,10 @@ class PyTraceDump(Tool):
         sub_scan.add_argument("--mem", type=base16_int,
                               help="Show all the instructions that touch"
                               " a given memory address")
+        sub_scan.add_argument("--mem-after", type=base16_int,
+                              help="Find all instructions with access memory after this address")
+        sub_scan.add_argument("--mem-before", type=base16_int,
+                              help="Find all instructions with access memory before this address")
         sub_scan.add_argument("--exception", type=str,
                               help="Show all the instructions that raise"
                               " a given exception")
@@ -167,13 +171,21 @@ class PyTraceDump(Tool):
             pc_start = args.pc_after
             pc_end = args.pc_before
 
+        if args.mem:
+            mem_start = args.mem
+            mem_end = args.mem
+        else:
+            mem_start = args.mem_after
+            mem_end = args.mem_before
+
         dump_parser = TraceDumpParser(None, args.trace,
                                       dump_registers=args.show_regs,
                                       match_opcode=args.instr,
                                       match_pc_start=pc_start,
                                       match_pc_end=pc_end,
                                       match_reg=args.reg,
-                                      match_addr=args.mem,
+                                      match_addr_start=mem_start,
+                                      match_addr_end=mem_end,
                                       match_exc=args.exception,
                                       match_nop=args.nop,
                                       match_syscall=args.syscall,
