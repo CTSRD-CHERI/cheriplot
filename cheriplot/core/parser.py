@@ -466,7 +466,6 @@ class CallbackTraceParser(TraceParser):
             start = 0
         if end is None:
             end = len(self)
-
         # fast progress processing, calling progress.advance() in each
         # _scan call is too expensive
         progress_points = list(range(start, end, int((end - start) / 100) + 1))

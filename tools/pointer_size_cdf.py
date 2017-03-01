@@ -37,7 +37,7 @@ import logging
 import cProfile
 import pstats
 
-from cheriplot.plot import PointerSizeCdfPlot
+from cheriplot.plot.provenance import MultiPointerSizeCdfPlot
 from cheriplot.core.tool import PlotTool
 
 logger = logging.getLogger(__name__)
@@ -51,9 +51,8 @@ class CdfPlotTool(PlotTool):
                                  nargs="*")
 
     def _run(self, args):
-        plot = PointerSizeCdfPlot(args.trace, args.cache)
-
-        plot.add_traces(args.additional_traces)
+        traces = args.additional_traces + [args.trace]
+        plot = MultiPointerSizeCdfPlot(traces, args.cache)
 
         if args.outfile:
             plot.save(args.outfile)
