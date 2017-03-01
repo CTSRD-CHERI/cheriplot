@@ -26,12 +26,15 @@
 #
 
 import numpy as np
+import pandas as pd
 import logging
+import os
 
 from itertools import chain
 
 from matplotlib import pyplot as plt
 from matplotlib import text
+from matplotlib import patches
 
 from cheriplot.utils import ProgressPrinter
 from cheriplot.core.addrspace_axes import Range
@@ -61,14 +64,14 @@ class CapSizeHistogramPlot(PointerProvenancePlot):
         self.vmmap = None
         """VMMap object representing the process memory map."""
 
-        self.norm_histograms = []
-        """List of normalized histograms for each vmmap entry."""
-
-        self.abs_histograms = []
-        """List of histograms for each vmmap entry."""
-
         self.n_bins = [0, 10, 20, 21, 22, 23, 64]
         """Bin edges for capability size, notice that the size is log2."""
+
+        self.norm_histogram = pd.DataFrame(columns=self.n_bins[1:])
+        """List of normalized histograms for each vmmap entry."""
+
+        self.abs_histogram = pd.DataFrame(columns=self.n_bins[1:])
+        """List of histograms for each vmmap entry."""
 
         self.label_managers = []
         """Manage vertical labels for each vertical column"""
@@ -84,6 +87,10 @@ class CapSizeHistogramPlot(PointerProvenancePlot):
         fig = plt.figure(figsize=(16,12))
         ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,])
         return (fig, ax)
+
+    def build_legend(self, handles):
+        self.ax.legend(handles=handles, bbox_to_anchor=(0, 1.02, 1, 0.102),
+                       loc=3, ncol=9, mode="expand", borderaxespad=0)
 
     def set_vmmap(self, mapfile):
         """
@@ -101,51 +108,60 @@ class CapSizeHistogramPlot(PointerProvenancePlot):
 
     def plot(self):
         """
-        Make the vertical bar plot based on the processed dataset
+        Make the vertical bar plot using the histogram data
         """
-        histogram_data = np.array(self.norm_histograms)
-
-        bottom = np.zeros(len(self.norm_histograms))
-        positions = range(1, 2*len(self.norm_histograms) + 1, 2)
+        step = 2
+        positions = range(1, step*self.norm_histogram.shape[0] + 1, step)
         # init label managers and legend list
-        legend_handles = []
-        legend_labels = []
-        for entry in self.vmmap:
+        for row in range(self.norm_histogram.shape[0]):
             self.label_managers.append(LabelManager(direction="vertical"))
             # self.label_managers[-1].constraint = (0, np.inf)
 
-        for bin_idx, bin_limit in enumerate(self.n_bins[1:]):
-            # color = np.random.rand(3,1)
+        legend_handles = []
+        bin_start = 0
+        # skip the first column that holds the vmmap entry for the row
+        # labels are set to "2^<bin_stat_size>-2^<bin_end_size>"
+        for idx,bin_limit in enumerate(self.norm_histogram.columns):
+            label = "2^%d-2^%d" % (bin_start, bin_limit)
+            bin_start = bin_limit
+            handle = patches.Patch(color=self.colormap[idx], label=label)
+            legend_handles.append(handle)
+        self.build_legend(legend_handles)
+
+        self.ax.set_xticks(np.array(positions))
+        ticklabels = []
+        for entry in self.norm_histogram.index:
+            if entry.path:
+                label_name = os.path.basename(entry.path)
+            else:
+                label_name = "0x%x" % entry.start
+            ticklabel = "(%s) %s" % (entry.perms, label_name)
+            ticklabels.append(ticklabel)
+        self.ax.set_xticklabels(ticklabels, rotation="vertical")
+        self.ax.set_yticks([0, 1])
+        self.ax.set_yticklabels(["0", "100"])
+        self.ax.set_xlim(0, positions[-1] + 1)
+        self.ax.set_ylim(0, 1.1)
+        self.ax.set_xlabel("Mapped memory region")
+
+        # build the bars in the plot
+        bottom = np.zeros(self.norm_histogram.shape[0])
+        for bin_idx, bin_limit in enumerate(self.norm_histogram.columns):
             color = self.colormap[bin_idx]
-            bar_slices = self.ax.bar(positions, histogram_data[:,bin_idx],
+            bar_slices = self.ax.bar(positions, self.norm_histogram[bin_limit],
                                      bottom=bottom, color=color)
-            abs_hist_iter = zip(bar_slices.patches, self.abs_histograms)
-            for bar_idx, (bar, abs_hist) in enumerate(abs_hist_iter):
+            bottom = bottom + self.norm_histogram[bin_limit]
+            # create text labels
+            for bar_idx,hist_idx in enumerate(self.norm_histogram.index):
+                bar = bar_slices[bar_idx]
+                abs_bin = self.abs_histogram.at[hist_idx, bin_limit]
                 # write the absolute count count at the left of each bar
                 text_x = bar.get_x() - bar.get_width() / 2
                 text_y = bar.get_y() + bar.get_height() / 2
-                txt = self.ax.text(text_x, text_y, " %d " % abs_hist[bin_idx],
+                txt = self.ax.text(text_x, text_y, " %d " % abs_bin,
                                    ha="center", va="center",
-                                   rotation="vertical")
+                                   rotation="horizontal")
                 self.label_managers[bar_idx].labels.append(txt)
-            legend_handles.append(bar_slices[0])
-            legend_labels.append("Size: 2^%d" % bin_limit)
-            bottom = bottom + histogram_data[:,bin_idx]
-
-        # place vmmap label for each bar
-        ticklabels = []
-        for idx, entry in enumerate(self.vmmap):
-            path = str(entry.path).split("/")[-1] if str(entry.path) else ""
-            # remove suffix extension part
-            path = path[0:path.find(".")]
-            label = "%s (%s)" % (path, entry.perms)
-            ticklabels.append(label)
-        self.ax.set_xticks(np.array(positions) + 0.5)
-        self.ax.set_xticklabels(ticklabels, rotation="vertical")
-        self.ax.set_xlim(0, positions[-1] + 1)
-        self.ax.set_ylim(0, 1.5)
-        self.ax.legend(legend_handles, legend_labels)
-        self.ax.set_xlabel("Mapped memory region")
 
         self.fig.canvas.mpl_connect("draw_event", self.on_draw)
 
@@ -170,30 +186,33 @@ class CapSizeCreationPlot(CapSizeHistogramPlot):
 
         # indexes in the vmmap and in the norm_histograms are
         # the same.
+        vm_entries = list(self.vmmap)
         vm_ranges = [Range(v.start, v.end) for v in self.vmmap]
-
-        histogram_input = [[] for _ in range(len(vm_ranges))]
+        hist_data = [[] for _ in range(len(vm_entries))]
 
         progress = ProgressPrinter(self.dataset.num_vertices(),
                                    desc="Sorting capability references")
         logger.debug("Vm ranges %s", vm_ranges)
         for node in self.dataset.vertices():
             data = self.dataset.vp.data[node]
-
             for idx, r in enumerate(vm_ranges):
                 if Range(data.cap.base, data.cap.bound) in r:
-                    histogram_input[idx].append(data.cap.length)
+                    hist_data[idx].append(data.cap.length)
             progress.advance()
         progress.finish()
 
-        for data in histogram_input:
+        for vm_entry,data in zip(vm_entries, hist_data):
             logger.debug("hist entry len %d", len(data))
-            data = np.array(data) + 1
+            if len(data) == 0:
+                continue
+            # the bin size is logarithmic
             data = np.log2(data)
             h, b = np.histogram(data, bins=self.n_bins)
-            # append normalized histogram to the list
-            self.abs_histograms.append(h)
-            self.norm_histograms.append(h / np.sum(h))
+            # append histograms to the dataframe
+            # self.hist_sources.append(vm_entry)
+            # new_index = len(self.abs_histogram.index)
+            self.abs_histogram.loc[vm_entry] = h
+            self.norm_histogram.loc[vm_entry] = h / np.sum(h)
 
     def plot(self):
         self.ax.set_ylabel("Percentage of dereferenceable capabilities by size")
@@ -216,9 +235,9 @@ class CapSizeDerefPlot(CapSizeHistogramPlot):
 
         # indexes in the vmmap and in the norm_histograms are
         # the same.
+        vm_entries = list(self.vmmap)
         vm_ranges = [Range(v.start, v.end) for v in self.vmmap]
-
-        histogram_input = [[] for _ in range(len(vm_ranges))]
+        hist_data = [[] for _ in range(len(vm_ranges))]
 
         progress = ProgressPrinter(self.dataset.num_vertices(),
                                    desc="Sorting capability references")
@@ -229,67 +248,23 @@ class CapSizeDerefPlot(CapSizeHistogramPlot):
                 # check in which vm-entry the address is
                 for idx, r in enumerate(vm_ranges):
                     if addr in r:
-                        histogram_input[idx].append(data.cap.length)
+                        hist_data[idx].append(data.cap.length)
+                        break
             progress.advance()
         progress.finish()
 
-        for data in histogram_input:
-            data = np.array(data) + 1
+        for vm_entry,data in zip(vm_entries, hist_data):
+            if len(data) == 0:
+                continue
+            # the bin size is logarithmic
             data = np.log2(data)
             h, b = np.histogram(data, bins=self.n_bins)
-            total_addrs = np.sum(h)
-            self.abs_histograms.append(h)
-            if total_addrs == 0:
-                # no dereferences in this region
-                self.norm_histograms.append(h)
-            else:
-                # append normalized histogram to the list
-                self.norm_histograms.append(h / total_addrs)
+            # append histogram to the dataframes
+            # self.hist_sources.append(vm_entry)
+            # new_index = len(self.abs_histogram.index)
+            self.abs_histogram.loc[vm_entry] = h
+            self.norm_histogram.loc[vm_entry] = h / np.sum(h)
 
     def plot(self):
         self.ax.set_ylabel("Percentage of dereferenced capabilities by size")
         return super().plot()
-
-
-class CapSizeCallPlot(CapSizeHistogramPlot):
-    """
-    Histogram plot that takes into account capabilities that are called.
-    Same as :class:`CapSizeCreationPlot` but the capabilities are
-    taken at call-time.
-    """
-
-    def build_dataset(self):
-        """Process the provenance graph to extract histogram data."""
-        super(CapSizeCallPlot, self).build_dataset()
-
-        # indexes in the vmmap and in the norm_histograms are
-        # the same.
-        vm_ranges = [Range(v.start, v.end) for v in self.vmmap]
-
-        histogram_input = [[] for _ in range(len(vm_ranges))]
-
-        progress = ProgressPrinter(self.dataset.num_vertices(),
-                                   desc="Sorting capability references")
-        for node in self.dataset.vertices():
-            data = self.dataset.vp.data[node]
-            # iterate over every dereference of the node
-            for addr in data.deref["call"]:
-                # check in which vm-entry the address is
-                for idx, r in enumerate(vm_ranges):
-                    if addr in r:
-                        histogram_input[idx].append(data.cap.length)
-            progress.advance()
-        progress.finish()
-
-        for data in histogram_input:
-            data = np.array(data) + 1
-            data = np.log2(data)
-            h, b = np.histogram(data, bins=self.n_bins)
-            total_addrs = np.sum(h)
-            self.abs_histograms.append(h)
-            if total_addrs == 0:
-                # no dereferences in this region
-                self.norm_histograms.append(h)
-            else:
-                # append normalized histogram to the list
-                self.norm_histograms.append(h / total_addrs)
