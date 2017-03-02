@@ -27,7 +27,6 @@
 
 import logging
 
-from itertools import chain
 from graph_tool.all import load_graph
 
 from cheriplot.core.provenance import CheriNodeOrigin
@@ -137,7 +136,7 @@ class ProvenanceGraphInspector:
         if self.match_deref_start == None and self.match_deref_end == None:
             return match
         result = False
-        for addr in chain(vdata.deref["load"], vdata.deref["store"]):
+        for addr in vdata.deref["addr"]:
             result = self._check_limits(self.match_deref_start,
                                         self.match_deref_end, addr)
             if result:

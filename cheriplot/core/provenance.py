@@ -30,7 +30,8 @@ Provenance graph implementation and helper classes.
 """
 
 from enum import IntEnum
-
+from cached_property import cached_property
+from functools import partialmethod
 from graph_tool.all import *
 
 class CheriCapPerm(IntEnum):
@@ -188,6 +189,12 @@ class NodeData:
     graph.
     """
 
+    class DerefType(IntEnum):
+        """Types of capability dereference."""
+        DEREF_LOAD = 1
+        DEREF_STORE = 2
+        DEREF_CALL = 3
+
     @classmethod
     def from_operand(cls, op):
         """
@@ -211,10 +218,10 @@ class NodeData:
         the address where it is stored location.
         """
 
-        self.deref = {"load": [], "store": [], "call": []}
+        self.deref = {"time": [], "addr": [], "is_cap": [], "type": []}
         """
-        Store all the offsets (including duplicates) that are dereferenced
-        for this capability node.
+        Store dereferences of a capability, in a table-like structure,
+        the type is defined in :class:`NodeData.DerefType`
         """
 
         self.cap = None
@@ -228,6 +235,18 @@ class NodeData:
 
         self.is_kernel = False
         """Is this node coming from a trace entry executed in kernel space?"""
+
+    def add_deref(self, time, addr, cap, type_):
+        """Append a dereference to the dereference table."""
+        self.deref["time"].append(time)
+        self.deref["addr"].append(addr)
+        self.deref["is_cap"].append(cap)
+        self.deref["type"].append(type_)
+
+    # shortcuts for add_deref
+    add_load = partialmethod(add_deref, type_=DerefType.DEREF_LOAD)
+    add_store = partialmethod(add_deref, type_=DerefType.DEREF_STORE)
+    add_call = partialmethod(add_deref, type_=DerefType.DEREF_CALL)
 
     def __str__(self):
         return "%s origin:%s pc:0x%x (kernel %d)" % (

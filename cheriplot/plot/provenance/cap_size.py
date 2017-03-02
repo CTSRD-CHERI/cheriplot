@@ -30,8 +30,6 @@ import pandas as pd
 import logging
 import os
 
-from itertools import chain
-
 from matplotlib import pyplot as plt
 from matplotlib import text
 from matplotlib import patches
@@ -244,7 +242,7 @@ class CapSizeDerefPlot(CapSizeHistogramPlot):
         for node in self.dataset.vertices():
             data = self.dataset.vp.data[node]
             # iterate over every dereference of the node
-            for addr in chain(data.deref["load"], data.deref["store"]):
+            for addr in data.deref["addr"]:
                 # check in which vm-entry the address is
                 for idx, r in enumerate(vm_ranges):
                     if addr in r:

@@ -613,10 +613,11 @@ class PointerProvenanceParser(CallbackTraceParser):
         # instead of the capability register offset we use the
         # entry memory_address so we capture any extra offset in
         # the instruction as well
+        is_cap = inst.opcode.startswith("clc") or inst.opcode.startswith("csc")
         if entry.is_load:
-            node_data.deref["load"].append(entry.memory_address)
+            node_data.add_load(entry.cycles, entry.memory_address, is_cap)
         elif entry.is_store:
-            node_data.deref["store"].append(entry.memory_address)
+            node_data.add_store(entry.cycles, entry.memory_address, is_cap)
         else:
             if not self._has_exception(entry):
                 logger.error("Dereference is neither a load or a store %s", inst)

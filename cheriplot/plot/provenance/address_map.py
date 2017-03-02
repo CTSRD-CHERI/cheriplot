@@ -1,5 +1,5 @@
 #-
-# Copyright (c) 2016 Alfredo Mazzinghi
+# Copyright (c) 2016-2017 Alfredo Mazzinghi
 # All rights reserved.
 #
 # This software was developed by SRI International and the University of
@@ -99,7 +99,7 @@ class ColorCodePatchBuilder(PickablePatchBuilder):
         """Map capability permission to line colors"""
 
         self._patches = None
-        """List of enerated patches"""
+        """List of generated patches"""
 
         self._node_map = SortedDict()
         """Maps the Y axis coordinate to the graph node at that position"""
@@ -274,36 +274,31 @@ class AddressMapOmitBuilder(OmitRangeSetBuilder):
 
 class AddressMapPlot(PointerProvenancePlot):
     """
-    Plot the provenance tree showing the time of allocation vs
-    base and bound of each node.
+    Base class for plots with the address-map view.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.patch_builder = ColorCodePatchBuilder(self.fig)
-        """
-        Helper object that builds the plot components.
-        See :class:`.ColorCodePatchBuilder`
+        self.patch_builder = None
+        """Helper object that builds the plot components.
+        This is meant to be specified by subclasses
         """
 
         self.range_builder = AddressMapOmitBuilder()
         """
-        Helper objects that detects the interesting
-        parts of the address-space.
-        See :class:`.AddressMapOmitBuilder`
+        Helper objects that generates the list of address
+        ranges we care about.
         """
 
         self.vmmap_patch_builder = VMMapPatchBuilder(self.ax)
-        """
-        Helper object that builds patches to display VM map regions.
-        """
+        """Helper object that builds patches to display VM map regions."""
 
         self.vmmap = None
-        """VMMap object representing the process memory map"""
+        """VMMap object representing the process memory map."""
 
         self.viewport_padding = 0.02
-        """Padding added to the bounding box of the viewport (% units)"""
+        """Padding added to the bounding box of the viewport (% units)."""
 
     def init_axes(self):
         """
@@ -344,9 +339,7 @@ class AddressMapPlot(PointerProvenancePlot):
                 self.range_builder.inspect_range(Range(vme.start, vme.end))
 
     def plot(self):
-        """
-        Create the address-map plot
-        """
+        """Create the address-map plot."""
 
         self._prepare_patches()
 
@@ -395,6 +388,17 @@ class AddressMapPlot(PointerProvenancePlot):
         logger.debug("Plot build completed")
         plt.savefig(self._get_plot_file())
         logger.debug("Plot written to file")
+
+
+class AddressMapCapCreatePlot(AddressMapPlot):
+    """
+    Plot the provenance tree showing the time of allocation vs
+    base and bound of each node.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.patch_builder = ColorCodePatchBuilder(self.fig)
 
 
 class SyscallPatchBuilder(PatchBuilder):

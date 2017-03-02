@@ -257,6 +257,7 @@ class Instruction:
             "clearlo", "clearhi", "cclearlo", "cclearhi",
             "fpclearlo", "fpclearhi", "cmove"]
         }
+    iclass_map[IClass.I_CAP] = list(chain(*iclass_map.values()))
 
     def __init__(self, inst, entry, regset, prev_regset):
         """
@@ -398,12 +399,7 @@ class CallbackTraceParser(TraceParser):
                 if instr_name == iclass.value:
                     # add the iclass callback for all the
                     # instructions in such class
-                    if iclass == Instruction.IClass.I_CAP:
-                        opcodes = []
-                        for iclass_opcodes in Instruction.iclass_map.values():
-                            opcodes += iclass_opcodes
-                    else:
-                        opcodes = Instruction.iclass_map.get(iclass, [])
+                    opcodes = Instruction.iclass_map.get(iclass, [])
                     for opcode in opcodes:
                         if opcode in self._callbacks:
                             self._callbacks[opcode].append(method)
