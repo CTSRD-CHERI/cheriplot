@@ -6,12 +6,12 @@ and mocking the matplotlib interface is hard in this case.
 """
 import pytest
 import logging
-import mock
 
-from matplotlib import mtext
-from matplotlib import mtransform
+from unittest import mock
+from matplotlib import text as mtext
+from matplotlib import transforms as mtransform
 from matplotlib import pyplot
-from cheriplot.core.label_manager import LabelMananger
+from cheriplot.core import LabelManager
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -30,7 +30,7 @@ def vlabel_manager():
 @pytest.fixture
 def fig_and_ax():
     # pyplot axes
-    fig = pyplot.figure([10, 10])
+    fig = pyplot.figure(figsize=[10, 10])
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)    
