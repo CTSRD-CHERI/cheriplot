@@ -38,8 +38,9 @@ from matplotlib.ticker import Formatter, FixedLocator, Locator
 from itertools import repeat
 from functools import reduce
 from operator import attrgetter
+from sortedcontainers import SortedDict
 
-from ..utils import ProgressPrinter
+from cheriplot.utils import ProgressPrinter
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +64,25 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         """Scale factor of the omitted address ranges"""
 
         self.target_ranges.append(Range(0, np.inf, Range.T_KEEP))
+
+        self._precomputed_offsets = None
+        """SortedDict ... """
+
         self._inverse = False
+        """Is this transform performing the direct or inverse operation"""
 
         self.has_inverse = False # pyplot seems not to care
         self.is_separable = True
         self.input_dims = 2
         self.output_dims = 2
+        self._precompute_offsets()
 
     def update_range(self, range_list):
         """
-        Update parameters depending on the omit ranges
+        Update parameters depending on the omit ranges.
+        The range list must be complete, in the sense that it should
+        mark every part of the address-range without holes as either
+        omit or keep.
         """
         self.target_ranges = range_list
 
@@ -88,28 +98,34 @@ class AddressSpaceCollapseTransform(transforms.Transform):
             # in size
             # scale = <percent_of_keep_size_to_take> * sum(keep) / sum(omit)
             self.omit_scale = 0.05 * keep_size / omit_size
+        self._precompute_offsets()
 
-    def get_x(self, x):
-        """
-        Get the data X coordinate based on the omit/keep ranges
-        """
-        if x < 0:
-            return x
-        x_offset = 0
+    def _precompute_offsets(self):
+        # reset previous offsets
+        self._precomputed_offsets = SortedDict()
+        x_collapsed = 0
         for r in self.target_ranges:
-            if x in r:
-                if r.rtype == Range.T_KEEP:
-                    x_offset += x - r.start
-                break
-            else:
-                # r.end < x because target_ranges are sorted
-                if r.rtype == Range.T_KEEP:
-                    x_offset += r.size
-                else:
-                    # T_OMIT
-                    x_offset += r.size * self.omit_scale
-        return x_offset
+            r_scale = 1 if r.rtype == Range.T_KEEP else self.omit_scale
+            self._precomputed_offsets[r.start] = (x_collapsed, r_scale)
+            x_collapsed += r.size * r_scale
 
+    def get_x(self, x_dataspace):
+        """
+        Scale the x from data-space coordinates to the collapsed
+        address-space coordinates.
+        The conversion uses a fast lookup of precomputed offsets
+        based on the omit/keep range intervals.
+        """
+        if x_dataspace < 0:
+            return x_dataspace
+        base_idx = self._precomputed_offsets.bisect_left(x_dataspace)
+        if (len(self._precomputed_offsets) == base_idx or
+            self._precomputed_offsets.iloc[base_idx] > x_dataspace):
+            key = self._precomputed_offsets.iloc[base_idx - 1]
+        else:
+            key = x_dataspace
+        x_collapsed, x_scale = self._precomputed_offsets[key]
+        return x_collapsed + (x_dataspace - key) * x_scale
 
     def get_x_inv(self, x):
         """

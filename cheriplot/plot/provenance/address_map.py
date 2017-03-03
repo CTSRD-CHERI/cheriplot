@@ -353,11 +353,12 @@ class AddressMapPlot(PointerProvenancePlot):
         logger.debug("Nodes %d, ranges %d", self.dataset.num_vertices(),
                      len(self.range_builder.ranges))
 
-        # add all the patches to the axes and set the omit
-        # ranges
+        # first set the omit ranges because adding collections
+        # uses the transform
+        self.ax.set_omit_ranges(self.range_builder.get_omit_ranges())
+        # add the patches
         for collection in self.patch_builder.get_patches():
             self.ax.add_collection(collection)
-        self.ax.set_omit_ranges(self.range_builder.get_omit_ranges())
 
         if self.vmmap:
             for collection in self.vmmap_patch_builder.get_patches():
