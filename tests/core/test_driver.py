@@ -2,11 +2,10 @@
 Test the taskdriver configuration generator
 """
 import pytest
-import logging
 import argparse
 
 from unittest import mock
-from cheriplot.core import TaskDriver, Argument, Option, SubCommand, NestedConfig
+from cheriplot.core import *
 
 # attempt to define some task drivers
 
@@ -17,53 +16,32 @@ def empty_driver():
     return EmptyDriver
 
 @pytest.fixture
-def arg_driver():
-    class ArgDriver(TaskDriver):
-        my_arg = Argument(help="myArgDriver", type=int)
-    return ArgDriver
-
-@pytest.fixture
-def opt_driver():
-    class OptDriver(TaskDriver):
-        my_opt = Option(help="myOptDriver", type=int)
-    return OptDriver
-
-@pytest.fixture
-def sub_driver():
-    class SubArg(TaskDriver):
-        my_opt = Option(help="mySubOpt")
-
-    class SubDriver(TaskDriver):
-        my_sub = SubCommand(SubArg, help="mySub")
-    return SubDriver
-
-@pytest.fixture
-def nested_driver():
-    class NestedArg(TaskDriver):
-        my_opt = Option(help="myNestedOpt")
-
-    class NestedDriver(TaskDriver):
-        my_sub = NestedConfig(NestedArg)
-    return NestedDriver
-
-@pytest.fixture
 def full_driver():
     class NestedArg(TaskDriver):
         my_nested = Option(help="myNested")
+        my_nested_with_dest = Option(dest="override_nested")
+        my_nested_arg = Argument()
 
     class SubArg(TaskDriver):
         my_sub = Option(help="mySubOpt")
 
     class FullDriver(TaskDriver):
-        my_opt1 = Option(help="myOption1")
-        my_arg1 = Argument(help="myArgument1")
-        my_arg2 = Argument(help="myArgument2",
-                           default="my_arg2_default")
-        my_opt2 = Option(help="myOption2",
-                         default="my_opt2_default")
-        whatever = NestedConfig(NestedArg)
+        my_int_opt = Option(help="myIntOpt", type=int)
+        my_arg = Argument(help="myArg")
+        my_default_arg = Argument(default="arg_default")
+        my_default_opt = Option(default="opt_default")
+        nested = NestedConfig(NestedArg)
         subcmd = SubCommand(SubArg)
     return FullDriver
+
+@pytest.fixture
+def subclass_driver():
+    class Base(TaskDriver):
+        my_base = Argument(help="myBaseArg")
+
+    class Derived(Base):
+        my_derived = Argument(help="myDerivedArg")
+    return Derived
 
 @pytest.fixture
 def parser():
@@ -81,55 +59,19 @@ def test_empty_config(empty_driver):
     parser.add_argument.assert_not_called()
     parser.add_subparsers.assert_not_called()
 
-def test_arg_config(arg_driver):
-    parser = mock.Mock()
+def test_parser(parser):
 
-    dict_conf = arg_driver.make_config()
-    assert len(dict_conf) == 1
-    assert dict_conf["my_arg"] == None
+    parser.add_argument("x.foo", metavar="foo")
+    parser.add_argument("--bar", action="store_true", dest="x.y.bar")
+    parser.add_argument("--baz", type=int)
+    parser.add_argument("--buzz", action="store_true", dest="w.z.buzz")
 
-    arg_driver.make_config(parser)
-    # check the argument
-    parser.add_argument.assert_called_once_with(
-        "my_arg", help="myArgDriver", type=int)
-
-def test_opt_config(opt_driver):
-    parser = mock.Mock()
-
-    dict_conf = opt_driver.make_config()
-    assert len(dict_conf) == 1
-    assert dict_conf["my_opt"] == None
-
-    opt_driver.make_config(parser)
-    # check the argument
-    parser.add_argument.assert_called_once_with(
-        "--my_opt", help="myOptDriver", type=int)
-
-def test_subcommand(sub_driver):
-    parser = mock.Mock()
-    subparser = mock.Mock()
-
-    dict_conf = sub_driver.make_config()
-    assert len(dict_conf) == 1
-    assert dict_conf["my_opt"] == None
-
-    sub_driver.make_config(parser, subparser)
-    parser.add_argument.assert_not_called()
-    subparser.add_parser.assert_called_once_with("my_sub", help="mySub")
-    new_parser = subparser.add_parser.return_value
-    new_parser.add_argument.assert_called_once_with("--my_opt", help="mySubOpt")
-
-def test_nestedconf(nested_driver):
-    parser = mock.Mock()
-    subparser = mock.Mock()
-
-    dict_conf = nested_driver.make_config()
-    assert len(dict_conf) == 1
-    assert dict_conf["my_opt"] == None
-
-    nested_driver.make_config(parser, subparser)
-    parser.add_argument.assert_called_once_with("--my_opt", help="myNestedOpt")
-    subparser.add_parser.assert_not_called()
+    args = parser.parse_args(["--baz", "10", "--bar", "foovalue"],
+                             namespace=NestingNamespace())
+    assert args.baz == 10
+    assert args.x.foo == "foovalue"
+    assert args.x.y.bar == True
+    assert args.w.z.buzz == False
 
 def test_full_config(full_driver):
     parser = mock.Mock()
@@ -137,37 +79,61 @@ def test_full_config(full_driver):
 
     dict_conf = full_driver.make_config()
     assert len(dict_conf) == 6
-    assert dict_conf["my_opt1"] == None
-    assert dict_conf["my_opt2"] == "my_opt2_default"
-    assert dict_conf["my_arg1"] == None
-    assert dict_conf["my_arg2"] == "my_arg2_default"
-    assert dict_conf["my_nested"] == None
+    assert dict_conf["my_int_opt"] == None
+    assert dict_conf["my_default_opt"] == "opt_default"
+    assert dict_conf["my_arg"] == None
+    assert dict_conf["my_default_arg"] == "arg_default"
+    assert len(dict_conf["nested"]) == 3
+    assert dict_conf["nested"]["my_nested"] == None
+    assert dict_conf["nested"]["override_nested"] == None
+    assert dict_conf["nested"]["my_nested_arg"] == None
+    assert len(dict_conf["subcmd"]) == 1
+    assert dict_conf["subcmd"]["my_sub"] == None
 
     parser.reset_mock()
     subparser.reset_mock()
     full_driver.make_config(parser, subparser)
     # check the argument
-    parser.add_argument.assert_any_call("--my_opt1", help="myOption1")
-    parser.add_argument.assert_any_call("my_arg2", help="myArgument2",
-                                        default="my_arg2_default")
-    parser.add_argument.assert_any_call("my_arg1", help="myArgument1")
-    parser.add_argument.assert_any_call("--my_opt2", help="myOption2",
-                                        default="my_opt2_default")
-    parser.add_argument.assert_any_call("--my_nested", help="myNested")
+    parser.add_argument.assert_any_call("--my_int_opt", help="myIntOpt", type=int)
+    parser.add_argument.assert_any_call("my_arg", help="myArg")
+    parser.add_argument.assert_any_call("my_default_arg", default="arg_default")
+    parser.add_argument.assert_any_call("--my_default_opt", default="opt_default")
+    parser.add_argument.assert_any_call("--my_nested", help="myNested",
+                                        dest="nested.my_nested")
+    parser.add_argument.assert_any_call("--my_nested_with_dest",
+                                        dest="nested.override_nested")
+    parser.add_argument.assert_any_call("nested.my_nested_arg",
+                                        metavar="my_nested_arg")
     subparser.add_parser.assert_called_once_with("subcmd")
     new_parser = subparser.add_parser.return_value
-    new_parser.add_argument.assert_any_call("--my_sub", help="mySubOpt")
+    new_parser.add_argument.assert_any_call("--my_sub", help="mySubOpt",
+                                            dest="subcmd.my_sub")
 
 def test_interop(full_driver, parser):
     full_driver.make_config(parser, parser.add_subparsers())
 
     # check that we can call the argparse parser
-    args = parser.parse_args(["--my_opt1", "foo", "--my_opt2", "bar",
-                              "--my_nested", "baz", "subcmd",
-                              "--my_sub", "sub_opt", "arg1", "arg2"])
-    assert args.my_opt1 == "foo"
-    assert args.my_opt2 == "bar"
-    assert args.my_arg1 == "arg1"
-    assert args.my_arg2 == "arg2"
-    assert args.my_nested == "baz"
-    assert args.my_sub == "sub_opt"
+    args = parser.parse_args(["--my_int_opt", "10", "--my_nested", "baz",
+                              "--my_nested_with_dest", "bar",
+                              "subcmd", "--my_sub", "sub_opt",
+                              "arg", "default_arg", "nested_arg"],
+                             namespace=NestingNamespace())
+    assert args.my_int_opt == 10
+    assert args.my_default_opt == "opt_default"
+    assert args.nested.my_nested == "baz"
+    assert args.nested.override_nested == "bar"
+    assert args.my_arg == "arg"
+    assert args.my_default_arg == "default_arg"
+    assert args.nested.my_nested_arg == "nested_arg"
+    assert args.subcmd.my_sub == "sub_opt"
+
+def test_subclass(subclass_driver):
+    parser = mock.Mock()
+
+    dict_conf = subclass_driver.make_config()
+    assert dict_conf["my_base"] == None
+    assert dict_conf["my_derived"] == None
+
+    subclass_driver.make_config(parser)
+    parser.add_argument.assert_any_call("my_base", help="myBaseArg")
+    parser.add_argument.assert_any_call("my_derived", help="myDerivedArg")
