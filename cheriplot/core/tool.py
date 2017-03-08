@@ -28,98 +28,67 @@
 import sys
 import os
 import logging
-import argparse as ap
 import cProfile
 import pstats
 
-class Tool:
+from argparse import ArgumentParser, RawTextHelpFormatter
+from cheriplot.core.driver import NestingNamespace, TaskDriver, Option, Argument
+
+
+def driver_tool(task, argv=None):
+    parser = ArgumentParser(description=task.description,
+                            formatter_class=RawTextHelpFormatter)
+    task.make_config(parser)
+    args = parser.parse_args(args=argv, namespace=NestingNamespace())
+    task_inst = task(args)
+    task_inst.run()
+
+
+class BaseToolTaskDriver(TaskDriver):
     """
-    Base class for tools that parse traces
+    Base taskdriver that handles logging configuration and profiling
     """
+    verbose = Option(help="Show debug output")
+    profile = Option(help="Enable profiling")
+    logfile = Option(help="Log output file")
 
-    description = ""
+    def __init__(self, config):
+        super().__init__(config)
 
-    def __init__(self):
-        self.parser = ap.ArgumentParser(description=self.description,
-                                        formatter_class=ap.RawTextHelpFormatter)
-        self.init_arguments()
-
-    def init_arguments(self):
-        """
-        Set the command line arguments for the tool.
-
-        This adds some default arguments for verbose logging, 
-        profiling and the trace file path.
-        """
-        self.parser.add_argument("-v", "--verbose", help="Show debug output",
-                            action="store_true")
-        self.parser.add_argument("--log", help="Set logfile path")
-        self.parser.add_argument("--profile",
-                            help="Run in profiler (disable verbose output)",
-                            action="store_true")
-
-    def run(self):
-        """
-        Tool entry point, this should be called from the python main
-        script.
-        """
-        args = self.parser.parse_args()
-
-        # disable verbose logging when profiling
-        if args.profile:
-            args.verbose = False
-
-        # setup logging
-        logging_args = {}
-        if args.verbose:
-            logging_args["level"] = logging.DEBUG
-        else:
-            logging_args["level"] = logging.INFO
-
-        if args.log:
-            logging_args["filename"] = args.log
-
+        verbose = config.verbose and not config.profile
+        logging_args = {
+            "level": logging.DEBUG if verbose else logging.INFO,
+            "filename": config.logfile
+        }
         logging.basicConfig(**logging_args)
 
-        try:
-            if args.profile:
-                pr = cProfile.Profile()
-                pr.runcall(self._run, args)
-            else:
-                self._run(args)
-        finally:
-            # print profiling results
-            if args.profile:
-                pr.create_stats()
-                pr.print_stats(sort="cumulative")
-                # p = pstats.Stats(self._get_profiler_file())
-                # p.strip_dirs()
-                # p.sort_stats("cumulative")
-                # p.print_stats()
+        # instrument the run method to do profiling
+        if config.profile:
+            def profiling_run(self_):
+                try:
+                    pr = cProfile.Profile()
+                    pr.runcall(self.run)
+                finally:
+                    # print profiling results
+                    pr.create_stats()
+                    pr.print_stats(sort="cumulative")
+                    # this is to print stats to file
+                    # p = pstats.Stats(self._get_profiler_file())
+                    # p.strip_dirs()
+                    # p.sort_stats("cumulative")
+                    # p.print_stats()
+            self.run = profiling_run
 
     def _get_profiler_file(self):
         tool_name, _ = os.path.splitext(sys.argv[0])
         return "%s.cprof" % tool_name
 
-    def _run(self, args):
-        """
-        Run the tool body.
 
-        :param args: the arguments namespace
-        :type args: :class:`argparse.Namespace`
-        """
-        raise NotImplementedError("Missing tool body in Tool._run")
-
-
-class PlotTool(Tool):
-
-    def init_arguments(self):
-        super().init_arguments()
-        self.parser.add_argument("trace", help="Path to trace file")
-        self.parser.add_argument("-c", "--cache",
-                                 help="Enable caching of the parsed trace",
-                                 action="store_true")
-        self.parser.add_argument("-o", "--outfile",
-                                 help="Save plot to file, see matplotlib for "\
-                                 "supported formats (svg, png, pgf...)")
-        
+class BaseTraceTaskDriver(BaseToolTaskDriver):
+    """
+    Base task driver that adds options to accept a
+    trace file, output file and caching policy
+    """
+    trace = Argument(help="Path to cvtrace file")
+    cache = Option(help="Enable caching of intermediary datasets")
+    outfile = Option(help="Output file")

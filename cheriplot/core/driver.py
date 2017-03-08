@@ -214,6 +214,22 @@ class TaskDriverType(type):
         return new_instance
 
 
+class SubparserBuilder:
+    """
+    Build an argparse subparser only when needed
+    because once created there must be at least one.
+    """
+
+    def __init__(self, parser):
+        self.parser = parser
+        self._subparser = None
+
+    def add_parser(self, *args, **kwargs):
+        if not self._subparser:
+            self._subparser = self.parser.add_subparsers()
+        return self._subparser.add_parser(*args, **kwargs)
+
+
 class TaskDriver(metaclass=TaskDriverType):
     """
     Base interface of configurable components of a task driver.
@@ -229,6 +245,9 @@ class TaskDriver(metaclass=TaskDriverType):
     propagated back in the config to the inits of all the components, so
     we should have a TaskComponent class for that and ComponentConfig
     """
+
+    description = ""
+
     @classmethod
     def make_config(cls, parser=None, subparser=None):
         """
@@ -241,8 +260,16 @@ class TaskDriver(metaclass=TaskDriverType):
         :type parser: :class:`argparse.ArgumentParser`
         """
         if parser != None:
+            if subparser is None:
+                subparser = SubparserBuilder(parser)
             cls._config_model.as_argparse(parser, subparser)
         return cls._config_model.as_dict()
 
     def __init__(self, config):
-        self._config = config
+        self.config = config
+
+    def run(self):
+        """
+        This method should be overridden in subclasses
+        """
+        return
