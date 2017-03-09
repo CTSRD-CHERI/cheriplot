@@ -30,24 +30,14 @@ import os
 import logging
 import cProfile
 import pstats
+import shlex
 
-from argparse import ArgumentParser, RawTextHelpFormatter
-from cheriplot.core.driver import NestingNamespace, TaskDriver, Option, Argument
-
-
-def driver_tool(task, argv=None):
-    parser = ArgumentParser(description=task.description,
-                            formatter_class=RawTextHelpFormatter)
-    task.make_config(parser)
-    args = parser.parse_args(args=argv, namespace=NestingNamespace())
-    task_inst = task(args)
-    task_inst.run()
+from argparse import RawTextHelpFormatter
+from cheriplot.core.driver import *
 
 
 class BaseToolTaskDriver(TaskDriver):
-    """
-    Base taskdriver that handles logging configuration and profiling
-    """
+    """Base taskdriver that handles logging configuration and profiling"""
     verbose = Option(help="Show debug output")
     profile = Option(help="Enable profiling")
     logfile = Option(help="Log output file")
@@ -92,3 +82,130 @@ class BaseTraceTaskDriver(BaseToolTaskDriver):
     trace = Argument(help="Path to cvtrace file")
     cache = Option(help="Enable caching of intermediary datasets")
     outfile = Option(help="Output file")
+
+
+def run_driver_tool(task, argv=None):
+    """
+    Run a TaskDriver as a CLI tool
+
+    :param task: the task driver
+    :type task: :class:`TaskDriver`
+    :param argv: argument list
+    :type argv: iterable
+    """
+    parser = TaskDriverArgumentParser(description=task.description,
+                                      formatter_class=RawTextHelpFormatter)
+    task.make_config(parser)
+    args = parser.parse_args(args=argv)
+    task_inst = task(args)
+    task_inst.run()
+
+
+class InteractiveTool(TaskDriver):
+    """
+    Task driver that runs another task as both a CLI batch
+    command or an interactive tool.
+    Instad of subclassing this, it is suggested to use
+    :func:`interactive_tool`.
+
+    Note:
+    This relies on subclasses to define the following attributes:
+    task_class:
+        the class of the wrapped task
+    wrapped_conf:
+        the configuration argument of the wrapped task
+    interactive_conf_keys:
+        list of configuration keys in the wrapped
+        parser that are allowed in the interactive prompt
+    """
+    interactive = Option("-i", action="store_true",
+                         help="Run interactively")
+
+    def __init__(self, config):
+        super().__init__(config)
+        # the wrapped task is initialized in the subclass
+        self.task = self.task_class(config.wrapped_conf)
+
+        toolname = os.path.basename(sys.argv[0])
+        self.prompt = "%s> " % os.path.splitext(toolname)[0]
+
+    def _mainloop(self):
+        parser = TaskDriverArgumentParser(description=self.task.description)
+        sub = parser.add_subparsers()
+        cmd = sub.add_parser(self.interactive_conf_key)
+        self.task.make_config(cmd, keys=[self.interactive_conf_key])
+        while True:
+            cli_in = input(self.prompt)
+            argv = shlex.split(cli_in)
+            if len(argv) and argv[0] == "quit":
+                break
+            try:
+                config = parser.parse_args(argv)
+                self.task.update_config(config)
+                self.task.run()
+            except SystemExit:
+                continue
+
+    def run(self):
+        if self.config.interactive:
+            self._mainloop()
+        else:
+            self.task.run()
+
+
+def interactive_tool(key):
+    """
+    Decorator that creates an interactive loop driver that wraps the given task
+    driver. This reserves the "quit" keyword from the possible argparse
+    keywords available to the wrapped task driver.
+
+    >>> @interactive_tool("interactive_arg")
+    ... class MyTaskDriver(TaskDriver):
+    ...     cli_option = Option()
+    ...     interactive_arg = NestedConfig(InteractiveConfig)
+    """
+    def wrapper(wrapped_task):
+        # dynamically build the interactive tool subclass
+        # with the class attributes requred by InteractiveTool
+        ns = {
+            "task_class": wrapped_task,
+            "wrapped_conf": NestedConfig(wrapped_task),
+            "interactive_conf_key": key
+        }
+        driver_class = TaskDriverType("_interactive_tool",
+                                      (InteractiveTool,), ns)
+        return driver_class
+    return wrapper
+
+
+def any_int_validator(value):
+    """
+    Validata input parameter of argparse argument.
+    Accept integers in base 10 and 16
+    """
+    try:
+        n = int(value)
+    except ValueError:
+        # try hex
+        n = int(value, 16)
+    return n
+
+def option_range_validator(value):
+    """
+    Validate input parameter of an argparse argument.
+    Accept a range of values.
+    Expects a string in the form "start-end".
+    Returns the tuple (start, end).
+    """
+    parts = value.split("-")
+    try:
+        if len(parts) > 1:
+            start, end = parts
+        else:
+            start = end = parts[0]
+            start = any_int_validator(start)
+            end = any_int_validator(end)
+    except ValueError:
+        raise ValueError("Invalid range %s, accepted formats are"\
+                         "<start>-<end>, <start>-, -<end>, <start=end>" % value)
+    return (start, end)

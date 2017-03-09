@@ -1,31 +1,95 @@
-"""
-This module defines parsers that are used to support debugging with
-instruction traces.
-"""
+#-
+# Copyright (c) 2016-2017 Alfredo Mazzinghi
+# All rights reserved.
+#
+# This software was developed by SRI International and the University of
+# Cambridge Computer Laboratory under DARPA/AFRL contract FA8750-10-C-0237
+# ("CTSRD"), as part of the DARPA CRASH research programme.
+#
+# @BERI_LICENSE_HEADER_START@
+#
+# Licensed to BERI Open Systems C.I.C. (BERI) under one or more contributor
+# license agreements.  See the NOTICE file distributed with this work for
+# additional information regarding copyright ownership.  BERI licenses this
+# file to you under the BERI Hardware-Software License, Version 1.0 (the
+# "License"); you may not use this file except in compliance with the
+# License.  You may obtain a copy of the License at:
+#
+#   http://www.beri-open-systems.org/legal/license-1-0.txt
+#
+# Unless required by applicable law or agreed to in writing, Work distributed
+# under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+# CONDITIONS OF ANY KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations under the License.
+#
+# @BERI_LICENSE_HEADER_END@
+#
 
 import logging
 
 from collections import deque
-
 from cheriplot.core.parser import CallbackTraceParser
 from cheriplot.core.provenance import CheriCap
+from cheriplot.core import (
+    BaseTraceTaskDriver, ConfigurableComponent, Option, NestedConfig,
+    interactive_tool, option_range_validator, any_int_validator)
 
 logger = logging.getLogger(__name__)
 
-class TraceDumpMixin:
-    """
-    Mixin providing convenience functions to dump parsed instructions
-    from a trace.
-    """
 
-    def __init__(self, *args, raw=False, **kwargs):
+class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
+    """Parser that performs filtering and search operations on a trace"""
+
+    start = Option("-s", type=int, default=0, help="Start offset in the trace")
+    end = Option("-e", type=int, default=None, help="Stop offset in the trace")
+    show_regs = Option("-r", action="store_true", help="Dump register content")
+    instr = Option(help="Find instruction occurrences")
+    reg = Option(help="Show the instructions that use the given register")
+    pc = Option(type=option_range_validator,
+                help="Find instructions with PC in given range")
+    mem = Option(type=option_range_validator,
+                 help="Show the instructions that use the given memory address")
+    exception = Option(help="Show the instructions that raise a given exception")
+    syscall = Option(type=int, help="Show the syscalls with given code")
+    nop = Option(type=any_int_validator,
+                 help="Show canonical nops with given code")
+    perms = Option(type=any_int_validator,
+                   help="Find instructions that touch capabilities"
+                   " with the given permission bits set")
+    after = Option("-A", type=int, default=0,
+                   help="Dump n instructions after a matching one")
+    before = Option("-B", type=int, default=0,
+                    help="Dump n instructions before a matching one")
+    match_any = Option(action="store_true",
+                       help="Return a trace entry when matches any"
+                       " of the conditions instead of all")
+
+    def __init__(self, dataset, trace_path, config):
         """
-        :param raw: (kwarg) enable printing of the raw instruction hex.
-        :type raw: bool
+        This parser filters the trace according to a set of match
+        conditions. Multiple match conditions can be used at the same time
+        to refine or widen the filter.
         """
-        super(TraceDumpMixin, self).__init__(*args, **kwargs)
-        self.raw = raw
-        """Show raw instruction dump"""
+        CallbackTraceParser.__init__(self, trace_path)
+        ConfigurableComponent.__init__(self, config)
+
+        self._entry_history = deque([], self.show_before)
+        """FIFO instructions that may be shown if a match is found"""
+
+        self._dump_next = 0
+        """The remaining number of instructions to dump after a match"""
+
+        self._kernel_mode = False
+        """Keep track of kernel-userspace transitions"""
+
+        if (match_pc_start is None and match_pc_end and match_reg is None and
+            match_addr is None and match_opcode is None and
+            match_exc is None):
+            # if no match condition is specified the match options
+            # must have the default value
+            self.before = 0
+            self.after = 0
+            self.match_mode = "and"
 
     def repr_register(self, entry):
         if (entry.gpr_number() != -1):
@@ -48,7 +112,6 @@ class TraceDumpMixin:
         for idx in range(0,32):
             print("[%d] $c%d = %s" % (regs.valid_caps[idx], idx,
                                       self.dump_cap(regs.cap_reg[idx])))
-
 
     def dump_instr(self, inst, entry, idx):
         if entry.exception != 31:
@@ -81,86 +144,6 @@ class TraceDumpMixin:
             cap_value = inst.cd.value
             print("$%s = %s" % (
                 cap_name, self.dump_cap(cap_value)))
-
-
-class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
-    """
-    Parser that performs basic lookup on a trace file
-    """
-
-    def __init__(self, dataset, trace_path, dump_registers=False,
-                 match_opcode=None, match_pc_start=None, match_pc_end=None,
-                 match_reg=None, match_addr_start=None, match_addr_end=None,
-                 match_exc=None, match_nop=None, match_syscall=None,
-                 match_perm=None, match_mode="and", before=0, after=0, **kwargs):
-        """
-        This parser filters the trace according to a set of match
-        conditions. Multiple match conditions can be used at the same time
-        to refine or widen the filter.
-        """
-        super(TraceDumpParser, self).__init__(dataset, trace_path, **kwargs)
-
-        self.dump_registers = dump_registers
-        """Enable register set dump."""
-
-        self.find_instr = match_opcode
-        """Find occurrences of this instruction."""
-
-        self.pc_start = match_pc_start
-        """Find occurrences with pc higher than start."""
-
-        self.pc_end = match_pc_end
-        """Find occurrences with pc lower than end."""
-
-        self.follow_reg = match_reg
-        """Find occurrences of given register."""
-
-        self.match_addr_start = match_addr_start
-        """Find occurences of accesses beyond this memory location."""
-
-        self.match_addr_end = match_addr_end
-        """Find occurences of accesses before this memory location."""
-
-        self.match_exc = match_exc
-        """Find occurrences of given exception. The value 'any' is also valid."""
-
-        self.match_nop = match_nop
-        """Find occurrences of given canonical NOP."""
-
-        self.match_syscall = match_syscall
-        """Find occurrences of the given syscall"""
-
-        self.match_perm = match_perm
-        """
-        Find occurrences of capabilities with (at least) the given permission
-        """
-
-        self.match_mode = match_mode
-        """How to compose multiple match conditions (and, or)."""
-
-        self.show_before = before
-        """Number of instructions to dump before the matching one."""
-
-        self.show_after = after
-        """Number of instructions to dump after the matching one."""
-
-        self._entry_history = deque([], self.show_before)
-        """FIFO instructions that may be shown if a match is found"""
-
-        self._dump_next = 0
-        """The remaining number of instructions to dump after a match"""
-
-        self._kernel_mode = False
-        """Keep track of kernel-userspace transitions"""
-
-        if (match_pc_start is None and match_pc_end and match_reg is None and
-            match_addr is None and match_opcode is None and
-            match_exc is None):
-            # if no match condition is specified the match options
-            # must have the default value
-            self.before = 0
-            self.after = 0
-            self.match_mode = "and"
 
     def dump_kernel_user_switch(self, entry):
         if self._kernel_mode != entry.is_kernel():
@@ -323,3 +306,32 @@ class TraceDumpParser(CallbackTraceParser, TraceDumpMixin):
             else:
                 self._entry_history.append((inst, idx))
         return False
+
+
+@interactive_tool(key="scan")
+class PytracedumpDriver(BaseTraceTaskDriver):
+
+    description = """Dump CHERI binary trace.
+    Each instruction entry has the following format:
+    {<ASID>:<instruction_cycle_number>} <PC> <instr_mnemonic> <operands>
+
+    Memory accesses show the referenced address in the line below:
+    <target_register> = [<hex_addr>] or [<hex_addr>] = <source_register>
+
+    Capabilities as displayed in the following format:
+    [b:<base> o:<offset> l:<length> p:<permission> t:<obj_type> v:<valid> s:<sealed>]
+    t_alloc and t_free are only relevant in the provenance graph.
+
+    When dumping the register set, the format of each entry is the following:
+    [<register_value_valid>] <register> = <value>"""
+
+    scan = NestedConfig(TraceDumpParser)
+
+    def __init__(self, config):
+        super().__init__(config)
+        
+        # self.parser = TraceDumpParser(config.trace, config.scan)
+        # self.
+    
+    def run(self):
+        print("hello")

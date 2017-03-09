@@ -25,7 +25,8 @@
 # @BERI_LICENSE_HEADER_END@
 #
 
-from argparse import Namespace
+from collections import OrderedDict
+from argparse import Namespace, ArgumentParser
 
 class NestingNamespace(Namespace):
 
@@ -45,7 +46,6 @@ class NestingNamespace(Namespace):
     def __getattr__(self, name):
         names = name.split(".")
         if len(names) > 1:
-            print("getattr", name)
             ns = self
             for ns_name in names[:-1]:
                 ns = getattr(ns, ns_name)
@@ -53,8 +53,51 @@ class NestingNamespace(Namespace):
         else:
             raise AttributeError("Attribute %s does not exist" % name)
 
-class Argument:
-    """Encapsulate an single simple option."""
+    def flatten(self, ns=None):
+        ns = ns or Namespace()
+        for key,val in self.__dict__.items():
+            if not isinstance(val, self.__class__):
+                setattr(ns, key, val)
+            else:
+                val.flatten(ns)
+        return ns
+
+    def update(self, other):
+        for k,v in other.__dict__.items():
+            if isinstance(v, self.__class__):
+                getattr(self, k).update(v)
+            else:
+                setattr(self, k, v)
+
+
+class TaskDriverArgumentParser(ArgumentParser):
+    """
+    Argument parser for TaskDriver-based tools
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._subparsers_action = None
+
+    def parse_args(self, args=None, namespace=None, **kwargs):
+        if not namespace:
+            namespace = NestingNamespace()
+        return super().parse_args(args, namespace, **kwargs)
+
+    def add_subparsers(self, *args, **kwargs):
+        """
+        argparse allows only a single subparser action object to be
+        produced. This overrides the creation method so that the same
+        instance is returned if multiple calls are made to avoid raising
+        an exception in this case.
+        """
+        if self._subparsers_action is None:
+            self._subparsers_action = super().add_subparsers(*args, **kwargs)
+        return self._subparsers_action
+
+
+class DriverConfigEntry:
+    """Base element of declarative configuration options in driver classes"""
 
     def __init__(self, *args, **kwargs):
         """
@@ -63,20 +106,65 @@ class Argument:
         the name of the option variable when the option is created in
         a :class:`TaskDriverComponent`
         """
+        self.name = None
         self.args = args
         self.kwargs = kwargs
 
     def set_config(self, option_dict, name):
+        """
+        Add the current option to the option dict of the configuration
+        element when gathering arguments from a class.
+        """
+        self.name = name
         option_dict[name] = self
 
-    def as_argparse(self, name, parser, subparser, prefix=""):
-        if prefix:
-            self.kwargs["metavar"] = self.kwargs.get("metavar", name)
-            name = prefix + name
-        self.args = (name,) + self.args
-        parser.add_argument(*self.args, **self.kwargs)
+    def as_argparse(self, parser, prefix="", keys=None):
+        """
+        Add this configuration entry to an argparse argument parser
 
-    def as_dict(self, name, option_dict):
+        :param parser: the parser to which the entry is added
+        :type parser: :class:`TaskDriverArgumentParser`
+        :param prefix: string specifying the namespace qualified name
+        where the parsed configuration key is stored. (e.g. if 
+        prefix="x.y.z" and name="mykey" the parser stores the value as
+        args.x.y.z.mykey = <value>.
+        :type prefix: string
+        :param keys: opt-in list of keys to add to the parser, if no
+        list is given, all keys are added.
+        :type keys: iterable
+        """
+        raise NotImplementedError("Abstract Method")
+
+    def as_dict(self, option_dict, keys=None):
+        """
+        Add this argument to an option dictionary of a config object
+
+        :param name: The name is the name of the argument
+        :type name: string
+        :param option_dict: the target option dict
+        :type option_dict: dict
+        :param keys: opt-in list of keys to add to the options dict, if no
+        list is given, all keys are added.
+        :type keys: iterable
+        """
+        raise NotImplementedError("Abstract Method")
+
+
+class Argument(DriverConfigEntry):
+    """Positional argument configuration key"""
+
+    def as_argparse(self, parser, prefix=""):
+        if prefix:
+            kwargs = dict(self.kwargs)
+            kwargs["metavar"] = self.kwargs.get("metavar", self.name)
+            name = prefix + self.name
+        else:
+            name = self.name
+            kwargs = self.kwargs
+        args = (name,) + self.args
+        parser.add_argument(*args, **kwargs)
+
+    def as_dict(self, option_dict):
         """
         Add this argument to an option dictionary of a config object
 
@@ -86,20 +174,23 @@ class Argument:
         :type option_dict: dict
         """
         value = self.kwargs.get("default", None)
-        dest = self.kwargs.get("dest", name)
+        dest = self.kwargs.get("dest", self.name)
         option_dict[dest] = value
 
 
 class Option(Argument):
 
-    def as_argparse(self, name, parser, subparser, prefix=""):
+    def as_argparse(self, parser, prefix=""):
         if prefix:
-            self.kwargs["dest"] = prefix + self.kwargs.get("dest", name)
-        self.args = ("--%s" % name,) + self.args
-        parser.add_argument(*self.args, **self.kwargs)
+            kwargs = dict(self.kwargs)
+            kwargs["dest"] = prefix + self.kwargs.get("dest", self.name)
+        else:
+            kwargs = self.kwargs
+        args = ("--%s" % self.name,) + self.args
+        parser.add_argument(*args, **kwargs)
 
 
-class SubCommand(Argument):
+class SubCommand(DriverConfigEntry):
 
     def __init__(self, nested, *args, **kwargs):
         """
@@ -112,16 +203,14 @@ class SubCommand(Argument):
         super().__init__(*args, **kwargs)
         self.nested = nested
 
-    def as_argparse(self, name, parser, subparser, prefix=""):
-        if subparser is None:
-            raise ValueError("No subparser specified")
-        subcommand = subparser.add_parser(name, *self.args, **self.kwargs)
-        prefix += "%s." % name
-        self.nested._config_model.as_argparse(subcommand, subparser,
-                                              prefix=prefix)
+    def as_argparse(self, parser, prefix=""):
+        subparser = parser.add_subparsers()
+        subcommand = subparser.add_parser(self.name, *self.args, **self.kwargs)
+        prefix += "%s." % self.name
+        self.nested._config_model.as_argparse(subcommand, prefix=prefix)
 
-    def as_dict(self, name, option_dict):
-        option_dict[name] = self.nested._config_model.as_dict()
+    def as_dict(self, option_dict):
+        option_dict[self.name] = self.nested._config_model.as_dict()
 
 
 class NestedConfig(SubCommand):
@@ -129,9 +218,9 @@ class NestedConfig(SubCommand):
     def __init__(self, nested):
         super().__init__(nested)
 
-    def as_argparse(self, name, parser, subparser, prefix=""):
-        prefix += "%s." % name
-        self.nested._config_model.as_argparse(parser, subparser, prefix=prefix)
+    def as_argparse(self, parser, prefix=""):
+        prefix += "%s." % self.name
+        self.nested._config_model.as_argparse(parser, prefix=prefix)
 
 
 class DriverConfig:
@@ -148,7 +237,7 @@ class DriverConfig:
         :param options: list of options
         :type options: list of :class:`Option`
         """
-        self.options = {}
+        self.options = OrderedDict()
 
     def add_option(self, name, option):
         """
@@ -172,7 +261,7 @@ class DriverConfig:
         merge_opts.update(self.options)
         self.options = merge_opts
 
-    def as_argparse(self, parser, subparser, prefix=""):
+    def as_argparse(self, parser, prefix="", keys=None):
         """
         Attach the options to an argument parser
 
@@ -180,7 +269,9 @@ class DriverConfig:
         :type parser: :class:`argparse.ArgumentParser`
         """
         for k,opt in self.options.items():
-            opt.as_argparse(k, parser, subparser, prefix)
+            if keys and k not in keys:
+                continue
+            opt.as_argparse(parser, prefix=prefix)
 
     def as_dict(self):
         """
@@ -190,7 +281,7 @@ class DriverConfig:
         """
         args = {}
         for k,opt in self.options.items():
-            opt.as_dict(k, args)
+            opt.as_dict(args)
         return args
 
 
@@ -204,52 +295,40 @@ class TaskDriverType(type):
     def __new__(cls, name, bases, attrs, **kwargs):
         config = DriverConfig()
         for k,v in list(attrs.items()):
-            if isinstance(v, Argument):
+            if isinstance(v, DriverConfigEntry):
                 del attrs[k]
                 config.add_option(k, v)
         for base in bases:
-            config.update(base._config_model)
+            if hasattr(base, "_config_model"):
+                config.update(base._config_model)
         new_instance = super().__new__(cls, name, bases, attrs, **kwargs)
         new_instance._config_model = config
         return new_instance
 
 
-class SubparserBuilder:
+class ConfigurableComponent(metaclass=TaskDriverType):
     """
-    Build an argparse subparser only when needed
-    because once created there must be at least one.
-    """
-
-    def __init__(self, parser):
-        self.parser = parser
-        self._subparser = None
-
-    def add_parser(self, *args, **kwargs):
-        if not self._subparser:
-            self._subparser = self.parser.add_subparsers()
-        return self._subparser.add_parser(*args, **kwargs)
-
-
-class TaskDriver(metaclass=TaskDriverType):
-    """
-    Base interface of configurable components of a task driver.
-    The driver components abstract the configuration options of
-    tasks allowing to specify options in a single place.
-    The task driver is the base class for plots
-    and tools that use the cheriplot parsers, datasets
-    and plotting tools.
-
+    Base interface of configurable components.
     Configs are used to parametrize all elements (parser, transforms etc)
     they are merged by the init of the driver and by the task metaclass to
     generate the argparse tool options if needed. The argparse object is
-    propagated back in the config to the inits of all the components, so
-    we should have a TaskComponent class for that and ComponentConfig
+    propagated back in the config to the inits of all the components.
     """
-
     description = ""
 
     @classmethod
-    def make_config(cls, parser=None, subparser=None):
+    def get_config_entry(cls, key):
+        """
+        Get the config entry for the given key in this class
+
+        :param key: the entry key, i.e. the name of the attribute
+        when it is created in the class
+        :type key: str
+        """
+        return cls._config_model.options[key]
+
+    @classmethod
+    def make_config(cls, parser=None, keys=None):
         """
         Setup a new configuration, if the parser is given, the
         configuration arguments will be created there,
@@ -258,18 +337,51 @@ class TaskDriver(metaclass=TaskDriverType):
 
         :param parser: an argument parser
         :type parser: :class:`argparse.ArgumentParser`
+        :param keys: include only the given options in the config
+        :type keys: iterable
         """
         if parser != None:
-            if subparser is None:
-                subparser = SubparserBuilder(parser)
-            cls._config_model.as_argparse(parser, subparser)
+            cls._config_model.as_argparse(parser, keys=keys)
         return cls._config_model.as_dict()
 
     def __init__(self, config):
-        self.config = config
+        """
+        Initialize a configurable element with a configuration object
+
+        :param config: a configuration namespace object
+        :type config: :class:`NestingNamespace`
+        """
+        self.config = None
+
+        self.update_config(config)
+
+    def update_config(self, config):
+        """
+        Update the configuration based on the given configuration object.
+        Note that the new configuration is not required/guaranteed to
+        specify a value for all the options in the main configuration
+        so we simply do a merge here.
+
+        :param config: the configuration from which to update from
+        :type config: :class:`NestingNamespace`
+        """
+        if self.config:
+            self.config.update(config)
+        else:
+            self.config = config
+
+
+class TaskDriver(ConfigurableComponent):
+    """
+    The driver components abstract the configuration options of
+    tasks allowing to specify options in a single place.
+    The task driver is the base class for plots
+    and tools that use the cheriplot parsers, datasets
+    and plotting tools.
+
+    This defines the interface for runnable tasks with a configuration.
+    """
 
     def run(self):
-        """
-        This method should be overridden in subclasses
-        """
-        return
+        """This method should be overridden in subclasses"""
+        raise NotImplementedError("Abstract method")

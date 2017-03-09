@@ -44,8 +44,15 @@ def subclass_driver():
     return Derived
 
 @pytest.fixture
+def simple_driver():
+    class Simple(TaskDriver):
+        my_arg = Argument()
+        my_opt = Option()
+    return Simple
+
+@pytest.fixture
 def parser():
-    ap = argparse.ArgumentParser(description="Test parser")
+    ap = TaskDriverArgumentParser(description="Test parser")
     return ap
 
 def test_empty_config(empty_driver):
@@ -59,6 +66,32 @@ def test_empty_config(empty_driver):
     parser.add_argument.assert_not_called()
     parser.add_subparsers.assert_not_called()
 
+def test_reuse_config(simple_driver):
+    """
+    Check that the config can be used to configure multiple
+    parsers
+    """
+    parser = mock.Mock()
+
+    # multiple calls should yield the same result
+    dict_conf = simple_driver.make_config()
+    assert len(dict_conf) == 2
+    assert dict_conf["my_arg"] == None
+    assert dict_conf["my_opt"] == None
+    dict_conf = simple_driver.make_config()
+    assert len(dict_conf) == 2
+    assert dict_conf["my_arg"] == None
+    assert dict_conf["my_opt"] == None
+
+    simple_driver.make_config(parser)
+    parser.add_argument.assert_any_call("my_arg")
+    parser.add_argument.assert_any_call("--my_opt")
+    parser.reset_mock()
+    simple_driver.make_config(parser)
+    parser.add_argument.assert_any_call("my_arg")
+    parser.add_argument.assert_any_call("--my_opt")
+
+
 def test_parser(parser):
 
     parser.add_argument("x.foo", metavar="foo")
@@ -66,8 +99,7 @@ def test_parser(parser):
     parser.add_argument("--baz", type=int)
     parser.add_argument("--buzz", action="store_true", dest="w.z.buzz")
 
-    args = parser.parse_args(["--baz", "10", "--bar", "foovalue"],
-                             namespace=NestingNamespace())
+    args = parser.parse_args(["--baz", "10", "--bar", "foovalue"])
     assert args.baz == 10
     assert args.x.foo == "foovalue"
     assert args.x.y.bar == True
@@ -75,7 +107,6 @@ def test_parser(parser):
 
 def test_full_config(full_driver):
     parser = mock.Mock()
-    subparser = mock.Mock()
 
     dict_conf = full_driver.make_config()
     assert len(dict_conf) == 6
@@ -91,8 +122,7 @@ def test_full_config(full_driver):
     assert dict_conf["subcmd"]["my_sub"] == None
 
     parser.reset_mock()
-    subparser.reset_mock()
-    full_driver.make_config(parser, subparser)
+    full_driver.make_config(parser)
     # check the argument
     parser.add_argument.assert_any_call("--my_int_opt", help="myIntOpt", type=int)
     parser.add_argument.assert_any_call("my_arg", help="myArg")
@@ -104,20 +134,21 @@ def test_full_config(full_driver):
                                         dest="nested.override_nested")
     parser.add_argument.assert_any_call("nested.my_nested_arg",
                                         metavar="my_nested_arg")
+    subparser = parser.add_subparsers.return_value
     subparser.add_parser.assert_called_once_with("subcmd")
     new_parser = subparser.add_parser.return_value
     new_parser.add_argument.assert_any_call("--my_sub", help="mySubOpt",
                                             dest="subcmd.my_sub")
 
 def test_interop(full_driver, parser):
-    full_driver.make_config(parser, parser.add_subparsers())
+    full_driver.make_config(parser)
 
     # check that we can call the argparse parser
+    # ordering of the arguments should be respected
     args = parser.parse_args(["--my_int_opt", "10", "--my_nested", "baz",
                               "--my_nested_with_dest", "bar",
-                              "subcmd", "--my_sub", "sub_opt",
-                              "arg", "default_arg", "nested_arg"],
-                             namespace=NestingNamespace())
+                              "arg", "default_arg", "nested_arg",
+                              "subcmd", "--my_sub", "sub_opt",])
     assert args.my_int_opt == 10
     assert args.my_default_opt == "opt_default"
     assert args.nested.my_nested == "baz"
@@ -137,3 +168,18 @@ def test_subclass(subclass_driver):
     subclass_driver.make_config(parser)
     parser.add_argument.assert_any_call("my_base", help="myBaseArg")
     parser.add_argument.assert_any_call("my_derived", help="myDerivedArg")
+
+def test_multiple_inheritance():
+    class Base:
+        pass
+
+    class ConfBase(ConfigurableComponent):
+        base_opt = Option()
+
+    class Child(Base, ConfBase):
+        child_opt = Option()
+
+    dict_conf = Child.make_config()
+    assert len(dict_conf) == 2
+    assert dict_conf["base_opt"] == None
+    assert dict_conf["child_opt"] == None
