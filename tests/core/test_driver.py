@@ -58,13 +58,12 @@ def parser():
 def test_empty_config(empty_driver):
     parser = mock.Mock()
 
-    dict_conf = empty_driver.make_config()
-    assert len(dict_conf) == 0
-
-    empty_driver.make_config(parser)
+    default = empty_driver.make_config(parser)
     # check that the parser have not arguments
     parser.add_argument.assert_not_called()
     parser.add_subparsers.assert_not_called()
+    # check that there are no default args
+    assert len(default.__dict__) == 0
 
 def test_reuse_config(simple_driver):
     """
@@ -74,22 +73,19 @@ def test_reuse_config(simple_driver):
     parser = mock.Mock()
 
     # multiple calls should yield the same result
-    dict_conf = simple_driver.make_config()
-    assert len(dict_conf) == 2
-    assert dict_conf["my_arg"] == None
-    assert dict_conf["my_opt"] == None
-    dict_conf = simple_driver.make_config()
-    assert len(dict_conf) == 2
-    assert dict_conf["my_arg"] == None
-    assert dict_conf["my_opt"] == None
-
-    simple_driver.make_config(parser)
+    default = simple_driver.make_config(parser)
     parser.add_argument.assert_any_call("my_arg")
     parser.add_argument.assert_any_call("--my_opt")
+    assert len(default.__dict__) == 2
+    assert default.my_arg == None
+    assert default.my_opt == None
     parser.reset_mock()
-    simple_driver.make_config(parser)
+    default = simple_driver.make_config(parser)
     parser.add_argument.assert_any_call("my_arg")
     parser.add_argument.assert_any_call("--my_opt")
+    assert len(default.__dict__) == 2
+    assert default.my_arg == None
+    assert default.my_opt == None
 
 
 def test_parser(parser):
@@ -108,22 +104,8 @@ def test_parser(parser):
 def test_full_config(full_driver):
     parser = mock.Mock()
 
-    dict_conf = full_driver.make_config()
-    assert len(dict_conf) == 6
-    assert dict_conf["my_int_opt"] == None
-    assert dict_conf["my_default_opt"] == "opt_default"
-    assert dict_conf["my_arg"] == None
-    assert dict_conf["my_default_arg"] == "arg_default"
-    assert len(dict_conf["nested"]) == 3
-    assert dict_conf["nested"]["my_nested"] == None
-    assert dict_conf["nested"]["override_nested"] == None
-    assert dict_conf["nested"]["my_nested_arg"] == None
-    assert len(dict_conf["subcmd"]) == 1
-    assert dict_conf["subcmd"]["my_sub"] == None
-
-    parser.reset_mock()
-    full_driver.make_config(parser)
-    # check the argument
+    default = full_driver.make_config(parser)
+    # check the argument parser
     parser.add_argument.assert_any_call("--my_int_opt", help="myIntOpt", type=int)
     parser.add_argument.assert_any_call("my_arg", help="myArg")
     parser.add_argument.assert_any_call("my_default_arg", default="arg_default")
@@ -138,6 +120,18 @@ def test_full_config(full_driver):
     new_parser = subparser.add_parser.return_value
     new_parser.add_argument.assert_any_call("--my_sub", help="mySubOpt",
                                             dest="subcmd.my_sub")
+    # check defaults
+    assert len(default.__dict__) == 6
+    assert default.my_int_opt == None
+    assert default.my_default_opt == "opt_default"
+    assert default.my_arg == None
+    assert default.my_default_arg == "arg_default"
+    assert len(default.nested.__dict__) == 3
+    assert default.nested.my_nested == None
+    assert default.nested.override_nested == None
+    assert default.nested.my_nested_arg == None
+    assert len(default.subcmd.__dict__) == 1
+    assert default.subcmd.my_sub == None
 
 def test_interop(full_driver, parser):
     full_driver.make_config(parser)
@@ -160,25 +154,23 @@ def test_interop(full_driver, parser):
 def test_subclass(subclass_driver):
     parser = mock.Mock()
 
-    dict_conf = subclass_driver.make_config()
-    assert dict_conf["my_base"] == None
-    assert dict_conf["my_derived"] == None
-
-    subclass_driver.make_config(parser)
+    default = subclass_driver.make_config(parser)
     parser.add_argument.assert_any_call("my_base", help="myBaseArg")
     parser.add_argument.assert_any_call("my_derived", help="myDerivedArg")
+    assert default.my_base == None
+    assert default.my_derived == None
 
 def test_multiple_inheritance():
     class Base:
         pass
 
     class ConfBase(ConfigurableComponent):
-        base_opt = Option()
+        base_opt = Option(default="a")
 
     class Child(Base, ConfBase):
-        child_opt = Option()
+        child_opt = Option(default=100)
 
-    dict_conf = Child.make_config()
-    assert len(dict_conf) == 2
-    assert dict_conf["base_opt"] == None
-    assert dict_conf["child_opt"] == None
+    default = Child.make_config(mock.Mock())
+    assert len(default.__dict__) == 2
+    assert default.base_opt == "a"
+    assert default.child_opt == 100

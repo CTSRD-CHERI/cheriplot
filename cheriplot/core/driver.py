@@ -125,15 +125,11 @@ class DriverConfigEntry:
         self.args = args
         self.kwargs = kwargs
 
-    def set_config(self, option_dict, name):
-        """
-        Add the current option to the option dict of the configuration
-        element when gathering arguments from a class.
-        """
-        self.name = name
-        option_dict[name] = self
+    @property
+    def dest(self):
+        return self.kwargs.get("dest", self.name)
 
-    def as_argparse(self, parser, prefix="", keys=None):
+    def make_config(self, parser, prefix="", keys=None):
         """
         Add this configuration entry to an argparse argument parser
 
@@ -147,89 +143,59 @@ class DriverConfigEntry:
         :param keys: opt-in list of keys to add to the parser, if no
         list is given, all keys are added.
         :type keys: iterable
+        :return: The default argument value, if the entry is and aggregate
+        a namespace object is returned
         """
-        raise NotImplementedError("Abstract Method")
-
-    def as_dict(self, option_dict, keys=None):
-        """
-        Add this argument to an option dictionary of a config object
-
-        :param name: The name is the name of the argument
-        :type name: string
-        :param option_dict: the target option dict
-        :type option_dict: dict
-        :param keys: opt-in list of keys to add to the options dict, if no
-        list is given, all keys are added.
-        :type keys: iterable
-        """
-        raise NotImplementedError("Abstract Method")
+        return None
 
 
 class Argument(DriverConfigEntry):
     """Positional argument configuration key"""
 
-    def as_argparse(self, parser, prefix=""):
-        name = prefix + self.name
+    def make_config(self, parser, prefix=""):
+        name = prefix + self.dest
         args = (name,) + self.args
         parser.add_argument(*args, **self.kwargs)
-
-    def as_dict(self, option_dict):
-        """
-        Add this argument to an option dictionary of a config object
-
-        :param name: The name is the name of the argument
-        :type name: string
-        :param option_dict: the target option dict
-        :type option_dict: dict
-        """
-        value = self.kwargs.get("default", None)
-        dest = self.kwargs.get("dest", self.name)
-        option_dict[dest] = value
+        return self.kwargs.get("default", None)
 
 
-class Option(Argument):
+class Option(DriverConfigEntry):
 
-    def as_argparse(self, parser, prefix=""):
+    def make_config(self, parser, prefix=""):
         if prefix:
             kwargs = dict(self.kwargs)
-            kwargs["dest"] = prefix + self.kwargs.get("dest", self.name)
+            kwargs["dest"] = prefix + self.dest
         else:
             kwargs = self.kwargs
         args = ("--%s" % self.name,) + self.args
         parser.add_argument(*args, **kwargs)
+        return self.kwargs.get("default", None)
+
+
+class NestedConfig(DriverConfigEntry):
+
+    def __init__(self, nested):
+        super().__init__()
+        self.nested = nested
+
+    def make_config(self, parser, prefix=""):
+        prefix += "%s." % self.name
+        model = self.nested.get_config_model()
+        return model.make_config(parser, prefix=prefix)
 
 
 class SubCommand(DriverConfigEntry):
 
     def __init__(self, nested, *args, **kwargs):
-        """
-        Merge a nested configuration element into the
-        driver config.
-
-        :param nested: a nested class from which to pull config from
-        :type nested: :class:`TaskDriverType`
-        """
         super().__init__(*args, **kwargs)
         self.nested = nested
 
-    def as_argparse(self, parser, prefix=""):
+    def make_config(self, parser, prefix=""):
         subparser = parser.add_subparsers()
         subcommand = subparser.add_parser(self.name, *self.args, **self.kwargs)
         prefix += "%s." % self.name
-        self.nested._config_model.as_argparse(subcommand, prefix=prefix)
-
-    def as_dict(self, option_dict):
-        option_dict[self.name] = self.nested._config_model.as_dict()
-
-
-class NestedConfig(SubCommand):
-
-    def __init__(self, nested):
-        super().__init__(nested)
-
-    def as_argparse(self, parser, prefix=""):
-        prefix += "%s." % self.name
-        self.nested._config_model.as_argparse(parser, prefix=prefix)
+        model = self.nested.get_config_model()
+        return model.make_config(subcommand, prefix=prefix)
 
 
 class DriverConfig:
@@ -258,7 +224,8 @@ class DriverConfig:
         :param option: the option to be added
         :type option: :class:`Option`
         """
-        option.set_config(self.options, name)
+        option.name = name
+        self.options[name] = option
 
     def update(self, other):
         """
@@ -270,28 +237,19 @@ class DriverConfig:
         merge_opts.update(self.options)
         self.options = merge_opts
 
-    def as_argparse(self, parser, prefix="", keys=None):
+    def make_config(self, parser, prefix="", keys=None):
         """
         Attach the options to an argument parser
 
         :param parser: the argument parser
         :type parser: :class:`argparse.ArgumentParser`
         """
+        ns = NestingNamespace()
         for k,opt in self.options.items():
             if keys and k not in keys:
                 continue
-            opt.as_argparse(parser, prefix=prefix)
-
-    def as_dict(self):
-        """
-        Create configuration dictionary with initialized options
-
-        :return: dict mapping argname->default_value
-        """
-        args = {}
-        for k,opt in self.options.items():
-            opt.as_dict(args)
-        return args
+            setattr(ns, opt.dest, opt.make_config(parser, prefix=prefix))
+        return ns
 
 
 class TaskDriverType(type):
@@ -326,32 +284,22 @@ class ConfigurableComponent(metaclass=TaskDriverType):
     description = ""
 
     @classmethod
-    def get_config_entry(cls, key):
-        """
-        Get the config entry for the given key in this class
-
-        :param key: the entry key, i.e. the name of the attribute
-        when it is created in the class
-        :type key: str
-        """
-        return cls._config_model.options[key]
+    def get_config_model(cls):
+        """Get the config model created by the metaclass"""
+        return cls._config_model
 
     @classmethod
-    def make_config(cls, parser=None, keys=None):
+    def make_config(cls, parser, keys=None):
         """
-        Setup a new configuration, if the parser is given, the
-        configuration arguments will be created there,
-        otherwise a dictionary of arguments with default values is
-        returned.
+        Setup a new configuration
 
         :param parser: an argument parser
         :type parser: :class:`argparse.ArgumentParser`
         :param keys: include only the given options in the config
         :type keys: iterable
+        :return: a namespace with the default configuration
         """
-        if parser != None:
-            cls._config_model.as_argparse(parser, keys=keys)
-        return cls._config_model.as_dict()
+        return cls._config_model.make_config(parser, keys=keys)
 
     def __init__(self, config):
         """
