@@ -25,49 +25,11 @@
 # @BERI_LICENSE_HEADER_END@
 #
 
-import argparse
-import logging
-
-from cheriplot.dbg.txtrace_cmp import TxtTraceCmpParser
-from cheriplot.core.tool import Tool
-
-logger = logging.getLogger(__name__)
-
-class PyTraceCmp(Tool):
-    """
-    Tool that compares two cheri traces and reports the first
-    differing instruction
-    """
-
-    description = "Scan two traces and inspect differences"
-
-    def init_arguments(self):
-        super().init_arguments()
-        self.parser.add_argument("trace", help="Path to trace file")
-        self.parser.add_argument("-t", "--txt", help="Text trace to compare",
-                                 required=True)
-        self.parser.add_argument("-p", "--pc-only", action="store_true",
-                                 help="Only check instruction PC")
-        self.parser.add_argument("-q", "--quiet", action="store_true",
-                                 help="Suppress warning messages")
-
-    def _run(self, args):
-
-        if args.quiet:
-            logging.basicConfig(level=logging.ERROR)
-
-        dump_parser = TxtTraceCmpParser(args.txt, None, args.trace,
-                                        pc_only=args.pc_only)
-
-        # start = args.start if args.start is not None else 0
-        # end = args.end if args.end is not None else len(dump_parser)
-        start = 0
-        end = len(dump_parser)
-        dump_parser.parse(start, end)
+from cheriplot.dbg import TxtTraceCmpParser
+from cheriplot.core import run_driver_tool
 
 def main():
-    tool = PyTraceCmp()
-    tool.run()
+    run_driver_tool(TxtTraceCmpParser)
 
 if __name__ == "__main__":
     main()

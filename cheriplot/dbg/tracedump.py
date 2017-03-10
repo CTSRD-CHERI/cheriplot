@@ -37,7 +37,6 @@ from cheriplot.core import (
 
 logger = logging.getLogger(__name__)
 
-
 class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
     """Parser that performs filtering and search operations on a trace"""
 

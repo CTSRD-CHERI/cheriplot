@@ -34,6 +34,7 @@ import enum
 from cheriplot.utils import ProgressPrinter
 from cheriplot.core.parser import CallbackTraceParser
 from cheriplot.core.provenance import CheriCap
+from cheriplot.core import TaskDriver, Option, Argument
 
 logger = logging.getLogger(__name__)
 
@@ -45,33 +46,37 @@ class State(enum.IntEnum):
     S_CAP_MEM = 5
     S_INSTR_END = 6
 
-
-class TxtTraceCmpParser(CallbackTraceParser):
+class TxtTraceCmpParser(CallbackTraceParser, TaskDriver):
     """
     Compare a text trace with a binary trace and
     report any difference.
     """
+    description = "Scan two traces and inspect differences"
 
-    def __init__(self, txt_trace, *args, pc_only=False, **kwargs):
-        super().__init__(*args, **kwargs)
+    cvtrace = Argument(help="Path to cvtrace file")
+    txttrace = Argument(help="Path to the text trace file")
+    pc_only = Option("-p", action="store_true",
+                     help="Only check instruction PC")
+    quiet = Option("-q", action="store_true",
+                   help="Suppress warning messages")
 
-        self.pc_only = pc_only
+    def __init__(self, config):
+        CallbackTraceParser.__init__(config.cvtrace)
+        TaskDriver.__init__(config)
 
-        self.progress = ProgressPrinter(len(self), "Scan traces")
+        if config.quiet:
+            logging.basicConfig(level=logging.ERROR)
 
         # txt trace perser state machine
         self.txt_parse_state = State.S_INSTR
-        self.txt_trace = open(txt_trace, "r")
+        self.txt_trace = open(config.txttrace, "r")
         # skip lines from the txt trace until the first
         # instruction
         self._skiplines(inst_only=True)
         self.txt_parse_state = State.S_INSTR
-        # while True:
-        #     saved_pos = self.txt_trace.tell()
-        #     line = self.txt_trace.readline()
-        #     if re.match("[0-9xa-f]+:", line):
-        #         self.txt_trace.seek(saved_pos)
-        #         break
+
+    def run(self):
+        self.parse()
 
     def _skiplines(self, inst_only=False):
         """Skip lines that are not used"""
