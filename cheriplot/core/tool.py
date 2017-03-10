@@ -93,8 +93,7 @@ def run_driver_tool(task, argv=None):
     :param argv: argument list
     :type argv: iterable
     """
-    parser = TaskDriverArgumentParser(description=task.description,
-                                      formatter_class=RawTextHelpFormatter)
+    parser = TaskDriverArgumentParser(description=task.description)
     task.make_config(parser)
     args = parser.parse_args(args=argv)
     task_inst = task(args)
@@ -135,16 +134,19 @@ class InteractiveTool(TaskDriver):
         cmd = sub.add_parser(self.interactive_conf_key)
         self.task.make_config(cmd, keys=[self.interactive_conf_key])
         while True:
-            cli_in = input(self.prompt)
-            argv = shlex.split(cli_in)
-            if len(argv) and argv[0] == "quit":
-                break
             try:
+                cli_in = input(self.prompt)
+                argv = shlex.split(cli_in)
+                if len(argv) and argv[0] == "quit":
+                    break
                 config = parser.parse_args(argv)
                 self.task.update_config(config)
                 self.task.run()
-            except SystemExit:
+            except (SystemExit, KeyboardInterrupt):
+                print("")
                 continue
+            except EOFError:
+                break
 
     def run(self):
         if self.config.interactive:
@@ -203,8 +205,8 @@ def option_range_validator(value):
             start, end = parts
         else:
             start = end = parts[0]
-            start = any_int_validator(start)
-            end = any_int_validator(end)
+        start = any_int_validator(start) if start != "" else None
+        end = any_int_validator(end) if end != "" else None
     except ValueError:
         raise ValueError("Invalid range %s, accepted formats are"\
                          "<start>-<end>, <start>-, -<end>, <start=end>" % value)

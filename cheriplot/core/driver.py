@@ -25,8 +25,12 @@
 # @BERI_LICENSE_HEADER_END@
 #
 
+import logging
+
 from collections import OrderedDict
-from argparse import Namespace, ArgumentParser
+from argparse import Namespace, ArgumentParser, RawTextHelpFormatter
+
+logger = logging.getLogger(__name__)
 
 class NestingNamespace(Namespace):
 
@@ -70,12 +74,23 @@ class NestingNamespace(Namespace):
                 setattr(self, k, v)
 
 
+class TaskDriverHelpFormatter(RawTextHelpFormatter):
+
+    def _get_default_metavar_for_optional(self, action):
+        return action.dest.split(".")[-1]
+
+    def _get_default_metavar_for_positional(self, action):
+        return action.dest.split(".")[-1]
+
+
 class TaskDriverArgumentParser(ArgumentParser):
     """
     Argument parser for TaskDriver-based tools
     """
 
     def __init__(self, *args, **kwargs):
+        if "formatter_class" not in kwargs:
+            kwargs["formatter_class"] = TaskDriverHelpFormatter
         super().__init__(*args, **kwargs)
         self._subparsers_action = None
 
@@ -154,15 +169,9 @@ class Argument(DriverConfigEntry):
     """Positional argument configuration key"""
 
     def as_argparse(self, parser, prefix=""):
-        if prefix:
-            kwargs = dict(self.kwargs)
-            kwargs["metavar"] = self.kwargs.get("metavar", self.name)
-            name = prefix + self.name
-        else:
-            name = self.name
-            kwargs = self.kwargs
+        name = prefix + self.name
         args = (name,) + self.args
-        parser.add_argument(*args, **kwargs)
+        parser.add_argument(*args, **self.kwargs)
 
     def as_dict(self, option_dict):
         """
@@ -351,9 +360,7 @@ class ConfigurableComponent(metaclass=TaskDriverType):
         :param config: a configuration namespace object
         :type config: :class:`NestingNamespace`
         """
-        self.config = None
-
-        self.update_config(config)
+        self.config = config
 
     def update_config(self, config):
         """

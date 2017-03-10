@@ -57,8 +57,7 @@ class TraceParser:
     """
 
     def __init__(self, trace_path=None, **kwargs):
-
-        super(TraceParser, self).__init__(**kwargs)
+        # super().__init__(**kwargs)
         self.path = trace_path
         self.trace = None
 
@@ -366,11 +365,8 @@ class CallbackTraceParser(TraceParser):
     the previous "cap_" classes
     """
 
-    def __init__(self, dataset, trace_path, **kwargs):
-        super(CallbackTraceParser, self).__init__(trace_path, **kwargs)
-
-        self.dataset = dataset
-        """The dataset where the parsed data will be stored"""
+    def __init__(self, trace_path, **kwargs):
+        super().__init__(trace_path, **kwargs)
 
         self.progress = ProgressPrinter(
             len(self), desc="Scanning trace %s" % trace_path)

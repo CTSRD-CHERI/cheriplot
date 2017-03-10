@@ -27,6 +27,7 @@
 
 import logging
 
+from functools import reduce
 from collections import deque
 from cheriplot.core.parser import CallbackTraceParser
 from cheriplot.core.provenance import CheriCap
@@ -40,31 +41,59 @@ logger = logging.getLogger(__name__)
 class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
     """Parser that performs filtering and search operations on a trace"""
 
+    range_format_help = "Accept a range in the form <start>-<end>, -<end>, "\
+                        "<start>- or <single_value>"
+
     start = Option("-s", type=int, default=0, help="Start offset in the trace")
     end = Option("-e", type=int, default=None, help="Stop offset in the trace")
     show_regs = Option("-r", action="store_true", help="Dump register content")
-    instr = Option(help="Find instruction occurrences")
-    reg = Option(help="Show the instructions that use the given register")
-    pc = Option(type=option_range_validator,
-                help="Find instructions with PC in given range")
-    mem = Option(type=option_range_validator,
-                 help="Show the instructions that use the given memory address")
-    exception = Option(help="Show the instructions that raise a given exception")
-    syscall = Option(type=int, help="Show the syscalls with given code")
-    nop = Option(type=any_int_validator,
-                 help="Show canonical nops with given code")
-    perms = Option(type=any_int_validator,
-                   help="Find instructions that touch capabilities"
-                   " with the given permission bits set")
-    after = Option("-A", type=int, default=0,
-                   help="Dump n instructions after a matching one")
-    before = Option("-B", type=int, default=0,
-                    help="Dump n instructions before a matching one")
-    match_any = Option(action="store_true",
-                       help="Return a trace entry when matches any"
-                       " of the conditions instead of all")
+    # show_regs = Option("-r", help="Dump register content")
+    instr = Option(default=None, help="Find instruction occurrences")
+    reg = Option(
+        default=None,
+        help="Show the instructions that use the given register")
+    pc = Option(
+        type=option_range_validator,
+        default=None,
+        help="Find instructions with PC in given range. " + range_format_help)
+    mem = Option(
+        type=option_range_validator,
+        default=None,
+        help="Show the instructions that use the given memory address. " +
+        range_format_help)
+    exception = Option(
+        default=None,
+        help="Show the instructions that raise a given exception. "
+        "Accept the exception number in [0-30] or 'any'.")
+    syscall = Option(
+        default=None,
+        type=int,
+        help="Show the syscalls with given code")
+    nop = Option(
+        type=any_int_validator,
+        default=None,
+        help="Show canonical nops with given code")
+    perms = Option(
+        type=any_int_validator,
+        default=None,
+        help="Find instructions that touch capabilities"
+        " with the given permission bits set")
+    after = Option(
+        "-A",
+        type=int,
+        default=0,
+        help="Dump n instructions after a matching one")
+    before = Option(
+        "-B",
+        type=int,
+        default=0,
+        help="Dump n instructions before a matching one")
+    match_any = Option(
+        action="store_true",
+        help="Return a trace entry when matches any of the conditions "
+        "instead of all")
 
-    def __init__(self, dataset, trace_path, config):
+    def __init__(self, trace_path, config):
         """
         This parser filters the trace according to a set of match
         conditions. Multiple match conditions can be used at the same time
@@ -73,7 +102,7 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
         CallbackTraceParser.__init__(self, trace_path)
         ConfigurableComponent.__init__(self, config)
 
-        self._entry_history = deque([], self.show_before)
+        self._entry_history = deque([], config.before)
         """FIFO instructions that may be shown if a match is found"""
 
         self._dump_next = 0
@@ -82,14 +111,23 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
         self._kernel_mode = False
         """Keep track of kernel-userspace transitions"""
 
-        if (match_pc_start is None and match_pc_end and match_reg is None and
-            match_addr is None and match_opcode is None and
-            match_exc is None):
-            # if no match condition is specified the match options
-            # must have the default value
-            self.before = 0
-            self.after = 0
-            self.match_mode = "and"
+        self.filters = [
+            self._match_instr,
+            self._match_pc,
+            self._match_addr,
+            self._match_reg,
+            self._match_exception,
+            self._match_nop,
+            self._match_syscall,
+            self._match_perm
+        ]
+
+        self.update_config(config)
+
+    def update_config(self, config):
+        self._entry_history = deque([], config.before)
+        self._dump_next = 0
+        self._kernel_mode = False
 
     def repr_register(self, entry):
         if (entry.gpr_number() != -1):
@@ -102,7 +140,6 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
         return str(chericap)
 
     def dump_regs(self, entry, regs, last_regs):
-
         for idx in range(0,31):
             real_regnum = idx + 1
             print("[%d] $%d = %x" % (
@@ -121,10 +158,6 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
             exception = ""
         print("{%d:%d} 0x%x %s %s" % (entry.asid, entry.cycles, entry.pc,
                                       inst.inst.name, exception))
-
-
-        if self.raw:
-            print("raw: 0x%x", entry.inst)
         # dump read/write
         if inst.cd is None:
             # no operands for the instruction
@@ -156,26 +189,20 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
     def do_dump(self, inst, entry, regs, last_regs, idx):
         # dump instr
         self.dump_instr(inst, entry, idx)
-        if self.dump_registers:
+        if self.config.show_regs:
             self.dump_regs(entry, regs, last_regs)
 
-    def _update_match_result(self, match=None, value=None):
+    def _update_match_result(self, match, value):
         """
         Combine the current match result with the value of
-        a test according to the match mode, if value is None
-        return the initial value for the match
+        a test according to the match mode
         """
-        if self.match_mode == "and":
-            if value is None:
-                match = True
-            else:
-                match = match and value
+        if value is None:
+            return match
+        if self.config.match_any:
+            return match or value
         else:
-            if value is None:
-                match = False
-            else:
-                match = match or value
-        return match
+            return match and value
 
     def _check_limits(self, start, end, value):
         result = True
@@ -185,98 +212,87 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
             result = False
         return result
 
-    def _match_instr(self, inst, match):
+    def _match_instr(self, inst, regs):
         """Check if the current instruction matches"""
-        if self.find_instr is None:
-            return match
-        test_result = self.find_instr == inst.opcode
-        return self._update_match_result(match, test_result)
+        if self.config.instr:
+            return self.config.instr == inst.opcode
+        return None
 
-    def _match_pc(self, inst, match):
+    def _match_pc(self, inst, regs):
         """Check if the current instruction PC matches"""
-        if self.pc_start is None and self.pc_end is None:
-            return match
-        test_result = True
-        if self.pc_start is not None and self.pc_start > inst.entry.pc:
-            test_result = False
-        if self.pc_end is not None and self.pc_end < inst.entry.pc:
-            test_result = False
-        return self._update_match_result(match, test_result)
+        if self.config.pc:
+            start, end = self.config.pc
+            return self._check_limits(start, end, inst.entry.pc)
+        return None
 
-    def _match_addr(self, inst, match):
+    def _match_addr(self, inst, regs):
         """Check if the current load or store address matches"""
-        if self.match_addr_start is None and self.match_addr_end is None:
-            return match
-        if inst.entry.is_load or inst.entry.is_store:
-            match_addr = self._check_limits(self.match_addr_start,
-                                            self.match_addr_end,
-                                            inst.entry.memory_address)
-        else:
-            match_addr = False
-        return self._update_match_result(match, match_addr)
-
-    def _match_reg(self, inst, match):
-        """Check if the current instruction uses a register"""
-        if self.follow_reg is None:
-            return match
-        match_reg = False
-        for operand in inst.operands:
-            if not operand.is_register:
-                continue
-            match_reg = operand.name == self.follow_reg
-            if match_reg:
-                break
-        return self._update_match_result(match, match_reg)
-
-    def _match_exception(self, inst, match):
-        """Check if an exception occurred while executing an instruction"""
-        if self.match_exc is None:
-            return match
-        match_exc = False
-        if inst.entry.exception != 31:
-            if self.match_exc == "any":
-                match_exc = True
+        if self.config.mem:
+            if inst.entry.is_load or inst.entry.is_store:
+                start, end = self.config.mem
+                return self._check_limits(start, end, inst.entry.memory_address)
             else:
-                match_exc = inst.entry.exception == int(self.match_exc)
-        return self._update_match_result(match, match_exc)
+                return False
+        return None
 
-    def _match_syscall(self, inst, regs, match):
+    def _match_reg(self, inst, regs):
+        """Check if the current instruction uses a register"""
+        if self.config.reg:
+            for operand in inst.operands:
+                if not operand.is_register:
+                    continue
+                if operand.name == self.config.reg:
+                    return True
+            return False
+        return None
+
+    def _match_exception(self, inst, regs):
+        """Check if an exception occurred while executing an instruction"""
+        if self.config.exception:
+            if inst.entry.exception == 31:
+                # no exception
+                return False
+            elif self.config.exception == "any":
+                return  True
+            else:
+                return inst.entry.exception == int(self.config.exception)
+        return None
+
+    def _match_syscall(self, inst, regs):
         """Check if this instruction is a syscall with given code"""
-        if self.match_syscall is None:
-            return match
-        match_syscall = False
-        if inst.opcode == "syscall" and inst.entry.exception == 8:
-            # system call code is in v0
-            if regs.valid_caps[2] and regs.cap_reg[2] == self.match_syscall:
-                match_syscall = True
-        return self._update_match_result(match, match_syscall)
+        # system call code is in v0
+        code_reg = 2
+        if self.config.syscall:
+            if inst.opcode == "syscall" and inst.entry.exception == 8:
+                if (regs.valid_grps[code_reg] and
+                    regs.gpr[code_reg] == self.config.syscall):
+                    return True
+            return False
+        return None
 
-    def _match_perm(self, inst, match):
+    def _match_perm(self, inst, regs):
         """Check if this instruction uses capabilities with the given perms"""
-        if self.match_perm is None:
-            return match
-        match_perm = False
-        for operand in inst.operands:
-            if not operand.is_capability:
-                continue
-            if operand.value is None:
-                # the register in the register set is not valid
-                continue
-            cap_reg = CheriCap(operand.value)
-            match_perm = cap_reg.has_perm(self.match_perm)
-            if match_perm:
-                break
-        return self._update_match_result(match, match_perm)
+        if self.config.perms:
+            for operand in inst.operands:
+                if (not operand.is_capability or
+                    operand.value is None):
+                    # if not a capability or the register in the register set
+                    # is not valid
+                    continue
+                cap_reg = CheriCap(operand.value)
+                if cap_reg.has_perm(self.config.perms):
+                    return True
+            return False
+        return None
 
-    def _match_nop(self, inst, match):
+    def _match_nop(self, inst, regs):
         """Check if instruction is a given canonical NOP"""
-        if self.match_nop is None:
-            return match
-        test_result = False
-        if inst.opcode == "lui":
-            test_result = (inst.op0.gpr_index == 0 and
-                           inst.op1.value == self.match_nop)
-        return self._update_match_result(match, test_result)
+        if self.config.nop:
+            if inst.opcode == "lui":
+                return (inst.op0.gpr_index == 0 and
+                        inst.op1.value == self.config.nop)
+            return False
+        return None
 
     def scan_all(self, inst, entry, regs, last_regs, idx):
         if self._dump_next > 0:
@@ -284,16 +300,13 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
             self._dump_next -= 1
             self.do_dump(inst, entry, regs, last_regs, idx)
         else:
-            match = self._update_match_result()
-            match = self._match_instr(inst, match)
-            match = self._match_pc(inst, match)
-            match = self._match_addr(inst, match)
-            match = self._match_reg(inst, match)
-            match = self._match_exception(inst, match)
-            match = self._match_nop(inst, match)
-            match = self._match_syscall(inst, regs, match)
-            match = self._match_perm(inst, match)
-
+            # initial match value, if match_any is true
+            # we OR the match results so start with false
+            # else we AND them, so start with true
+            match = not self.config.match_any
+            for checker in self.filters:
+                result = checker(inst, regs)
+                match = self._update_match_result(match, result)
             if match:
                 self.dump_kernel_user_switch(entry)
                 # dump all the instructions in the queue
@@ -302,10 +315,13 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
                     self.do_dump(old_inst, old_inst.entry, old_inst._regset,
                                  old_inst._prev_regset, idx)
                 self.do_dump(inst, entry, regs, last_regs, idx)
-                self._dump_next = self.show_after
+                self._dump_next = self.config.after
             else:
                 self._entry_history.append((inst, idx))
         return False
+
+    def parse(self, start=None, end=None, direction=0):
+        super().parse(self.config.start, self.config.end)
 
 
 @interactive_tool(key="scan")
@@ -329,9 +345,11 @@ class PytracedumpDriver(BaseTraceTaskDriver):
 
     def __init__(self, config):
         super().__init__(config)
-        
-        # self.parser = TraceDumpParser(config.trace, config.scan)
-        # self.
-    
+        self.parser = TraceDumpParser(config.trace, config.scan)
+
+    def update_config(self, config):
+        super().update_config(config)
+        self.parser.update_config(config.scan)
+
     def run(self):
-        print("hello")
+        self.parser.parse()

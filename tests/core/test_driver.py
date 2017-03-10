@@ -132,8 +132,7 @@ def test_full_config(full_driver):
                                         dest="nested.my_nested")
     parser.add_argument.assert_any_call("--my_nested_with_dest",
                                         dest="nested.override_nested")
-    parser.add_argument.assert_any_call("nested.my_nested_arg",
-                                        metavar="my_nested_arg")
+    parser.add_argument.assert_any_call("nested.my_nested_arg")
     subparser = parser.add_subparsers.return_value
     subparser.add_parser.assert_called_once_with("subcmd")
     new_parser = subparser.add_parser.return_value

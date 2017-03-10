@@ -167,18 +167,16 @@ def parser_setup(mock_trace, mock_exists, request):
     for cbk_name, cbk_meth in request.param:
         cbk_name = "scan_%s" % cbk_name
         setattr(_Parser, cbk_name, cbk_meth)
-    mock_dataset = mock.Mock()
     expect = expect_sets[request.param]
 
-    return (expect, _Parser(mock_dataset, "no_file"), request.param)
+    return (expect, _Parser("no_file"), request.param)
 
 @pytest.fixture
 @mock.patch("os.path.exists")
 @mock.patch("pycheritrace.trace")
 def provenance_parser(mock_trace, mock_exists):
 
-    mock_dataset = mock.Mock()
-    return PointerProvenanceParser(mock_dataset, "no_file")
+    return PointerProvenanceParser("no_file")
 
 
 @pytest.mark.parametrize("opcode", opcode_list)
