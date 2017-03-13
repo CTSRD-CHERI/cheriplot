@@ -130,9 +130,8 @@ class InteractiveTool(TaskDriver):
 
     def _mainloop(self):
         parser = TaskDriverArgumentParser(description=self.task.description)
-        sub = parser.add_subparsers()
-        cmd = sub.add_parser(self.interactive_conf_key)
-        self.task.make_config(cmd, keys=[self.interactive_conf_key])
+        self.interactive_conf.make_config(parser)
+        # self.task.make_config(cmd)
         while True:
             try:
                 cli_in = input(self.prompt)
@@ -169,13 +168,21 @@ def interactive_tool(key):
     def wrapper(wrapped_task):
         # dynamically build the interactive tool subclass
         # with the class attributes requred by InteractiveTool
-        ns = {
-            "task_class": wrapped_task,
-            "wrapped_conf": NestedConfig(wrapped_task),
-            "interactive_conf_key": key
-        }
+        if isinstance(key, str):
+            conf_keys = [key]
+        else:
+            conf_keys = key
+        # make the interactive driver class on the fly
         driver_class = TaskDriverType("_interactive_tool",
-                                      (InteractiveTool,), ns)
+                                      (InteractiveTool,), {})
+        wrapped_entries = []
+        for entry_key,entry in wrapped_task.get_config_model():
+            if entry_key in conf_keys:
+                wrapped_entries.append(entry)
+        driver_class.get_config_model().add_option("wrapped_conf",
+                                                   NestedConfig(wrapped_task))
+        driver_class.interactive_conf = ProxyConfig(*wrapped_entries)
+        driver_class.task_class = wrapped_task
         return driver_class
     return wrapper
 

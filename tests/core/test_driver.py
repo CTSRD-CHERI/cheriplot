@@ -32,6 +32,7 @@ def full_driver():
         my_default_opt = Option(default="opt_default")
         nested = NestedConfig(NestedArg)
         subcmd = SubCommand(SubArg)
+        proxy = ProxyConfig(proxy_opt=Option(default="proxy_default"))
     return FullDriver
 
 @pytest.fixture
@@ -121,7 +122,7 @@ def test_full_config(full_driver):
     new_parser.add_argument.assert_any_call("--my_sub", help="mySubOpt",
                                             dest="subcmd.my_sub")
     # check defaults
-    assert len(default.__dict__) == 6
+    assert len(default.__dict__) == 7
     assert default.my_int_opt == None
     assert default.my_default_opt == "opt_default"
     assert default.my_arg == None
@@ -132,24 +133,28 @@ def test_full_config(full_driver):
     assert default.nested.my_nested_arg == None
     assert len(default.subcmd.__dict__) == 1
     assert default.subcmd.my_sub == None
+    assert default.proxy_opt == "proxy_default"
 
 def test_interop(full_driver, parser):
     full_driver.make_config(parser)
 
     # check that we can call the argparse parser
     # ordering of the arguments should be respected
-    args = parser.parse_args(["--my_int_opt", "10", "--my_nested", "baz",
-                              "--my_nested_with_dest", "bar",
-                              "arg", "default_arg", "nested_arg",
-                              "subcmd", "--my_sub", "sub_opt",])
+    args = parser.parse_args(["--my_int_opt", "10",
+                              "--my_nested", "nested_opt_value",
+                              "--my_nested_with_dest", "nested_with_dest_value",
+                              "--proxy_opt", "proxy_opt_value",
+                              "arg_value", "default_arg", "nested_arg_value",
+                              "subcmd", "--my_sub", "sub_opt_value"])
     assert args.my_int_opt == 10
     assert args.my_default_opt == "opt_default"
-    assert args.nested.my_nested == "baz"
-    assert args.nested.override_nested == "bar"
-    assert args.my_arg == "arg"
+    assert args.nested.my_nested == "nested_opt_value"
+    assert args.nested.override_nested == "nested_with_dest_value"
+    assert args.proxy_opt == "proxy_opt_value"
+    assert args.my_arg == "arg_value"
     assert args.my_default_arg == "default_arg"
-    assert args.nested.my_nested_arg == "nested_arg"
-    assert args.subcmd.my_sub == "sub_opt"
+    assert args.nested.my_nested_arg == "nested_arg_value"
+    assert args.subcmd.my_sub == "sub_opt_value"
 
 def test_subclass(subclass_driver):
     parser = mock.Mock()

@@ -129,7 +129,7 @@ class DriverConfigEntry:
     def dest(self):
         return self.kwargs.get("dest", self.name)
 
-    def make_config(self, parser, prefix="", keys=None):
+    def make_config(self, parser, prefix="", keys=None, ns=None):
         """
         Add this configuration entry to an argparse argument parser
 
@@ -143,25 +143,45 @@ class DriverConfigEntry:
         :param keys: opt-in list of keys to add to the parser, if no
         list is given, all keys are added.
         :type keys: iterable
-        :return: The default argument value, if the entry is and aggregate
-        a namespace object is returned
+        :param ns: namespace where the config entry default value should
+        be added
+        :type ns: :class:`NestingNamespace`
+        :return: The default namespace where the item default has been added
+        (see :param:`ns`)
         """
-        return None
+        if ns is None:
+            ns = NestingNamespace()
+        if keys and self.name not in keys:
+            return ns
+        self._make_argparse(parser, prefix)
+        self._make_default(ns, prefix)
+        return ns
+
+    def _make_argparse(self, parser, prefix):
+        """Add the config entry to an argparse parser"""
+        pass
+
+    def _make_default(self, ns, prefix):
+        """Add the config entry to the default namespace"""
+        setattr(ns, self.dest, self.kwargs.get("default", None))
+
+    def __str__(self):
+        return "<%s %s %s>" % (self.name, self.args, self.kwargs)
 
 
 class Argument(DriverConfigEntry):
-    """Positional argument configuration key"""
+    """Configuration entry rendered as positional argument"""
 
-    def make_config(self, parser, prefix=""):
+    def _make_argparse(self, parser, prefix):
         name = prefix + self.dest
         args = (name,) + self.args
         parser.add_argument(*args, **self.kwargs)
-        return self.kwargs.get("default", None)
 
 
 class Option(DriverConfigEntry):
+    """Configuration entry redered as optional argument"""
 
-    def make_config(self, parser, prefix=""):
+    def _make_argparse(self, parser, prefix):
         if prefix:
             kwargs = dict(self.kwargs)
             kwargs["dest"] = prefix + self.dest
@@ -169,7 +189,6 @@ class Option(DriverConfigEntry):
             kwargs = self.kwargs
         args = ("--%s" % self.name,) + self.args
         parser.add_argument(*args, **kwargs)
-        return self.kwargs.get("default", None)
 
 
 class NestedConfig(DriverConfigEntry):
@@ -178,54 +197,104 @@ class NestedConfig(DriverConfigEntry):
         super().__init__()
         self.nested = nested
 
-    def make_config(self, parser, prefix=""):
+    def make_config(self, parser, prefix="", keys=None, ns=None):
+        if ns is None:
+            ns = NestingNamespace()
+        nested_ns = NestingNamespace()
+        setattr(ns, self.name, nested_ns)
+        if keys and self.name not in keys:
+            return ns
         prefix += "%s." % self.name
         model = self.nested.get_config_model()
-        return model.make_config(parser, prefix=prefix)
+        return model.make_config(parser, prefix=prefix, ns=nested_ns)
+
+    def __str__(self):
+        return "<%s %s>" % (self.name, self.nested.get_config_model())
+
+
+class ProxyConfig(DriverConfigEntry):
+    """
+    Special configuration entry that wraps multiple other entries without
+    requiring a new ConfigurableComponent as input
+    """
+
+    def __init__(self, *args, **kwargs):
+        """
+        A proxy config acts as a configuration items container.
+        The constructor accepts variable number of initialized
+        DriverConfigEntry elements or keyword arguments of
+        uninitialized DriverConfigEntry elements that are
+        added to the proxy entry with the given name.
+        """
+        super().__init__()
+        self.nested = OrderedDict()
+        for opt in args:
+            self.nested[opt.name] = opt
+        for k,opt in kwargs.items():
+            self.add_option(k, opt)
+
+    def add_option(self, name, option):
+        """
+        Add a new option to the configuration.
+
+        :param option: the option to be added
+        :type option: :class:`DriverConfigEntry`
+        """
+        option.name = name
+        self.nested[name] = option
+
+    def make_config(self, parser, prefix="", keys=None, ns=None):
+        if ns is None:
+            ns = NestingNamespace()
+        for k,opt in self.nested.items():
+            if keys and k not in keys:
+                continue
+            opt.make_config(parser, prefix=prefix, ns=ns)
+        return ns
+
+    def __str__(self):
+        config_entries = "<"
+        for opt in self.nested.values():
+            config_entries += repr(opt) + ", "
+        config_entries += ">"
+        return config_entries
 
 
 class SubCommand(DriverConfigEntry):
 
-    def __init__(self, nested, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, nested=None, **kwargs):
+        super().__init__(**kwargs)
+        if nested is None:
+            # empty config element, so we can define a subcommand without
+            # having a separate config object for it, if it is not required
+            nested = ConfigurableComponent
         self.nested = nested
 
-    def make_config(self, parser, prefix=""):
+    def make_config(self, parser, prefix="", keys=None, ns=None):
+        if ns is None:
+            ns = NestingNamespace()
+        nested_ns = NestingNamespace()
+        setattr(ns, self.name, nested_ns)
         subparser = parser.add_subparsers()
         subcommand = subparser.add_parser(self.name, *self.args, **self.kwargs)
         prefix += "%s." % self.name
         model = self.nested.get_config_model()
-        return model.make_config(subcommand, prefix=prefix)
+        return model.make_config(subcommand, prefix=prefix, ns=nested_ns)
+
+    def __str__(self):
+        return "<%s %s>" % (self.name, self.nested.get_config_model())
 
 
-class DriverConfig:
+class DriverConfig(ProxyConfig):
     """
     Driver configuration object, this can be used to produce
     a dict of configuration items or an argument parser
     with options for all configuration items.
     """
 
-    def __init__(self):
-        """
-        Create the configuration from a list of options
-
-        :param options: list of options
-        :type options: list of :class:`Option`
-        """
-        self.options = OrderedDict()
-
-    def add_option(self, name, option):
-        """
-        Add a new option to the configuration.
-        The options actually performs the add
-        operation so that we can have options that
-        behave differently without changing the DriverConfig.
-
-        :param option: the option to be added
-        :type option: :class:`Option`
-        """
-        option.name = name
-        self.options[name] = option
+    def __iter__(self):
+        for keyopt in self.nested.items():
+            yield keyopt
 
     def update(self, other):
         """
@@ -233,23 +302,9 @@ class DriverConfig:
         The keys of the merged conf object are
         shadowed by the ones in this conf object.
         """
-        merge_opts = dict(other.options)
-        merge_opts.update(self.options)
-        self.options = merge_opts
-
-    def make_config(self, parser, prefix="", keys=None):
-        """
-        Attach the options to an argument parser
-
-        :param parser: the argument parser
-        :type parser: :class:`argparse.ArgumentParser`
-        """
-        ns = NestingNamespace()
-        for k,opt in self.options.items():
-            if keys and k not in keys:
-                continue
-            setattr(ns, opt.dest, opt.make_config(parser, prefix=prefix))
-        return ns
+        merge_opts = dict(other.nested)
+        merge_opts.update(self.nested)
+        self.nested = merge_opts
 
 
 class TaskDriverType(type):
