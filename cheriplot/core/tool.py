@@ -42,18 +42,18 @@ class BaseToolTaskDriver(TaskDriver):
     profile = Option(help="Enable profiling")
     logfile = Option(help="Log output file")
 
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
-        verbose = config.verbose and not config.profile
+        verbose = self.config.verbose and not self.config.profile
         logging_args = {
             "level": logging.DEBUG if verbose else logging.INFO,
-            "filename": config.logfile
+            "filename": self.config.logfile
         }
         logging.basicConfig(**logging_args)
 
         # instrument the run method to do profiling
-        if config.profile:
+        if self.config.profile:
             def profiling_run(self_):
                 try:
                     pr = cProfile.Profile()
@@ -96,7 +96,7 @@ def run_driver_tool(task, argv=None):
     parser = TaskDriverArgumentParser(description=task.description)
     task.make_config(parser)
     args = parser.parse_args(args=argv)
-    task_inst = task(args)
+    task_inst = task(config=args)
     task_inst.run()
 
 
@@ -120,10 +120,10 @@ class InteractiveTool(TaskDriver):
     interactive = Option("-i", action="store_true",
                          help="Run interactively")
 
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         # the wrapped task is initialized in the subclass
-        self.task = self.task_class(config.wrapped_conf)
+        self.task = self.task_class(config=self.config.wrapped_conf)
 
         toolname = os.path.basename(sys.argv[0])
         self.prompt = "%s> " % os.path.splitext(toolname)[0]

@@ -169,14 +169,14 @@ def parser_setup(mock_trace, mock_exists, request):
         setattr(_Parser, cbk_name, cbk_meth)
     expect = expect_sets[request.param]
 
-    return (expect, _Parser("no_file"), request.param)
+    return (expect, _Parser(trace_path="no_file"), request.param)
 
 @pytest.fixture
 @mock.patch("os.path.exists")
 @mock.patch("pycheritrace.trace")
 def provenance_parser(mock_trace, mock_exists):
 
-    return PointerProvenanceParser("no_file")
+    return PointerProvenanceParser(trace_path="no_file")
 
 
 @pytest.mark.parametrize("opcode", opcode_list)

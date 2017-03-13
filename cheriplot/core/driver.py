@@ -301,14 +301,18 @@ class ConfigurableComponent(metaclass=TaskDriverType):
         """
         return cls._config_model.make_config(parser, keys=keys)
 
-    def __init__(self, config):
+    def __init__(self, **kwargs):
         """
         Initialize a configurable element with a configuration object
 
         :param config: a configuration namespace object
         :type config: :class:`NestingNamespace`
         """
-        self.config = config
+        try:
+            self.config = kwargs.pop("config")
+        except KeyError as e:
+            logger.error("Missing required argument: config")
+        super().__init__(**kwargs)
 
     def update_config(self, config):
         """

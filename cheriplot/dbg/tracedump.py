@@ -92,16 +92,15 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
         help="Return a trace entry when matches any of the conditions "
         "instead of all")
 
-    def __init__(self, trace_path, config):
+    def __init__(self, **kwargs):
         """
         This parser filters the trace according to a set of match
         conditions. Multiple match conditions can be used at the same time
         to refine or widen the filter.
         """
-        CallbackTraceParser.__init__(self, trace_path)
-        ConfigurableComponent.__init__(self, config)
+        super().__init__(**kwargs)
 
-        self._entry_history = deque([], config.before)
+        self._entry_history = deque([], self.config.before)
         """FIFO instructions that may be shown if a match is found"""
 
         self._dump_next = 0
@@ -121,7 +120,7 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
             self._match_perm
         ]
 
-        self.update_config(config)
+        self.update_config(self.config)
 
     def update_config(self, config):
         self._entry_history = deque([], config.before)
@@ -342,9 +341,10 @@ class PytracedumpDriver(BaseTraceTaskDriver):
 
     scan = NestedConfig(TraceDumpParser)
 
-    def __init__(self, config):
-        super().__init__(config)
-        self.parser = TraceDumpParser(config.trace, config.scan)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.parser = TraceDumpParser(trace_path=self.config.trace,
+                                      config=self.config.scan)
 
     def update_config(self, config):
         super().update_config(config)

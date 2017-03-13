@@ -51,13 +51,15 @@ logger = logging.getLogger(__name__)
 
 class TraceParser:
     """
-    Base trace parser without parsing infrastructure
-
+    Base trace parser without parsing infrastructure.
     This handles only the loading of the trace file
+
+    :param trace_path: path to the cvtrace file to open
+    :type trace_path: str
     """
 
     def __init__(self, trace_path=None, **kwargs):
-        # super().__init__(**kwargs)
+        super().__init__(**kwargs)
         self.path = trace_path
         self.trace = None
 
@@ -365,11 +367,11 @@ class CallbackTraceParser(TraceParser):
     the previous "cap_" classes
     """
 
-    def __init__(self, trace_path, **kwargs):
-        super().__init__(trace_path, **kwargs)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
         self.progress = ProgressPrinter(
-            len(self), desc="Scanning trace %s" % trace_path)
+            len(self), desc="Scanning trace %s" % self.path)
         """Progress object to display feedback to the user"""
 
         self._last_regs = None
