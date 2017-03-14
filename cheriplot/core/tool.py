@@ -31,6 +31,7 @@ import logging
 import cProfile
 import pstats
 import shlex
+import readline
 
 from argparse import RawTextHelpFormatter
 from cheriplot.core.driver import *

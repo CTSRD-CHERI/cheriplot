@@ -68,7 +68,7 @@ class NestingNamespace(Namespace):
 
     def update(self, other):
         for k,v in other.__dict__.items():
-            if isinstance(v, self.__class__):
+            if isinstance(v, self.__class__) and hasattr(self, k):
                 getattr(self, k).update(v)
             else:
                 setattr(self, k, v)
@@ -277,7 +277,11 @@ class SubCommand(DriverConfigEntry):
         setattr(ns, self.name, nested_ns)
         subparser = parser.add_subparsers()
         subcommand = subparser.add_parser(self.name, *self.args, **self.kwargs)
+        # make sure subparser namespace is created even with subcommands with
+        # no arguments/options
         prefix += "%s." % self.name
+        subcommand_parsed_arg = "%s_subcommand_%s" % (prefix, self.name)
+        subcommand.set_defaults(**{subcommand_parsed_arg: True})
         model = self.nested.get_config_model()
         return model.make_config(subcommand, prefix=prefix, ns=nested_ns)
 
@@ -367,6 +371,7 @@ class ConfigurableComponent(metaclass=TaskDriverType):
             self.config = kwargs.pop("config")
         except KeyError as e:
             logger.error("Missing required argument: config")
+            raise
         super().__init__(**kwargs)
 
     def update_config(self, config):

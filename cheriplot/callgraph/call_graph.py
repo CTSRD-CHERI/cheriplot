@@ -27,16 +27,19 @@
 
 import logging
 
+from contextlib import suppress
 from collections import deque
 from graph_tool.all import *
 
-from cheriplot.core.parser import CallbackTraceParser
-from cheriplot.core.provenance import CheriCap
-from cheriplot.graph.call_graph import CallGraphManager
+from cheriplot.core import (
+    CallbackTraceParser, Option, Argument, SubCommand, NestedConfig, TaskDriver,
+    ConfigurableComponent, interactive_tool)
+from cheriplot.callgraph.model import CallGraphManager
+from cheriplot.callgraph.plot import CallGraphPlot
 
 logger = logging.getLogger(__name__)
 
-class CallGraphTraceParser(CallbackTraceParser):
+class CallGraphTraceParser(CallbackTraceParser, TaskDriver):
     """
     Dump a stack trace given a cheri trace instruction.
     We also detect all the functions that have been called and returned
@@ -55,17 +58,30 @@ class CallGraphTraceParser(CallbackTraceParser):
     When a <return> is found, it is added to the pandas dataset
     """
 
-    def __init__(self, trace_path, cache, **kwargs):
+    start = Option(
+        "-s",
+        type=int,
+        help="Backtrace starting from trace position",
+        default=None)
+    end = Option(
+        "-e",
+        type=int,
+        help="Stop backtrace at given position",
+        default=None)
+    depth = Option(
+        "-d",
+        help="Build the call graph/backtrace for the "
+        "last <depth> function calls",
+        type=int,
+        default=None)
 
-        self.backtrace_depth = kwargs.pop("depth", None)
-        """Stop parsing after the backtrace has length <depth>"""
-
-        super().__init__(None, trace_path, **kwargs)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
         self._backtrace_num = 0
 
-        self.cache = cache
-        """Are we caching?"""
+        self.backtrace_depth = self.config.depth
+        """Stop parsing after the backtrace has length <depth>"""
 
         self.return_stack = deque()
         """Stack of return instructions found"""
@@ -82,27 +98,10 @@ class CallGraphTraceParser(CallbackTraceParser):
         as the trace is parsed backwards.
         """
 
-    def _get_cache_file(self):
-        return "%s_call_graph.gt" % self.path
-
     def parse(self, start=None, end=None):
         # parse from the given start backwards
-        if self.cache:
-            try:
-                self.cgm.load(self._get_cache_file())
-                logger.info("Load cached call graph %s", self._get_cache_file())
-                return
-            except FileNotFoundError:
-                logger.info("Cache file %s not found", self._get_cache_file())
-        if start == None:
-            start = 0
-        if end == None:
-            end = len(self)
         logger.info("Scan trace %s", self.path)
-        super().parse(start, end, 1)
-        if self.cache:
-            logger.info("Save call graph to %s", self._get_cache_file())
-            self.cgm.save(self._get_cache_file())
+        super().parse(self.config.start, self.config.end, 1)
 
     def do_scan(self, inst, entry):
         """Decide whether we should scan this instruction or not"""
@@ -219,19 +218,69 @@ class CallGraphTraceParser(CallbackTraceParser):
     #     self.return_stack.append(("gpr", ret_addr, entry.pc))
 
 
-def call_graph_backtrace(parser):
+@interactive_tool(key=["scan", "backtrace", "callgraph"])
+class CallGraphDriver(TaskDriver):
     """
-    Dump the backtrace from the call graph parsed in the parser.
+    Run component for the call-graph and backtrace generator.
+    The scan config element holds the interactive-mode arguments,
+    other options are fixed at instantiation.
     """
-    has_backtrace_info = parser.cgm.graph.new_edge_property("bool")
-    map_property_values(parser.cgm.backtrace, has_backtrace_info,
-                        lambda b: b != 0)
-    parser.cgm.graph.set_edge_filter(has_backtrace_info)
 
-    bt = sorted(parser.cgm.graph.edges(), key=lambda e: parser.cgm.backtrace[e])
-    for e in bt:
-        fn_time = parser.cgm.backtrace[e]
-        fn_addr = parser.cgm.addr[e.source()]
-        fn_name = parser.cgm.name[e.source()]
-        print("[%d] 0x%x %s" % (fn_time, fn_addr, fn_name))
-    parser.cgm.graph.clear_filters()
+    description = "Generate call graph and stack traces from cvtrace files"
+
+    trace = Argument(help="Path to cvtrace file")
+    sym = Option(
+        nargs="*",
+        help="Binaries providing symbols",
+        default=None)
+    vmmap = Option(
+        "-m",
+        help="Memory map file that specifies base addresses for "
+        "the binaries in --sym",
+        default=None)
+    scan = NestedConfig(CallGraphTraceParser)
+    backtrace = SubCommand(help="Plot the call graph")
+    callgraph = SubCommand(CallGraphPlot, help="Show the backtrace")
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.parser = CallGraphTraceParser(trace_path=self.config.trace,
+                                           config=self.config.scan)
+
+    def update_config(self, config):
+        super().update_config(config)
+        self.parser.update_config(config.scan)
+
+    def run(self):
+        self.parser.parse()
+        # get the parsed model
+        cgm = self.parser.cgm
+        # if we have symbols and a vmmap, add symbols to the call graph
+        if self.config.sym and self.config.vmmap:
+            add_symbols = CallGraphAddSymbols(cgm, self.config.sym,
+                                              self.config.vmmap)
+            cgm.bfs_transform(add_symbols)
+        with suppress(AttributeError):
+            if self.config.backtrace:
+                self.call_graph_backtrace(cgm)
+        with suppress(AttributeError):
+            if self.config.callgraph:
+                self.plot = CallGraphPlot(config=self.config.callgraph)
+                self.plot.plot(cgm)
+
+    def call_graph_backtrace(self, cgm):
+        """
+        Dump the backtrace from the call graph parsed in the parser.
+        """
+        has_backtrace_info = cgm.graph.new_edge_property("bool")
+        map_property_values(cgm.backtrace, has_backtrace_info,
+                            lambda b: b != 0)
+        cgm.graph.set_edge_filter(has_backtrace_info)
+
+        bt = sorted(cgm.graph.edges(), key=lambda e: cgm.backtrace[e])
+        for e in bt:
+            fn_time = cgm.backtrace[e]
+            fn_addr = cgm.addr[e.source()]
+            fn_name = cgm.name[e.source()]
+            print("[%d] 0x%x %s" % (fn_time, fn_addr, fn_name))
+        cgm.graph.clear_filters()

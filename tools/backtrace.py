@@ -28,12 +28,12 @@
 import logging
 
 from cheriplot.core import run_driver_tool
-from cheriplot.dbg import PytracedumpDriver
+from cheriplot.callgraph import CallGraphDriver
 
 logger = logging.getLogger(__name__)
 
 def main():
-    run_driver_tool(PytracedumpDriver)
+    run_driver_tool(CallGraphDriver)
 
 if __name__ == "__main__":
     main()
