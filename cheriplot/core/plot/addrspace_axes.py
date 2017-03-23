@@ -32,14 +32,12 @@ import sys
 from matplotlib import pyplot as plt
 from matplotlib import transforms, axes, scale, axis, lines
 from matplotlib.projections import register_projection
-from matplotlib.cbook import iterable
-from matplotlib.ticker import Formatter, FixedLocator, Locator
+from matplotlib.ticker import Formatter, Locator
 
-from itertools import repeat
-from functools import reduce
-from operator import attrgetter
-from sortedcontainers import SortedDict
+from operator import attrgetter, itemgetter
+from sortedcontainers import SortedDict, SortedListWithKey
 
+# from cheriplot.core.plot.addr_range import Range
 from cheriplot.utils import ProgressPrinter
 
 logger = logging.getLogger(__name__)
@@ -56,17 +54,28 @@ class AddressSpaceCollapseTransform(transforms.Transform):
     """
 
     def __init__(self, *args, **kwargs):
-        super(AddressSpaceCollapseTransform, self).__init__(*args, **kwargs)
-        self.target_ranges = RangeSet()
-        """List of ranges to keep and omit"""
+        super().__init__(*args, **kwargs)
+
+        self._target_ranges = []
+        """
+        Unsorted list of target ranges, possibly with duplicates or
+        overlapping ranges.
+        """
+
+        self._intervals = None
+        """
+        Numpy array that holds intervals [start,end,type].
+        The type is 0 for omit ranges and 1 for keep ranges.
+        """
+
+        self._precomputed_offsets = None
+        """
+        SortedDict that caches the transformed X corresponding to the 
+        start of each interval
+        """
 
         self.omit_scale = 1
         """Scale factor of the omitted address ranges"""
-
-        self.target_ranges.append(Range(0, np.inf, Range.T_KEEP))
-
-        self._precomputed_offsets = None
-        """SortedDict ... """
 
         self._inverse = False
         """Is this transform performing the direct or inverse operation"""
@@ -75,47 +84,163 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         self.is_separable = True
         self.input_dims = 2
         self.output_dims = 2
-        self._precompute_offsets()
 
-    def update_range(self, range_list):
+    def set_ranges(self, ranges):
         """
-        Update parameters depending on the omit ranges.
-        The range list must be complete, in the sense that it should
-        mark every part of the address-range without holes as either
-        omit or keep.
-        """
-        self.target_ranges = range_list
+        The ranges here represent the parts of the address space we
+        want to show.
 
-        keep = [r for r in self.target_ranges if r.rtype == Range.T_KEEP]
-        omit = [r for r in self.target_ranges if r.rtype == Range.T_OMIT]
-        # total size of the KEEP ranges
-        keep_size = reduce(lambda acc,r: acc + r.size
-                           if r.size < np.inf else acc, keep, 0)
-        omit_size = reduce(lambda acc,r: acc + r.size
-                           if r.size < np.inf else acc, omit, 0)
+        :param ranges: list of intervals in the form [(start, end), ...]
+        :type ranges: list of 2-tuples
+        """
+        self._target_ranges = ranges
+        self._precomputed_offsets = None
+        self._intervals = None
+
+    def get_ranges(self):
+        """See :meth:`set_ranges`."""
+        return self._target_ranges
+
+    def _merge(self, intervals):
+        """
+        Given a set of intervals [(start, end), ...] merge the overlapping
+        intervals.
+        This is O(n*log(n)) but if all goes well is only done once for every
+        plot.
+        """
+        merged = SortedListWithKey(intervals, key=lambda k: (k[0], k[1]))
+        out = []
+        curr = merged[0]
+        idx = 1
+        while idx < len(merged):
+            to_merge = merged[idx]
+            if to_merge[0] > curr[1]:
+                # we are done with to_merge
+                out.append(curr)
+                curr = to_merge
+            else:
+                curr = (curr[0], to_merge[1])
+            end_idx = merged.bisect((curr[1], np.inf))
+            idx = end_idx
+            if end_idx == len(merged):
+                end_idx -= 1
+            if merged[end_idx][0] <= curr[1]:
+                end = max(curr[1], merged[end_idx][1])
+            else:
+                end = max(curr[1], merged[end_idx - 1][1])
+            curr = (curr[0], end)
+        out.append(curr)
+        return out
+
+    def _gen_omit_scale(self, intervals, keep_idx, omit_idx):
+        """
+        Generate the scale used to collapse omit ranges.
+        The scale is computed so that the omitted ranges take up 5% of the
+        total size of the keep ranges.
+        """
+        keep_size = np.sum(intervals[keep_idx,1] - intervals[keep_idx,0])
+        # the last omit interval always goes to Inf
+        omit_size = np.sum(intervals[omit_idx[:-2],1] - intervals[omit_idx[:-2],0])
         if omit_size != 0:
             # we want the omitted ranges to take up 5% of the keep ranges
             # in size
             # scale = <percent_of_keep_size_to_take> * sum(keep) / sum(omit)
             self.omit_scale = 0.05 * keep_size / omit_size
-        self._precompute_offsets()
+
+    def _gen_piecewise_fn(self, intervals, keep, omit):
+        """
+        Deprecated - kept for reference
+        XXX terribly slow, keep it as maybe we can make an interpolated polynomial
+        from this, hopefully would take less than the piecewise evaluation
+        """
+        # generate functions array based on the interval type
+        # the function generates the transformed X given the
+        # input x
+        # Each function on the interval k = [x0_k, x1_k] and interval scale
+        # factor s_k performs:
+        # f(x) = sum[i=0,i=k-1]((x1_i - x0_i)*s_i) + (x - x0_k)*s_k
+        functions = np.empty(len(intervals), dtype="O")
+        # cumulative_offset = np.vectorize(lambda i: (
+        #     np.sum(intervals[:i:2,1] - intervals[:i:2,0]) +
+        #     np.sum(intervals[1:i:2,1] - intervals[1:i:2,0]) * self.omit_scale))
+        def gen_function(start, i, scale):
+            cumulative_offset = (
+                np.sum(intervals[:i:2,1] - intervals[:i:2,0]) +
+                np.sum(intervals[1:i:2,1] - intervals[1:i:2,0]) * self.omit_scale)
+            return lambda x: (x - start) * scale + cumulative_offset
+        get_fn = np.vectorize(gen_function)
+
+        functions[keep] = get_fn(intervals[keep,0], keep, 1)
+        functions[omit] = get_fn(intervals[omit,0], omit, self.omit_scale)
+        self._functions = functions
+        # the call
+        if self._intervals == None:
+            self._gen_intervals()
+        intervals = self._intervals
+        func = self._functions
+        return np.piecewise(x, np.logical_and(intervals[:,0] <= x, x < intervals[:,1]), func)
+
+    def _gen_intervals(self):
+        """
+        Generate the non-overlapping intervals to display in the
+        axis.
+        The intervals generated cover the whole axis without holes.
+        """
+        # merge ranges O(n*log(n)) and sort them
+        merged_intervals = self._merge(self._target_ranges)
+        # if the first interval starts from 0, the starting
+        # interval is a KEEP interval
+        is_start_keep = merged_intervals[0][0] == 0
+        holes = len(merged_intervals)
+        if not is_start_keep:
+            holes += 1
+        # generate condition arrays for the piecewise function boundaries
+        # cond: [start, end, type]
+        n_intervals = len(merged_intervals) + holes
+        if is_start_keep:
+            # first interval is keep
+            keep = range(0,n_intervals, 2)
+            omit = range(1,n_intervals, 2)
+        else:
+            # first interval is omit
+            keep = range(1,n_intervals, 2)
+            omit = range(0,n_intervals, 2)
+        intervals = np.zeros((n_intervals,3))
+        intervals[keep,2] = 1
+        intervals[keep,0:2] = merged_intervals
+        intervals[omit,0] = intervals[keep,1]
+        intervals[omit[:-1],1] = intervals[keep[1:],0]
+        # fixup last omit interval end
+        intervals[-1,1] = np.inf
+        self._gen_omit_scale(intervals, keep, omit)
+        logger.debug("Addrspace intervals %s", intervals)
+        self._intervals = intervals
 
     def _precompute_offsets(self):
+        """
+        Precompute the transformed X base values for the start of each
+        interval on the axis. The base addresses are used to look up
+        the closest interval start when transforming.
+        """
+        self._gen_intervals()
         # reset previous offsets
         self._precomputed_offsets = SortedDict()
         x_collapsed = 0
-        for r in self.target_ranges:
-            r_scale = 1 if r.rtype == Range.T_KEEP else self.omit_scale
-            self._precomputed_offsets[r.start] = (x_collapsed, r_scale)
-            x_collapsed += r.size * r_scale
+        for r in self._intervals:
+            r_scale = 1 if r[2] else self.omit_scale
+            self._precomputed_offsets[r[0]] = (x_collapsed, r_scale)
+            x_collapsed += (r[1] - r[0]) * r_scale
 
     def get_x(self, x_dataspace):
         """
-        Scale the x from data-space coordinates to the collapsed
-        address-space coordinates.
-        The conversion uses a fast lookup of precomputed offsets
-        based on the omit/keep range intervals.
+        Get the transformed X coordinate.
+        This is just a lookup in the precomputed offsets and some calculations,
+        should be O(log(n)) in the number of intervals (which is expected to be
+        at most in the order of 10**3~10**4)
         """
+        if self._precomputed_offsets == None:
+            self._precompute_offsets()
+
         if x_dataspace < 0:
             return x_dataspace
         base_idx = self._precomputed_offsets.bisect_left(x_dataspace)
@@ -134,21 +259,25 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         Find the address range corresponding to the plot range
         given by scanning all the target ranges
         """
+        if self._precomputed_offsets == None:
+            self._precompute_offsets()
         x_inverse = 0
         x_current = 0
-        for r in self.target_ranges:
-            if r.rtype == Range.T_KEEP:
-                if x > x_current + r.size:
-                    x_current += r.size
-                    x_inverse += r.size
+        for r in self._intervals:
+            r_size = r[1] - r[0]
+            if r[2] == 1:
+                # range is type KEEP
+                if x > x_current + r_size:
+                    x_current += r_size
+                    x_inverse += r_size
                 else:
                     x_inverse += x - x_current
                     break
-            elif r.rtype == Range.T_OMIT:
-                scaled_size = r.size * self.omit_scale
+            elif r[2] == 0:
+                scaled_size = r_size * self.omit_scale
                 if x > x_current + scaled_size:
                     x_current += scaled_size
-                    x_inverse += r.size
+                    x_inverse += r_size
                 else:
                     x_inverse += (x - x_current) / self.omit_scale
                     break
@@ -181,7 +310,9 @@ class AddressSpaceCollapseTransform(transforms.Transform):
 
     def inverted(self):
         trans = AddressSpaceCollapseTransform()
-        trans.target_ranges = self.target_ranges
+        trans._target_ranges = self._target_ranges
+        trans._intervals = self._intervals
+        trans._precomputed_offsets = self._precomputed_offsets
         trans.omit_scale = self.omit_scale
         trans._inverse = not self._inverse
         return trans
@@ -218,25 +349,22 @@ class AddressSpaceScale(scale.ScaleBase):
             scale transform to convert from data ticks to
             ticks in the scaled axis coordinates
             """
-            trans = self.scale.transform
-            ranges = trans.target_ranges
             trans = self.scale.get_transform()
             values = []
-            for r in ranges:
-                if r.rtype == Range.T_KEEP:
+            for r in trans._intervals:
+                if r[2] == 1:
+                    # keep interval
                     if len(values) > 0:
                         prev = trans.transform((values[-1], 0))[0]
-                        curr = trans.transform((r.start, 0))[0]
+                        curr = trans.transform((r[0], 0))[0]
                         # XXX 2**12 is an empiric value we should use
                         # the bounding box of the label but there is no
                         # easy way to get it from here
                         if curr - prev < 2**12:
                             # skip tick if they end up too close
                             continue
-                    values.append(r.start)
-
+                    values.append(r[0])
             return values
-
 
     def __init__(self, axis, **kwargs):
         super(AddressSpaceScale, self).__init__()
@@ -366,18 +494,13 @@ class AddressSpaceAxes(axes.Axes):
 
     name = "custom_addrspace"
 
-    DEFAULT_OMIT = 0
-    """Default mode: omit all non-included addresses"""
-    DEFAULT_INCLUDE = 1
-    """Default mode: include all non-omitted addresses"""
-
     def __init__(self, *args, **kwargs):
-        self.omit_filters = RangeSet()
-        self.include_filters = RangeSet()
-        self.mode = AddressSpaceAxes.DEFAULT_INCLUDE
         self._status_message = ""
         kwargs["xscale"] = "scale_addrspace"
         super(AddressSpaceAxes, self).__init__(*args, **kwargs)
+
+        self.keep_ranges = RangeSet()
+        """RangeSet holding the parts of the address space that are displayed"""
 
     def _init_axis(self):
         """
@@ -420,104 +543,11 @@ class AddressSpaceAxes(axes.Axes):
         self._yaxis_transform = transforms.blended_transform_factory(
             self.transAxes, self.transData)
 
-    def _filter(self, target_list, other_list, target_range):
-        """
-        Generic omit or include
-
-        XXX:
-        - rename to a more meaningful name
-        - only take the omit range list, the other list is never used
-        """
-        if len(other_list.match_overlap_range(target_range)):
-            raise ValueError("Range %s is present in another filter" %
-                             target_range)
-
-        existing_range = target_list.match_overlap_range(target_range)
-        assert len(existing_range) < 2, "Too many overlapping ranges %s, %s" % (
-            existing_range, target_range)
-        try:
-            target_range = existing_range[0] + target_range
-        except IndexError:
-            pass
-        finally:
-            target_list.append(target_range)
-
-    def _map_omit(self, map_range):
-        """
-        Map the omit and include lists on the given range.
-        The range is split in omit regions and include regions,
-        the omit regions are the ones to be shrunk in the plot
-        while the include regions are rendered normally.
-
-        Return a RangeSet containing the ranges to keep and omit that overlap
-        the input range
-        """
-        if self.mode == AddressSpaceAxes.DEFAULT_INCLUDE:
-            logger.debug("Map omit regions on %s", map_range)
-            regions = self.omit_filters.match_overlap_range(map_range)
-            # type of mapped regions
-            rtype = Range.T_OMIT
-            # type of complement regions
-            c_rtype = Range.T_KEEP
-        else:
-            logger.debug("Map include regions on %s", map_range)
-            regions = self.include_filters.match_overlap_range(map_range)
-            # type of mapped regions
-            rtype = Range.T_KEEP
-            # type of complement regions
-            c_rtype = Range.T_OMIT
-
-        regions.sort(key=attrgetter("start"))
-        logger.debug("Found %d regions for %s: %s", len(regions), map_range, regions)
-        mapped = []
-        complement = []
-        start = None
-        for r in regions:
-            # r.start can not be after target.end so the
-            # mapped range start always in the target boundaries
-            # same applies for the r.end and target.end
-            start = max(map_range.start, r.start)
-            end = min(map_range.end, r.end)
-            m_range = Range(start, end, rtype)
-            # logger.debug("m_range %s", m_range)
-            # regions are assumed to be sorted by start address
-            c_start = mapped[-1].end if len(mapped) else map_range.start
-            c_end = start
-            c_range = Range(c_start, c_end, c_rtype)
-            # logger.debug("c_range %s", c_range)
-            if m_range.size > 0:
-                mapped.append(m_range)
-            if c_range.size > 0:
-                complement.append(c_range)
-        # add last block to complement if necessary
-        c_start = mapped[-1].end if len(mapped) else map_range.start
-        c_end = map_range.end
-        c_range = Range(c_start, c_end, c_rtype)
-        if c_range.size > 0:
-            complement.append(c_range)
-
-        logger.debug("Mapped: %s", mapped)
-        logger.debug("Complement: %s", complement)
-
-        ranges = RangeSet(mapped + complement)
-        # XXX may keep the lists separated to avoid the need to sort
-        ranges.sort(key=attrgetter("start"))
-        return ranges
+    def get_omit_ranges(self):
+        return self.xaxis.get_ranges()
 
     def set_omit_ranges(self, ranges):
-        """
-        Configure the set of addresses (x-axis values) that
-        are omitted from the plot. These are collapsed to
-        a small separation space between chunks of address-space
-        that are displayed normally.
-
-        Accept an Nx2 array in the form [[r_start, r_end], ...]
-        """
-        for r in ranges:
-            self._filter(self.omit_filters, self.include_filters,
-                         Range(r[0], r[1], Range.T_OMIT))
-        all_ranges = self._map_omit(Range(0, np.inf))
-        self.xaxis.get_transform().update_range(all_ranges)
+        self.xaxis.get_transform().set_ranges(ranges)
 
     def set_status_message(self, message):
         """
@@ -535,102 +565,3 @@ class AddressSpaceAxes(axes.Axes):
 
 
 register_projection(AddressSpaceAxes)
-
-class Range:
-
-    T_OMIT = 0
-    T_KEEP = 1
-    T_UNKN = -1
-
-    def __init__(self, start, end, rtype=-1):
-        # make sure that start <= end always
-        self.start = min(start, end)
-        self.end = max(start, end)
-        self.rtype = rtype
-        """The type is used to distinguish omit and keep ranges"""
-
-    @property
-    def size(self):
-        return self.end - self.start
-
-    def __str__(self):
-        return "<Range [%x, %x]>" % (self.start, self.end)
-
-    def __repr__(self):
-        return str(self)
-
-    def __add__(self, other):
-        return Range(min(self.start, other.start), max(self.end, other.end))
-
-    def __iter__(self):
-        yield self.start
-        yield self.end
-
-    def __contains__(self, target):
-        """
-        target can be a Range or a single address
-        """
-        try:
-            return self.start <= target.end and target.start < self.end
-        except:
-            return self.start <= target and target < self.end
-
-    def __str__(self):
-        start = "0x%x" if type(self.start) == int else "%s"
-        end = "0x%x" if type(self.end) == int else "%s"
-        if self.rtype == self.T_OMIT:
-            rtype = "OMIT"
-        elif self.rtype == self.T_KEEP:
-            rtype = "KEEP"
-        else:
-            rtype = "UNK"
-        fmt = "<Range s:" + start + " e:" + end + " t:%s>"
-        return fmt % (self.start, self.end, rtype)
-
-    def __hash__(self):
-        return hash(self.start) ^ hash(self.end) ^ hash(self.rtype)
-
-
-class RangeSet(list):
-    """
-    Represent a list ranges that can be searched for overlaps
-    """
-
-    def __init__(self, *args):
-        super(RangeSet, self).__init__(*args)
-
-    def match_overlap(self, addr):
-        """
-        Return the list of ranges containing addr
-        """
-        range_ = Range(addr, addr)
-        return self.match_overlap_range(ranges, range_)
-
-    def match_overlap_range(self, target):
-        """
-        Return the list of ranges overlapping target
-        XXX ranges are considered to be open, no overlapping
-        occurs if the ranges are contiguous.
-        """
-        overlaps = [r for r in self if (r.start < target.end and
-                                        r.end > target.start)]
-        return RangeSet(overlaps)
-
-    def first_overlap_range(self, target):
-        """
-        Return the first range in the set that overlaps target
-        """
-        for r in self:
-            if (r.start < target.end and r.end > target.start):
-                return r
-        return None
-
-    def pop_overlap_range(self, target):
-        """
-        Return the index of the first range in the set 
-        that overlaps target
-        """
-        for i,r in enumerate(self):
-            if (r.start < target.end and r.end > target.start):
-                return self.pop(i)
-        return None
