@@ -32,6 +32,10 @@ from argparse import Namespace, ArgumentParser, RawTextHelpFormatter
 
 logger = logging.getLogger(__name__)
 
+__all__ = ("NestingNamespace", "TaskDriverArgumentParser", "Option",
+           "Argument", "NestedConfig", "ProxyConfig", "SubCommand",
+           "ConfigurableComponent", "TaskDriver")
+
 class NestingNamespace(Namespace):
 
     def __setattr__(self, name, value):

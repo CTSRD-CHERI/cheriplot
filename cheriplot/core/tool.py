@@ -34,8 +34,12 @@ import shlex
 import readline
 
 from argparse import RawTextHelpFormatter
-from cheriplot.core.driver import *
+from cheriplot.core.driver import (
+    TaskDriver, Option, Argument, TaskDriverType,
+    NestedConfig, ProxyConfig, TaskDriverArgumentParser)
 
+__all__ = ("BaseToolTaskDriver", "BaseTraceTaskDriver", "interactive_tool",
+           "run_driver_tool", "any_int_validator", "option_range_validator")
 
 class BaseToolTaskDriver(TaskDriver):
     """Base taskdriver that handles logging configuration and profiling"""
@@ -82,7 +86,6 @@ class BaseTraceTaskDriver(BaseToolTaskDriver):
     """
     trace = Argument(help="Path to cvtrace file")
     cache = Option(help="Enable caching of intermediary datasets")
-    outfile = Option(help="Output file")
 
 
 def run_driver_tool(task, argv=None):

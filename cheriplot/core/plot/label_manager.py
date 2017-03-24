@@ -124,6 +124,9 @@ class LabelManager:
         labels that overlap until there are none. For each
         pair of labels, the overlap is resolved based on the
         previous shift direction.
+
+        XXX may want to see this as a minimization problem..
+        min(f(X)) where X is the vector of tick coordinates        
         """
         bboxes = self._get_bboxes(renderer)
         overlapping = self._get_overlap(bboxes)
@@ -174,6 +177,8 @@ class LabelManager:
                 delta = (bbox_max(bb2) - bbox_min(bb1))
             else:
                 delta = (bbox_max(bb1) - bbox_min(bb2))
+            # make sure that we move the labels by at least some amount
+            delta = max(delta, (bbox_max(bb1) - bbox_min(bb1)) / 4)
             delta *= 1.1
             # init the new positions to the current position
             new_pos1 = bbox_min(bb1) + self._get_align_delta(label1, bb1)
@@ -227,8 +232,8 @@ class LabelManager:
                 new_pos1, _ = trans1.transform((new_pos1, 0))
                 new_pos2, _ = trans2.transform((new_pos2, 0))
             # check for constrains
-            # new_pos1 = self._check_constraint(idx1, new_pos1)
-            # new_pos2 = self._check_constraint(idx2, new_pos2)
+            new_pos1 = self._check_constraint(idx1, new_pos1)
+            new_pos2 = self._check_constraint(idx2, new_pos2)
             # update the position
             self.labels[idx1].set_position(update_pos(label1, new_pos1))
             self.labels[idx2].set_position(update_pos(label2, new_pos2))
