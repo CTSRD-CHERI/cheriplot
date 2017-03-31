@@ -232,8 +232,8 @@ class LabelManager:
                 new_pos1, _ = trans1.transform((new_pos1, 0))
                 new_pos2, _ = trans2.transform((new_pos2, 0))
             # check for constrains
-            new_pos1 = self._check_constraint(idx1, new_pos1)
-            new_pos2 = self._check_constraint(idx2, new_pos2)
+            # new_pos1 = self._check_constraint(idx1, new_pos1)
+            # new_pos2 = self._check_constraint(idx2, new_pos2)
             # update the position
             self.labels[idx1].set_position(update_pos(label1, new_pos1))
             self.labels[idx2].set_position(update_pos(label2, new_pos2))

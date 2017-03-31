@@ -93,6 +93,7 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         :param ranges: list of intervals in the form [(start, end), ...]
         :type ranges: list of 2-tuples
         """
+        logger.debug("Set collapse ranges (%d)", len(ranges))
         self._target_ranges = ranges
         self._precomputed_offsets = None
         self._intervals = None
@@ -110,6 +111,8 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         """
         merged = SortedListWithKey(intervals, key=lambda k: (k[0], k[1]))
         out = []
+        if len(merged) == 0:
+            return out
         curr = merged[0]
         idx = 1
         while idx < len(merged):
@@ -130,6 +133,7 @@ class AddressSpaceCollapseTransform(transforms.Transform):
                 end = max(curr[1], merged[end_idx - 1][1])
             curr = (curr[0], end)
         out.append(curr)
+        logger.debug("Merge collapse ranges (remaining %d)", len(out))
         return out
 
     def _gen_omit_scale(self, intervals, keep_idx, omit_idx):
@@ -186,8 +190,12 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         axis.
         The intervals generated cover the whole axis without holes.
         """
+        logger.debug("Generate collapse intervals")
         # merge ranges O(n*log(n)) and sort them
         merged_intervals = self._merge(self._target_ranges)
+        if len(merged_intervals) == 0:
+            self._intervals = np.zeros((0,3))
+            return
         # if the first interval starts from 0, the starting
         # interval is a KEEP interval
         is_start_keep = merged_intervals[0][0] == 0
@@ -213,7 +221,6 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         # fixup last omit interval end
         intervals[-1,1] = np.inf
         self._gen_omit_scale(intervals, keep, omit)
-        logger.debug("Addrspace intervals %s", intervals)
         self._intervals = intervals
 
     def _precompute_offsets(self):
@@ -223,6 +230,7 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         the closest interval start when transforming.
         """
         self._gen_intervals()
+        logger.debug("Precompute collapse range offsets")
         # reset previous offsets
         self._precomputed_offsets = SortedDict()
         x_collapsed = 0
@@ -241,7 +249,7 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         if self._precomputed_offsets == None:
             self._precompute_offsets()
 
-        if x_dataspace < 0:
+        if x_dataspace < 0 or len(self._precomputed_offsets) == 0:
             return x_dataspace
         base_idx = self._precomputed_offsets.bisect_left(x_dataspace)
         if (len(self._precomputed_offsets) == base_idx or
@@ -499,9 +507,6 @@ class AddressSpaceAxes(axes.Axes):
         kwargs["xscale"] = "scale_addrspace"
         super(AddressSpaceAxes, self).__init__(*args, **kwargs)
 
-        self.keep_ranges = RangeSet()
-        """RangeSet holding the parts of the address space that are displayed"""
-
     def _init_axis(self):
         """
         We need a custom XAxis because there is currently no way
@@ -543,10 +548,10 @@ class AddressSpaceAxes(axes.Axes):
         self._yaxis_transform = transforms.blended_transform_factory(
             self.transAxes, self.transData)
 
-    def get_omit_ranges(self):
-        return self.xaxis.get_ranges()
+    def get_addr_ranges(self):
+        return self.xaxis.get_transform().get_ranges()
 
-    def set_omit_ranges(self, ranges):
+    def set_addr_ranges(self, ranges):
         self.xaxis.get_transform().set_ranges(ranges)
 
     def set_status_message(self, message):

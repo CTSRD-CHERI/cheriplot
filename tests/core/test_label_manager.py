@@ -115,6 +115,7 @@ def test_resolve_vertical_overlap(mock_method, renderer, vlabel_manager, v_label
     vlabel_manager.update_label_position(renderer)
     assert_no_voverlap(v_label_set)
 
+@pytest.mark.skip(reason="Label manager constraints not supported yet")
 @mock.patch.object(Text, "get_window_extent", autospec=True)
 def test_resolve_h_overlap_constrain(mock_method, renderer, hlabel_manager, h_label_set):
     mock_method.side_effect = lambda self, renderer=None: (
