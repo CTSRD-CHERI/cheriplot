@@ -38,6 +38,7 @@ import logging
 import pycheritrace as pct
 
 from enum import Enum
+from functools import reduce
 from cached_property import cached_property
 from itertools import chain
 
@@ -48,6 +49,8 @@ from ctypes import py_object
 from cheriplot.utils import ProgressPrinter
 
 logger = logging.getLogger(__name__)
+
+__all__ = ("TraceParser", "CallbackTraceParser", "Operand", "Instruction")
 
 class TraceParser:
     """
@@ -410,8 +413,21 @@ class CallbackTraceParser(TraceParser):
                 else:
                     self._callbacks[instr_name] = [method]
 
-        logger.debug("Loaded callbacks for CallbackTraceParser %s",
-                     self._callbacks)
+        logger.debug("Loaded callbacks for CallbackTraceParser:\n%s",
+                     self._dbg_repr_callbacks())
+
+    def _dbg_repr_callbacks(self):
+        """
+        Return a debug representation of the callbacks registered
+        by the parser.
+
+        :return: str
+        """
+        pairs = map(
+            lambda c: "%s -> %s" % (
+                c[0],list(map(lambda m: m.__qualname__, c[1]))),
+            self._callbacks.items())
+        return reduce(lambda p,a: "%s\n%s" % (a, p), pairs, "")
 
     def _get_callbacks(self, inst):
         """
