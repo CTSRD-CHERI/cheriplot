@@ -37,8 +37,7 @@ from matplotlib.ticker import Formatter, Locator
 from operator import attrgetter, itemgetter
 from sortedcontainers import SortedDict, SortedListWithKey
 
-# from cheriplot.core.plot.addr_range import Range
-from cheriplot.utils import ProgressPrinter
+from cheriplot.core.plot.label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +69,7 @@ class AddressSpaceCollapseTransform(transforms.Transform):
 
         self._precomputed_offsets = None
         """
-        SortedDict that caches the transformed X corresponding to the 
+        SortedDict that caches the transformed X corresponding to the
         start of each interval
         """
 
@@ -440,51 +439,9 @@ class AddressSpaceXAxis(axis.XAxis):
 
     def _update_ticks(self, renderer):
         ticks = super(AddressSpaceXAxis, self)._update_ticks(renderer)
-
-        # get list of bounding boxes for major and minor ticks (with labels)
-        bboxes, bboxes2 = self._get_tick_bboxes(ticks, renderer)
-
-        # iterate over each major tick and move it to avoid overlapping with
-        # other ticklabels
-        def _shift_ticklabel(ticks, idx, new_x):
-            prev_idx = max(idx - 1, 0)
-            next_idx = min(idx + 1, len(ticks) - 1)
-            logger.debug("START shift_ticklabel %d %d %d", prev_idx, idx, next_idx)
-            (prev_bbox, bbox, next_bbox), _ = self._get_tick_bboxes(
-                (ticks[prev_idx], ticks[idx], ticks[next_idx]), renderer)
-            # direction > 0 when moving to the right
-            direction = new_x - bbox.x0
-            logger.debug("shift direction: %d", direction >= 0)
-
-            # shift the tick
-            _xxx, y = ticks[idx].label1.get_position()
-            inv = ticks[idx].label1.get_transform().inverted()
-            new_loc, _ = inv.transform((new_x, 0))
-            ticks[idx].label1.set_position((new_loc, y))
-            logger.debug("shift tick %d: %s -> %s", idx, _xxx, new_loc)
-
-            # get updated bbox
-            (bbox,), _ = self._get_tick_bboxes([ticks[idx]], renderer)
-            if idx > 0 and bbox.overlaps(prev_bbox) and direction < 0:
-                new_x0 = prev_bbox.x0 - (prev_bbox.x1 - bbox.x0) / 2
-                _shift_ticklabel(ticks, prev_idx, new_x0)
-            if idx < len(ticks) and bbox.overlaps(next_bbox) and direction > 0:
-                new_x0 = next_bbox.x0 + (bbox.x1 - next_bbox.x0) / 2
-                logger.debug("overlap next")
-                _shift_ticklabel(ticks, next_idx, new_x0)
-            logger.debug("END shift_ticklabel %d %d %d", prev_idx, idx, next_idx)
-
-        for idx in range(0, len(ticks) - 1):
-            # for idx in range(0, 4):
-            logger.debug("Ticks %d, %d", idx, idx + 1)
-            (bbox, next_bbox), _ = self._get_tick_bboxes(
-                [ticks[idx], ticks[idx + 1]], renderer)
-            if bbox.overlaps(next_bbox):
-                delta = (bbox.x1 - next_bbox.x0) / 2
-                logger.debug("Bbox overlap %d: %s -> %s", idx, bbox.x0, bbox.x0 - delta)
-                _shift_ticklabel(ticks, idx, bbox.x0 - delta)
-                logger.debug("Bbox overlap %d: %s -> %s", idx + 1, next_bbox.x0, next_bbox.x0 + delta)
-                _shift_ticklabel(ticks, idx + 1, next_bbox.x0 + delta)
+        mgr = LabelManager(direction="h")
+        mgr.labels = [t.label1 for t in ticks]
+        mgr.update_label_position(renderer)
         return ticks
 
     def _get_pixel_distance_along_axis(self, where, perturb):

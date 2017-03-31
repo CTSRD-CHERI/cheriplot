@@ -194,8 +194,8 @@ class BasePlotBuilder:
             # grab the legend from the builders
             self._legend_handles.extend(b.get_legend())
             # grab the x and y ticks
-            self._xticks.union(b.get_xticks())
-            self._yticks.union(b.get_yticks())
+            self._xticks = self._xticks.union(b.get_xticks())
+            self._yticks = self._yticks.union(b.get_yticks())
         self._view_box = Bbox.union(bboxes)
         logger.debug("Plot viewport %s", self._view_box)
         logger.debug("Num ticks: x:%d y:%d", len(self._xticks),

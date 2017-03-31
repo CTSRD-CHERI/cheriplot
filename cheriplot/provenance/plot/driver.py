@@ -28,6 +28,7 @@
 import logging
 
 from cheriplot.core import Option, Argument, NestedConfig, BaseTraceTaskDriver
+from cheriplot.vmmap import VMMapFileParser
 from cheriplot.provenance.plot import AddressMapPlot
 from cheriplot.provenance.parser import PointerProvenanceParser
 from cheriplot.provenance.transforms import *
@@ -42,22 +43,25 @@ class ProvenancePlotDriver(BaseTraceTaskDriver):
     outfile = Option(help="Output file", default=None)
     plot = Argument(help="The plot to generate",
                     choices=("addrmap",))
-    # vmmap = NestedConfig()
+    vmmap = NestedConfig(VMMapFileParser)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._parser = PointerProvenanceParser(cache=self.config.cache,
                                                trace_path=self.config.trace)
+        self._vmmap_parser = VMMapFileParser(config=self.config.vmmap)
 
     def update_config(self, config):
         super().update_config(config)
-        self._parser.update_config(config.parser)
+        # self._parser.update_config(config.parser)
+        self._vmmap_parser.update_config(config.vmmap)
 
     def run(self):
         self._parser.parse()
+        self._vmmap_parser.parse()
         # get the parsed provenance graph model
         pgm = self._parser.get_model()
-        vmmap = None
+        vmmap = self._vmmap_parser.get_model()
 
         # do the filtering of the graph here
         bfs_transform(pgm, [MaskNullAndKernelVertices(pgm)])

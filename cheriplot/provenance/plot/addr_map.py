@@ -35,9 +35,10 @@ from cheriplot.utils import ProgressPrinter
 from sortedcontainers import SortedDict
 from collections import defaultdict
 
-from matplotlib.collections import LineCollection
-from matplotlib.transforms import Bbox
-from matplotlib.patches import Patch
+from matplotlib.collections import LineCollection, PatchCollection
+from matplotlib.transforms import Bbox, blended_transform_factory
+from matplotlib.patches import Patch, Rectangle
+from matplotlib.text import Text
 from matplotlib.colors import colorConverter
 
 from cheriplot.core import (
@@ -228,6 +229,84 @@ class ColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
         ax.set_status_message(pick_target)
 
 
+class VMMapPatchBuilder(ASAxesPatchBuilder):
+    """
+    Build the patches that highlight the vmmap boundaries in and
+    address-space plot
+    """
+
+    def __init__(self, axes):
+        super().__init__()
+
+        self.patches = []
+        """List of rectangles"""
+
+        self.patch_colors = []
+        """List of colors for the patches"""
+
+        self.annotations = []
+        """Text labels"""
+
+        self.label_y = 0.5
+        """ Y position of the label in Axes coordinates (in [0,1])"""
+
+        self._colors = {
+            "": colorConverter.to_rgb("#bcbcbc"),
+            "r": colorConverter.to_rgb("k"),
+            "w": colorConverter.to_rgb("y"),
+            "x": colorConverter.to_rgb("m"),
+            "rw": colorConverter.to_rgb("c"),
+            "rx": colorConverter.to_rgb("b"),
+            "wx": colorConverter.to_rgb("g"),
+            "rwx": colorConverter.to_rgb("r")
+        }
+        """Map section permission to line colors"""
+
+        self.transform = blended_transform_factory(axes.transData,
+                                                   axes.transAxes)
+        """Transform used by the patches"""
+
+        self._ticks = set()
+        """X axis ticks"""
+
+    def inspect(self, vmentry):
+        # the patches use axes transform on the y coordinate to
+        # set the height position of the label independently of
+        # the Y scale
+        rect = Rectangle((vmentry.start, 0.01),
+                         vmentry.end - vmentry.start, 0.98)
+        self.patches.append(rect)
+        self.patch_colors.append(self._colors[vmentry.perms])
+        self._ticks.add(vmentry.start)
+        self._ticks.add(vmentry.end)
+
+        # the label position is centered based on the axes transform
+        label_position = ((vmentry.start + vmentry.end) / 2, self.label_y)
+        vme_path = str(vmentry.path).split("/")[-1] if str(vmentry.path) else ""
+        if not vme_path and vmentry.grows_down:
+            vme_path = "stack"
+        vme_label = "%s %s" % (vmentry.perms, vme_path)
+        label = Text(text=vme_label, rotation="vertical",
+                     position=label_position,
+                     horizontalalignment="center",
+                     verticalalignment="center",
+                     transform=self.transform)
+        self.annotations.append(label)
+        self._add_range(vmentry.start, vmentry.end)
+
+    def get_patches(self, axes):
+        super().get_patches(axes)
+        coll = PatchCollection(self.patches, alpha=0.1,
+                               facecolors=self.patch_colors,
+                               transform=self.transform)
+        axes.add_collection(coll)
+        for a in self.annotations:
+            axes.add_artist(a)
+
+    def get_xticks(self):
+        return self._ticks
+
+
 class AddressMapPlot(ASAxesPlotBuilderNoTitle):
     """
     Base class for plots with the address-map view.
@@ -242,7 +321,7 @@ class AddressMapPlot(ASAxesPlotBuilderNoTitle):
         self.register_patch_builder(provenance_graph.vertices(),
                                     ColorCodePatchBuilder(figure=self.fig,
                                                           pgm=provenance_graph))
-        # self.register_patch_builder(vmmap, VMMapPatchBuilder())
+        self.register_patch_builder(vmmap, VMMapPatchBuilder(self.ax))
 
     def make_axes(self):
         """
@@ -257,135 +336,6 @@ class AddressMapPlot(ASAxesPlotBuilderNoTitle):
         """Create the address-map plot."""
         super().make_plot()
         self.ax.invert_yaxis()
-
-# class AddressMapPlot(PointerProvenancePlot):
-#     """
-#     Base class for plots with the address-map view.
-#     """
-
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-
-#         self.patch_builder = None
-#         """Helper object that builds the plot components.
-#         This is meant to be specified by subclasses
-#         """
-
-#         self.range_builder = AddressMapOmitBuilder()
-#         """
-#         Helper objects that generates the list of address
-#         ranges we care about.
-#         """
-
-#         self.vmmap_patch_builder = VMMapPatchBuilder(self.ax)
-#         """Helper object that builds patches to display VM map regions."""
-
-#         self.vmmap = None
-#         """VMMap object representing the process memory map."""
-
-#         self.viewport_padding = 0.02
-#         """Padding added to the bounding box of the viewport (% units)."""
-
-#     def init_axes(self):
-#         """
-#         Build the figure and axes for the plot
-#         :return: tuple containing the figure and the axes
-#         """
-#         fig = plt.figure(figsize=(15,10))
-#         ax = fig.add_axes([0.05, 0.15, 0.9, 0.80,],
-#                           projection="custom_addrspace")
-#         return (fig, ax)
-
-#     def set_vmmap(self, mapfile):
-#         """
-#         Set the vmmap CSV file containing the VM mapping for the process
-#         that generated the trace, as obtained from procstat or libprocstat
-#         """
-#         self.vmmap = VMMap(mapfile)
-
-#     def _prepare_patches(self):
-#         """
-#         Prepare the patches and address ranges in the patch_builder
-#         and range_builder.
-#         """
-
-#         dataset_progress = ProgressPrinter(self.dataset.num_vertices(),
-#                                            desc="Adding nodes")
-#         for item in self.dataset.vertices():
-#             data = self.dataset.vp.data[item]
-#             self.patch_builder.inspect(data)
-#             self.range_builder.inspect(data)
-#             dataset_progress.advance()
-#         dataset_progress.finish()
-
-#         if self.vmmap:
-#             logger.debug("Generate mmap regions")
-#             for vme in self.vmmap:
-#                 self.vmmap_patch_builder.inspect(vme)
-#                 self.range_builder.inspect_range(Range(vme.start, vme.end))
-
-#     def plot(self):
-#         """Create the address-map plot."""
-
-#         self._prepare_patches()
-
-#         # add some padding to the viewport
-#         view_box = self.patch_builder.get_bbox()
-#         xmin = view_box.xmin * (1 - self.viewport_padding)
-#         xmax = view_box.xmax * (1 + self.viewport_padding)
-#         ymin = view_box.ymin * (1 - self.viewport_padding)
-#         ymax = view_box.ymax * (1 + self.viewport_padding)
-
-#         logger.debug("Nodes %d, ranges %d", self.dataset.num_vertices(),
-#                      len(self.range_builder.ranges))
-
-#         # first set the omit ranges because adding collections
-#         # uses the transform
-#         self.ax.set_omit_ranges(self.range_builder.get_omit_ranges())
-#         # add the patches
-#         for collection in self.patch_builder.get_patches():
-#             self.ax.add_collection(collection)
-
-#         if self.vmmap:
-#             for collection in self.vmmap_patch_builder.get_patches():
-#                 self.ax.add_collection(collection)
-#             for label in self.vmmap_patch_builder.get_annotations():
-#                 self.ax.add_artist(label)
-
-#         self.ax.set_xlim(xmin, xmax)
-#         self.ax.set_ylim(ymin, ymax)
-#         # manually set xticks based on the vmmap if we can
-#         if self.vmmap:
-#             start_ticks = [vme.start for vme in self.vmmap]
-#             end_ticks = [vme.end for vme in self.vmmap]
-#             ticks = sorted(set(start_ticks + end_ticks))
-#             # current_ticks = ax.get_ticks()
-#             logger.debug("address map ticks %s", ["0x%x" % t for t in ticks])
-#             self.ax.set_xticks(ticks)
-
-#         self.ax.invert_yaxis()
-#         self.ax.set_xlabel("Virtual Address")
-#         self.ax.set_ylabel("Time (millions of cycles)")
-
-#         # build the legend and place it above the plot axes # loc = "best"
-#         self.ax.legend(*self.patch_builder.get_legend(),
-#                        bbox_to_anchor=(0., 1.02, 1., 0.102), loc=3,
-#                        ncol=9, mode="expand", borderaxespad=0.)
-
-#         logger.debug("Plot build completed")
-#         plt.savefig(self._get_plot_file())
-#         logger.debug("Plot written to file")
-
-
-# class AddressMapCapCreatePlot(AddressMapPlot):
-#     """
-#     Plot the provenance tree showing the time of allocation vs
-#     base and bound of each node.
-#     """
-
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         self.patch_builder = ColorCodePatchBuilder(self.fig)
 
 
 # class SyscallPatchBuilder(PatchBuilder):
