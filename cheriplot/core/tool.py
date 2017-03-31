@@ -43,8 +43,8 @@ __all__ = ("BaseToolTaskDriver", "BaseTraceTaskDriver", "interactive_tool",
 
 class BaseToolTaskDriver(TaskDriver):
     """Base taskdriver that handles logging configuration and profiling"""
-    verbose = Option(help="Show debug output")
-    profile = Option(help="Enable profiling")
+    verbose = Option(action="store_true", help="Show debug output")
+    profile = Option(action="store_true", help="Enable profiling")
     logfile = Option(help="Log output file")
 
     def __init__(self, **kwargs):
@@ -85,7 +85,8 @@ class BaseTraceTaskDriver(BaseToolTaskDriver):
     trace file, output file and caching policy
     """
     trace = Argument(help="Path to cvtrace file")
-    cache = Option(help="Enable caching of intermediary datasets")
+    cache = Option(action="store_true",
+                   help="Enable caching of intermediary datasets")
 
 
 def run_driver_tool(task, argv=None):
