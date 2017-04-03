@@ -28,8 +28,9 @@
 import logging
 import sys
 
-logger = logging.getLogger(__name__)
+from datetime import datetime
 
+logger = logging.getLogger(__name__)
 
 class ProgressPrinter:
     """
@@ -79,3 +80,26 @@ class ProgressPrinter:
         if logger.getEffectiveLevel() < self.level:
             return
         print("\n")
+
+
+class ProgressTimer:
+    """
+    Context manager that wraps a statement and measures the run time.
+    The message can be customised to show different information along
+    with the timing.
+    """
+
+    def __init__(self, msg="", logger_inst=None):
+        self.msg = msg
+        self.logger = logger_inst or logger
+        self.start = None
+
+    def __enter__(self):
+        self.start = datetime.now()
+        self.logger.info("%s started at %s", self.msg,
+                         self.start.isoformat(timespec="seconds"))
+
+    def __exit__(self, type, value, traceback):
+        end = datetime.now()
+        self.logger.info("%s done at %s (time %s)", self.msg,
+                         end.isoformat(timespec="seconds"), end - self.start)

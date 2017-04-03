@@ -30,14 +30,16 @@ import pandas as pd
 import logging
 import os
 
+from scipy import stats
 from matplotlib import pyplot as plt
-from matplotlib import text
-from matplotlib import patches
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 from matplotlib.transforms import Bbox
 
-from cheriplot.utils import ProgressPrinter
-from cheriplot.core.plot import (
-    ExternalLegendTopPlotBuilder, PatchBuilder, LabelManager)
+from cheriplot.core import (
+    ProgressTimer, ProgressPrinter, ExternalLegendTopPlotBuilder,
+    BasePlotBuilder, PatchBuilder, LabelManager, TaskDriver,
+    Option, Argument)
 
 from cheriplot.provenance.plot import VMMapPlotDriver
 
@@ -209,7 +211,7 @@ class HistogramPatchBuilder(PatchBuilder):
         for idx,bin_limit in enumerate(self.hist.norm_histogram.columns):
             label = "2^%d-2^%d" % (bin_start, bin_limit)
             bin_start = bin_limit
-            handle = patches.Patch(color=self.colormap[idx], label=label)
+            handle = Patch(color=self.colormap[idx], label=label)
             legend_handles.append(handle)
         return legend_handles
 
@@ -299,3 +301,102 @@ class PtrSizeBoundDriver(PtrSizePlotDriver):
     x_label = ""
     y_label = ""
     histogram_builder_class = CapSizeBoundHistogram
+
+
+class PtrBoundCdf:
+    """
+    Model of the CDF that the PatchBuilder can draw
+    """
+
+    def __init__(self, provenance_graph, name="???"):
+        self.graph = provenance_graph
+        """The provenance graph."""
+
+        self.size_cdf = None
+        """2xn numpy array containing [sizes, frequency]"""
+
+        self.name = name
+        """The CDF name"""
+
+        self._build_cdf()
+
+    def _build_cdf(self):
+        ptr_sizes = []
+        with ProgressTimer("Build CDF"):
+            for v in self.graph.vertices():
+                vdata = self.graph.vp.data[v]
+                ptr_sizes.append(vdata.cap.length)
+            size_freq = stats.itemfreq(ptr_sizes)
+            logger.debug(size_freq)
+            size_pdf = size_freq[:,1] / len(ptr_sizes)
+            y = np.concatenate(([0, 0], np.cumsum(size_pdf)))
+            x = np.concatenate(([0, size_freq[0,0]], size_freq[:,0]))
+            self.size_cdf = np.column_stack((x,y))
+
+
+class CdfPatchBuilder(PatchBuilder):
+    """
+    Plot a Cumulative Distribution Function of the number of
+    instantiations of capability pointer vs. the capability
+    lengths.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.cdf = []
+        """Set of cdf to draw"""
+
+        self.colormap = None
+        """Colors to use for the lines"""
+
+        self._bbox = Bbox.from_extents(1, 0, 0, 1)
+        """Bbox of the plot"""
+
+    def inspect(self, cdf):
+        self.cdf.append(cdf)
+        self._bbox.x1 = max(self._bbox.xmax, max(cdf.size_cdf[:,0]))
+
+    def get_patches(self, axes):
+        self.colormap = [plt.cm.Dark2(i) for i in
+                         np.linspace(0, 0.9, len(self.cdf))]
+        for cdf, color in zip(self.cdf, self.colormap):
+            axes.plot(cdf.size_cdf[:,0], cdf.size_cdf[:,1], color=color)
+
+    def get_legend(self):
+        handles = []
+        for cdf, color in zip(self.cdf, self.colormap):
+            handle = Line2D([], [], color=color,
+                            label=cdf.name)
+            handles.append(handle)
+        return handles
+
+    def get_bbox(self):
+        return self._bbox
+
+
+class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
+
+    title = "CDF of the size of capabilities created"
+    x_label = "Size"
+    y_label = "% of the total number of capabilities"
+
+    outfile = Option(help="Output file", default=None)
+
+    def _get_legend_kwargs(self):
+        kw = super()._get_legend_kwargs()
+        kw["loc"] = "lower right"
+        return kw
+
+    def __init__(self, provenance_graph, **kwargs):
+        super().__init__(**kwargs)
+        self.graph = provenance_graph
+
+    def make_plot(self):
+        super().make_plot()
+        self.ax.set_xscale("log", basex=2)
+
+    def run(self):
+        datasets = [PtrBoundCdf(self.graph)]
+        self.register_patch_builder(datasets, CdfPatchBuilder())
+        self.process(out_file=self.config.outfile)

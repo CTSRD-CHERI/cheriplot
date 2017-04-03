@@ -42,15 +42,12 @@ from functools import reduce
 from cached_property import cached_property
 from itertools import chain
 
-# experimental
-from multiprocessing import RawValue, Process
-from ctypes import py_object
-
-from cheriplot.utils import ProgressPrinter
+from cheriplot.core.utils import ProgressPrinter
 
 logger = logging.getLogger(__name__)
 
-__all__ = ("TraceParser", "CallbackTraceParser", "Operand", "Instruction")
+__all__ = ("TraceParser", "CallbackTraceParser", "Operand", "Instruction",
+           "ThreadedTraceParser")
 
 class TraceParser:
     """

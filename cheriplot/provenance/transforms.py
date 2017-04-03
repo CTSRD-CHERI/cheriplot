@@ -30,7 +30,6 @@ import numpy as np
 
 from graph_tool.all import BFSVisitor, bfs_search, DFSVisitor, dfs_search
 
-from cheriplot.utils import ProgressPrinter
 from cheriplot.provenance.model import CheriNodeOrigin
 
 logger = logging.getLogger(__name__)

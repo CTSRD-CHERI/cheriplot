@@ -37,6 +37,8 @@ from sortedcontainers import SortedDict
 from matplotlib import pyplot as plt
 from matplotlib.transforms import Bbox
 
+from cheriplot.core.utils import ProgressTimer
+
 logger = logging.getLogger(__name__)
 
 __all__ = ("BasePlotBuilder", "ASAxesPlotBuilder", "ASAxesPlotBuilderNoTitle",
@@ -195,15 +197,11 @@ class BasePlotBuilder:
         """
         logger.debug("Make patches:\n%s", self._dbg_repr_patch_builders())
         for idx, (dataset, builders) in enumerate(self._patch_builders):
-            start = datetime.now()
-            logger.info("Make patches for dataset [%d/%d] %s",
-                        idx + 1, len(self._patch_builders), dataset)
-            for item in dataset:
-                for b in builders:
-                    b.inspect(item)
-            logger.info("Dataset [%d/%d] done in %s",
-                        idx + 1, len(self._patch_builders),
-                        datetime.now() - start)
+            with ProgressTimer("Make patches for dataset [%d/%d]" % (
+                    idx + 1, len(self._patch_builders)), logger):
+                for item in dataset:
+                    for b in builders:
+                        b.inspect(item)
         builders = chain(*map(itemgetter(1), self._patch_builders))
         bboxes = []
         for b in builders:
@@ -271,20 +269,15 @@ class BasePlotBuilder:
         :param show: show the plot in an interactive window
         :type show: bool
         """
-        start = datetime.now()
-        logger.info("Plot builder processing started %s",
-                    start.isoformat(timespec="seconds"))
-        self.make_patches()
-        self.make_plot()
-        if out_file:
-            self.fig.savefig(out_file, **self._get_savefig_kwargs())
-        if show:
-            # the fig.show() method does not enter the backend main loop
-            # self.fig.show()
-            plt.show()
-        end = datetime.now()
-        logger.info("Plot builder processing finished %s (%s)",
-                    end.isoformat(timespec="seconds"), end - start)
+        with ProgressTimer("Plot builder processing", logger):
+            self.make_patches()
+            self.make_plot()
+            if out_file:
+                self.fig.savefig(out_file, **self._get_savefig_kwargs())
+            if show:
+                # the fig.show() method does not enter the backend main loop
+                # self.fig.show()
+                plt.show()
 
     def register_patch_builder(self, dataset, builder):
         """
