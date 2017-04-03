@@ -139,7 +139,9 @@ def test_interactive_tool_wrap_subcommand(mock_input):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             called["interactive_init"] = True
-            assert len(self.config.__dict__) == 3
+            print(self.config.__dict__)
+            assert len(self.config.__dict__) == 4
+            assert self.config.subcommand_class == TaskA
             assert self.config.subcmd.a_foo == 10
             assert self.config.subcmd.a_bar == "bar_start"
             with pytest.raises(AttributeError):
@@ -148,7 +150,8 @@ def test_interactive_tool_wrap_subcommand(mock_input):
 
         def run(self):
             called["interactive_run"] = True
-            assert len(self.config.__dict__) == 3
+            assert len(self.config.__dict__) == 4
+            assert self.config.subcommand_class == TaskA
             assert self.config.subcmd.a_foo == 100
             assert self.config.subcmd.a_bar == "bar_changed"
             with pytest.raises(AttributeError):

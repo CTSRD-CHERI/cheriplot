@@ -281,11 +281,17 @@ class SubCommand(DriverConfigEntry):
         setattr(ns, self.name, nested_ns)
         subparser = parser.add_subparsers()
         subcommand = subparser.add_parser(self.name, *self.args, **self.kwargs)
+        # build a default value holding the subcommand class so that we do not
+        # have to search for the subcommand that has been provided
+        subcommand_class_arg = "%ssubcommand_class" % prefix
+        def wrap_subcommand(*args, **kwargs):
+            kwargs["config"] = getattr(kwargs["config"], self.name,
+                                       kwargs.get("config", None))
+            return self.nested(*args, **kwargs)
+        subcommand.set_defaults(**{subcommand_class_arg: wrap_subcommand})
         # make sure subparser namespace is created even with subcommands with
         # no arguments/options
         prefix += "%s." % self.name
-        subcommand_parsed_arg = "%s_subcommand_%s" % (prefix, self.name)
-        subcommand.set_defaults(**{subcommand_parsed_arg: True})
         model = self.nested.get_config_model()
         return model.make_config(subcommand, prefix=prefix, ns=nested_ns)
 

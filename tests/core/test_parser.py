@@ -12,14 +12,23 @@ logging.basicConfig(level=logging.DEBUG)
 
 # globally referenced mocks used to mock parser methods
 mock_scan_all = mock.Mock(name="scan_all_callback")
+mock_scan_all.__qualname__ = "mock_callback"
 mock_scan_cap = mock.Mock(name="scan_cap_callback")
+mock_scan_cap.__qualname__ = "mock_callback"
 mock_scan_cap_store = mock.Mock(name="scan_cap_store_callback")
+mock_scan_cap_store.__qualname__ = "mock_callback"
 mock_scan_cap_load = mock.Mock(name="scan_cap_load_callback")
+mock_scan_cap_load.__qualname__ = "mock_callback"
 mock_scan_cap_flow = mock.Mock(name="scan_cap_bound_callback")
+mock_scan_cap_flow.__qualname__ = "mock_callback"
 mock_scan_cap_bound = mock.Mock(name="scan_cap_flow_callback")
+mock_scan_cap_bound.__qualname__ = "mock_callback"
 mock_scan_daddiu = mock.Mock(name="scan_daddiu_callback")
+mock_scan_daddiu.__qualname__ = "mock_callback"
 mock_scan_csc = mock.Mock(name="scan_csc_callback")
+mock_scan_csc.__qualname__ = "mock_callback"
 mock_scan_clc = mock.Mock(name="scan_clc_callback")
+mock_scan_clc.__qualname__ = "mock_callback"
 
 # list of opcodes used in tests
 opcode_list = ["daddiu", "li", "csetbounds", "csc", "csd",
