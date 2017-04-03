@@ -91,6 +91,15 @@ class PatchBuilder:
         """
         return []
 
+    def get_xlabels(self):
+        """
+        Generate the X axis labels.
+
+        :return: list of string labels on the X axis or None if
+        the default labels are to be used
+        """
+        return None
+
     def get_yticks(self):
         """
         Generate the Y axis ticks.
@@ -98,6 +107,15 @@ class PatchBuilder:
         :return: list of tick Y coordinates in data space
         """
         return []
+
+    def get_ylabels(self):
+        """
+        Generate the Y axis labels.
+
+        :return: list of string labels on the Y axis or None if
+        the default labels are to be used
+        """
+        return None
 
     def __str__(self):
         return self.__class__.__name__

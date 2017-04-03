@@ -29,16 +29,18 @@ import logging
 import numpy as np
 
 from datetime import datetime
-from itertools import chain
+from itertools import chain, repeat
 from functools import reduce
 from operator import methodcaller, itemgetter
+from sortedcontainers import SortedDict
 
 from matplotlib import pyplot as plt
 from matplotlib.transforms import Bbox
 
 logger = logging.getLogger(__name__)
 
-__all__ = ("BasePlotBuilder", "ASAxesPlotBuilder", "ASAxesPlotBuilderNoTitle")
+__all__ = ("BasePlotBuilder", "ASAxesPlotBuilder", "ASAxesPlotBuilderNoTitle",
+           "ExternalLegendTopPlotBuilder")
 
 class BasePlotBuilder:
 
@@ -81,10 +83,10 @@ class BasePlotBuilder:
         self._legend_handles = []
         """Legend handles created by the patch builders."""
 
-        self._xticks = set()
+        self._xticks = SortedDict()
         """X axis ticks returned by patch builders"""
 
-        self._yticks = set()
+        self._yticks = SortedDict()
         """Y axis ticks returned by patch builders"""
 
         self._view_box = Bbox.from_bounds(0, 0, 0, 0)
@@ -116,7 +118,7 @@ class BasePlotBuilder:
 
         :return: list (4 floats, [left, bottom, width, height])
         """
-        return [0.1, 0.15, 0.9, 0.8]
+        return [0.05, 0.15, 0.9, 0.8]
 
     def _get_legend_kwargs(self):
         """
@@ -138,9 +140,27 @@ class BasePlotBuilder:
     def _get_title_kwargs(self):
         """
         Return the kwargs for the axes.set_title call. This
-        can be used to control the positioning of the title.
+        can be used to control the text properties of the title.
         
         :return: kwargs dict for :meth:`Axes.set_title`
+        """
+        return {}
+
+    def _get_xlabels_kwargs(self):
+        """
+        Return the kwargs for the axes.set_xticklabels. This
+        can be used to control the text properties of the labels.
+
+        :return: kwargs dict for :meth:`Axes.set_xticklabels`
+        """
+        return {}
+
+    def _get_ylabels_kwargs(self):
+        """
+        Return the kwargs for the axes.set_yticklabels. This
+        can be used to control the text properties of the labels.
+
+        :return: kwargs dict for :meth:`Axes.set_yticklabels`
         """
         return {}
 
@@ -194,8 +214,18 @@ class BasePlotBuilder:
             # grab the legend from the builders
             self._legend_handles.extend(b.get_legend())
             # grab the x and y ticks
-            self._xticks = self._xticks.union(b.get_xticks())
-            self._yticks = self._yticks.union(b.get_yticks())
+            xticks = b.get_xticks()
+            xlabels = b.get_xlabels()
+            yticks = b.get_yticks()
+            ylabels = b.get_ylabels()
+            if xlabels is None:
+                xlabels = repeat(None)
+            if ylabels is None:
+                ylabels = repeat(None)
+            self._xticks.update(zip(xticks, xlabels))
+            self._yticks.update(zip(yticks, ylabels))
+            # self._xticks = self._xticks.union(zip(xticks, xlabels))
+            # self._yticks = self._yticks.union(zip(yticks, ylabels))
         self._view_box = Bbox.union(bboxes)
         logger.debug("Plot viewport %s", self._view_box)
         logger.debug("Num ticks: x:%d y:%d", len(self._xticks),
@@ -222,9 +252,15 @@ class BasePlotBuilder:
         self.ax.set_ylim(ymin, ymax)
         self.ax.legend(**self._get_legend_kwargs())
         if self._xticks:
-            self.ax.set_xticks(sorted(self._xticks))
+            self.ax.set_xticks(self._xticks.keys())
+            self.ax.set_xticklabels(self._xticks.values(),
+                                    **self._get_xlabels_kwargs())
+            # self.ax.set_xticks(sorted(self._xticks))
         if self._yticks:
-            self.ax.set_yticks(sorted(self._yticks))
+            self.ax.set_yticks(self._yticks.keys())
+            self.ax.set_yticklabels(self._yticks.values(),
+                                    **self._get_ylabels_kwargs())
+            # self.ax.set_yticks(sorted(self._yticks))
 
     def process(self, out_file=None, show=True):
         """
@@ -268,17 +304,10 @@ class BasePlotBuilder:
            self._patch_builders.append((dataset, [builder]))
 
 
-class ASAxesPlotBuilder(BasePlotBuilder):
+class ExternalLegendTopPlotBuilder(BasePlotBuilder):
     """
-    Base class the creates a plot with the AddressSpaceAxes projection
+    Plot builder that places the legend on top of the axes
     """
-
-    x_label = "Virtual Address"
-
-    def _get_axes_kwargs(self):
-        kw = super()._get_axes_kwargs()
-        kw["projection"] = "custom_addrspace"
-        return kw
 
     def _get_legend_kwargs(self):
         """
@@ -304,6 +333,19 @@ class ASAxesPlotBuilder(BasePlotBuilder):
         kw.update({
             "y": 1.05
         })
+        return kw
+
+
+class ASAxesPlotBuilder(ExternalLegendTopPlotBuilder):
+    """
+    Base class the creates a plot with the AddressSpaceAxes projection
+    """
+
+    x_label = "Virtual Address"
+
+    def _get_axes_kwargs(self):
+        kw = super()._get_axes_kwargs()
+        kw["projection"] = "custom_addrspace"
         return kw
 
 
