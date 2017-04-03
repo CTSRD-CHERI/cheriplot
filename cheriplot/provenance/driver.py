@@ -27,19 +27,37 @@
 
 import logging
 
-from cheriplot.core import Option, NestedConfig, TaskDriver
-from cheriplot.vmmap import VMMapFileParser
+from cheriplot.core import SubCommand, BaseTraceTaskDriver
+from cheriplot.provenance.plot import AddressMapPlotDriver, PtrSizeDerefDriver, PtrSizeBoundDriver
+from cheriplot.provenance.parser import PointerProvenanceParser
+from cheriplot.provenance.transforms import *
 
 logger = logging.getLogger(__name__)
 
-class VMMapPlotDriver(TaskDriver):
+class ProvenancePlotDriver(BaseTraceTaskDriver):
     """
-    Base driver for plots that require a vmmap file as an input
+    Main task driver that registers all the other plot driver tools and gives them
+    the provenance graph as input.
     """
-    outfile = Option(help="Output file", default=None)
-    vmmap = NestedConfig(VMMapFileParser)
+    addrmap = SubCommand(AddressMapPlotDriver)
+    # ptrsize_cdf = SubCommand()
+    ptrsize_bound = SubCommand(PtrSizeBoundDriver)
+    ptrsize_deref = SubCommand(PtrSizeDerefDriver)
 
-    def __init__(self, provenance_graph, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._provenance_graph = provenance_graph
-        self._vmmap_parser = VMMapFileParser(config=self.config.vmmap)
+        self._parser = PointerProvenanceParser(cache=self.config.cache,
+                                               trace_path=self.config.trace)
+
+    def run(self):
+        self._parser.parse()
+        # get the parsed provenance graph model
+        pgm = self._parser.get_model()
+
+        # do the filtering of the graph here
+        bfs_transform(pgm, [MaskNullAndKernelVertices(pgm)])
+        bfs_transform(pgm, [MergeCFromPtr(pgm)])
+        bfs_transform(pgm, [MaskCFromPtr(pgm)])
+
+        sub = self.config.subcommand_class(pgm, config=self.config)
+        sub.run()

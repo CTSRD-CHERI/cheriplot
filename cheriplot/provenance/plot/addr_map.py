@@ -28,10 +28,6 @@
 import numpy as np
 import logging
 
-from cheriplot.utils import ProgressPrinter
-# from cheriplot.core.vmmap import VMMap
-# from cheriplot.plot.provenance.vmmap import VMMapPatchBuilder
-
 from sortedcontainers import SortedDict
 from collections import defaultdict
 
@@ -44,6 +40,7 @@ from matplotlib.colors import colorConverter
 from cheriplot.core import (
     ASAxesPlotBuilderNoTitle, ASAxesPatchBuilder, PickablePatchBuilder)
 from cheriplot.provenance.model import CheriCapPerm, CheriNodeOrigin
+from cheriplot.provenance.plot import VMMapPlotDriver
 
 logger = logging.getLogger(__name__)
 
@@ -337,6 +334,14 @@ class AddressMapPlot(ASAxesPlotBuilderNoTitle):
         super().make_plot()
         self.ax.invert_yaxis()
 
+
+class AddressMapPlotDriver(VMMapPlotDriver):
+
+    def run(self):
+        self._vmmap_parser.parse()
+        vmmap = self._vmmap_parser.get_model()
+        plot = AddressMapPlot(self._provenance_graph, vmmap)
+        plot.process(out_file=self.config.outfile)
 
 # class SyscallPatchBuilder(PatchBuilder):
 #     """

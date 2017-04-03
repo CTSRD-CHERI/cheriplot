@@ -1,1 +1,1 @@
-from .plot import ProvenancePlotDriver
+from .driver import ProvenancePlotDriver
