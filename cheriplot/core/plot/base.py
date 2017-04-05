@@ -56,6 +56,7 @@ class BasePlotBuilder:
         "vp_padding_bottom": 0.02,
         "vp_padding_left": 0.02,
         "vp_padding_right": 0.02,
+        "font": None, # matplotlib FontProperties
     }
 
     def __init__(self, **kwargs):
@@ -64,8 +65,8 @@ class BasePlotBuilder:
         configuration parameters with defaults in
         BasePlotBuilder.style_defaults.
         """
-        super().__init__(**kwargs)
         style = self._pop_style_kwargs(kwargs)
+        super().__init__(**kwargs)
         fig, ax = self.make_axes()
 
         logger.debug("Initialize plot '%s'", self.title)
@@ -114,6 +115,14 @@ class BasePlotBuilder:
         """
         return {}
 
+    def _get_figure_kwargs(self):
+        """
+        Return the kwargs used to create the plot figure
+
+        :return: kwargs dict for :func:`pyplot.figure`
+        """
+        return {"figsize": (15,10)}
+
     def _get_axes_rect(self):
         """
         Return the rect (in % of figure width and height)
@@ -128,7 +137,7 @@ class BasePlotBuilder:
 
         :return: kwargs dict for :meth:`Axes.legend`
         """
-        return {"handles": self._legend_handles}
+        return {"handles": self._legend_handles, "prop": self._style["font"]}
 
     def _get_savefig_kwargs(self):
         """
@@ -146,6 +155,8 @@ class BasePlotBuilder:
         
         :return: kwargs dict for :meth:`Axes.set_title`
         """
+        if self._style["font"]:
+            return {"fontproperties": self._style["font"]}
         return {}
 
     def _get_xlabels_kwargs(self):
@@ -155,6 +166,8 @@ class BasePlotBuilder:
 
         :return: kwargs dict for :meth:`Axes.set_xticklabels`
         """
+        if self._style["font"]:
+            return {"fontproperties": self._style["font"]}
         return {}
 
     def _get_ylabels_kwargs(self):
@@ -164,6 +177,28 @@ class BasePlotBuilder:
 
         :return: kwargs dict for :meth:`Axes.set_yticklabels`
         """
+        if self._style["font"]:
+            return {"fontproperties": self._style["font"]}
+        return {}
+
+    def _get_xlabel_kwargs(self):
+        """
+        Return the kwargs for the axes.set_xlabel.
+
+        :return: kwargs dict for :meth:`Axes.set_xlabel`
+        """
+        if self._style["font"]:
+            return {"fontproperties": self._style["font"]}
+        return {}
+
+    def _get_ylabel_kwargs(self):
+        """
+        Return the kwargs for the axes.set_ylabel.
+
+        :return: kwargs dict for :meth:`Axes.set_ylabel`
+        """
+        if self._style["font"]:
+            return {"fontproperties": self._style["font"]}
         return {}
 
     def make_axes(self):
@@ -172,7 +207,7 @@ class BasePlotBuilder:
 
         :return: tuple containing the figure and the axes
         """
-        fig = plt.figure(figsize=(15,10))
+        fig = plt.figure(**self._get_figure_kwargs())
         rect = self._get_axes_rect()
         ax = fig.add_axes(rect, **self._get_axes_kwargs())
         return (fig, ax)
@@ -237,9 +272,12 @@ class BasePlotBuilder:
         patch builders.
         """
         logger.debug("Make plot")
+        # set global font properties
+        if self._style["font"]:
+            self.ax.tick_params(labelsize=self._style["font"].get_size())
         self.ax.set_title(self.title, **self._get_title_kwargs())
-        self.ax.set_xlabel(self.x_label)
-        self.ax.set_ylabel(self.y_label)
+        self.ax.set_xlabel(self.x_label, **self._get_xlabel_kwargs())
+        self.ax.set_ylabel(self.y_label, **self._get_ylabel_kwargs())
         # set viewport
         # grab the viewbox and make a bounding box with it.
         xmin = self._view_box.xmin * (1 - self._style["vp_padding_left"])
@@ -253,12 +291,10 @@ class BasePlotBuilder:
             self.ax.set_xticks(self._xticks.keys())
             self.ax.set_xticklabels(self._xticks.values(),
                                     **self._get_xlabels_kwargs())
-            # self.ax.set_xticks(sorted(self._xticks))
         if self._yticks:
             self.ax.set_yticks(self._yticks.keys())
             self.ax.set_yticklabels(self._yticks.values(),
                                     **self._get_ylabels_kwargs())
-            # self.ax.set_yticks(sorted(self._yticks))
 
     def process(self, out_file=None, show=True):
         """
@@ -288,6 +324,7 @@ class BasePlotBuilder:
         :param builder: the patch builder for items of the dataset
         :type builder: :class:`PatchBuilder`
         """
+        builder.set_style(self._style)
         for entry in self._patch_builders:
             entry_dataset, entry_builders = entry
             if entry_dataset == dataset:

@@ -39,7 +39,7 @@ class UnitFormatter(Formatter):
         self._unit = unit
 
     def __call__(self, x, pos=None):
-        return "{:.3f}".format(x * self._unit)
+        return "{:.1f}".format(x * self._unit)
 
 class LinearUnitScale(scale.LinearScale):
     """

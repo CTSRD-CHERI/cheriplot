@@ -41,6 +41,20 @@ class PatchBuilder:
     dataset item
     """
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.style = None
+
+    def set_style(self, style):
+        """
+        Set the style configuration to use
+
+        :param style: dict of style parameters specified in the plot builder
+        :type style: dict
+        """
+        self.style = style
+
     def inspect(self, data):
         """
         Inspect a data item and update internal
