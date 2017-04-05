@@ -141,17 +141,27 @@ def test_interactive_tool_wrap_subcommand(mock_input):
             called["interactive_init"] = True
             print(self.config.__dict__)
             assert len(self.config.__dict__) == 4
-            assert self.config.subcommand_class == TaskA
+            # check that the subcommand class builder actually returns
+            # the correct subcommand instance
+            assert self.config.subcommand_class != None
+            subcommand_inst = self.config.subcommand_class(config=self.config)
+            assert isinstance(subcommand_inst, TaskA)
+            # check nested parameters
             assert self.config.subcmd.a_foo == 10
             assert self.config.subcmd.a_bar == "bar_start"
+            # check that the empty_subcmd namespace has not been created
             with pytest.raises(AttributeError):
                 self.config.empty_subcmd
+            # check that the global param exists
             assert self.config.other_opt == None
 
         def run(self):
             called["interactive_run"] = True
             assert len(self.config.__dict__) == 4
-            assert self.config.subcommand_class == TaskA
+            # check that only things in subcmd are changed
+            assert self.config.subcommand_class != None
+            subcommand_inst = self.config.subcommand_class(config=self.config)
+            assert isinstance(subcommand_inst, TaskA)
             assert self.config.subcmd.a_foo == 100
             assert self.config.subcmd.a_bar == "bar_changed"
             with pytest.raises(AttributeError):
