@@ -131,10 +131,10 @@ class BaseColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
             return
 
         # back to data coords without scaling
-        y_coord = int(event.ydata) #/ self.y_unit
-        y_max = self._bbox.ymax #/ self.y_unit
-        # tolerance for y distance, 0.25 units
-        epsilon = 0.25 #/ self.y_unit
+        y_coord = int(event.ydata)
+        y_max = self._bbox[3]
+        # tolerance for y distance, 0.1 * 10^6 cycles
+        epsilon = 0.1 * 10**6
 
         # try to get the node closer to the y_coord
         # in the fast way
@@ -143,26 +143,21 @@ class BaseColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
         idx_min = self._node_map.bisect_left(max(0, y_coord - epsilon))
         idx_max = self._node_map.bisect_right(min(y_max , y_coord + epsilon))
         iter_keys = self._node_map.islice(idx_min, idx_max)
-        # the closest node to the click position
-        # initialize it with the first node in the search range
-        try:
-            pick_target = self._node_map[next(iter_keys)]
-        except StopIteration:
-            # no match found
-            ax.set_status_message("")
-            return
-
+        # find the closest node to the click position
+        pick_target = None
         for key in iter_keys:
             node = self._node_map[key]
-            if (node.cap.base <= event.xdata and
-                node.cap.bound >= event.xdata and
-                abs(y_coord - key) < abs(y_coord - pick_target.cap.t_alloc)):
+            if (node.cap.base <= event.xdata and node.cap.bound >= event.xdata):
                 # the click event is within the node bounds and
                 # the node Y is closer to the click event than
                 # the previous pick_target
-                pick_target = node
-        ax.set_status_message(pick_target)
-
+                if (pick_target is None or
+                    abs(y_coord - key) < abs(y_coord - pick_target.cap.t_alloc)):
+                    pick_target = node
+        if pick_target is not None:
+            ax.set_status_message(pick_target)
+        else:
+            ax.set_status_message("")
 
 class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
     """

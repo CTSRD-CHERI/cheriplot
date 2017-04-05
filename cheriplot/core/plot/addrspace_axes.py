@@ -265,6 +265,10 @@ class AddressSpaceCollapseTransform(transforms.Transform):
 
         Find the address range corresponding to the plot range
         given by scanning all the target ranges
+        XXX: this may be made faster by using a reverse form of
+        the precomputed offsets but there is no need for
+        such an effort because the inverse transform is not
+        invoked as much.
         """
         if self._precomputed_offsets == None:
             self._precompute_offsets()
@@ -325,53 +329,61 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         return trans
 
 
+class HexFormatter(Formatter):
+    """
+    Formatter that generates an hex representation
+    for the value.
+    """
+    def __call__(self, x, pos=None):
+        return "0x%x" % int(x)
+
+
+class AddressSpaceTickLocator(Locator):
+    """
+    Locator that generates the default tick
+    values from the ASCollapseTransform intevals
+    """
+    
+    def __init__(self, scale):
+        self.scale = scale
+        """The address space scale"""
+
+    def __call__(self):
+        vmin, vmax = self.axis.get_view_interval()
+        return self.tick_values(vmin, vmax)
+
+    def tick_values(self, vmin, vmax):
+        """
+        Return the location of the ticks using the
+        scale transform to convert from data ticks to
+        ticks in the scaled axis coordinates
+        """
+        trans = self.scale.get_transform()
+        values = []
+        for r in trans._intervals:
+            if r[2] == 1:
+                # keep interval
+                if len(values) > 0:
+                    prev = trans.transform((values[-1], 0))[0]
+                    curr = trans.transform((r[0], 0))[0]
+                    # XXX 2**12 is an empiric value we should use
+                    # the bounding box of the label but there is no
+                    # easy way to get it from here
+                    if curr - prev < 2**12:
+                        # skip tick if they end up too close
+                        continue
+                values.append(r[0])
+        return values
+
+
 class AddressSpaceScale(scale.ScaleBase):
     """
     Non-uniform scale that applies a different scaling function
     to parts of the address space marked as "not interesting"
     (:attr:`Range.T_OMIT`)
     """
-
     name = "scale_addrspace"
-
     max_address = 0xFFFFFFFFFFFFFFFF
-
-    class HexFormatter(Formatter):
-        def __call__(self, x, pos=None):
-            return "0x%x" % int(x)
-
-
-    class AddressSpaceTickLocator(Locator):
-        def __init__(self, scale):
-            self.scale = scale
-            """The address space scale"""
-
-        def __call__(self):
-            vmin, vmax = self.axis.get_view_interval()
-            return self.tick_values(vmin, vmax)
-
-        def tick_values(self, vmin, vmax):
-            """
-            Return the location of the ticks using the
-            scale transform to convert from data ticks to
-            ticks in the scaled axis coordinates
-            """
-            trans = self.scale.get_transform()
-            values = []
-            for r in trans._intervals:
-                if r[2] == 1:
-                    # keep interval
-                    if len(values) > 0:
-                        prev = trans.transform((values[-1], 0))[0]
-                        curr = trans.transform((r[0], 0))[0]
-                        # XXX 2**12 is an empiric value we should use
-                        # the bounding box of the label but there is no
-                        # easy way to get it from here
-                        if curr - prev < 2**12:
-                            # skip tick if they end up too close
-                            continue
-                    values.append(r[0])
-            return values
 
     def __init__(self, axis, **kwargs):
         super(AddressSpaceScale, self).__init__()
@@ -381,9 +393,9 @@ class AddressSpaceScale(scale.ScaleBase):
         return self.transform
 
     def set_default_locators_and_formatters(self, axis):
-        axis.set_major_locator(self.AddressSpaceTickLocator(self))
-        axis.set_major_formatter(self.HexFormatter())
-        axis.set_minor_formatter(self.HexFormatter())
+        axis.set_major_locator(AddressSpaceTickLocator(self))
+        axis.set_major_formatter(HexFormatter())
+        axis.set_minor_formatter(HexFormatter())
 
     def limit_range_for_scale(self, vmin, vmax, minpos):
         """
@@ -392,7 +404,6 @@ class AddressSpaceScale(scale.ScaleBase):
         axis Spine.
         """
         return max(vmin, 0), min(vmax, self.max_address)
-
 
 scale.register_scale(AddressSpaceScale)
 
@@ -463,6 +474,7 @@ class AddressSpaceAxes(axes.Axes):
         self._status_message = ""
         kwargs["xscale"] = "scale_addrspace"
         super(AddressSpaceAxes, self).__init__(*args, **kwargs)
+        self.fmt_xdata = self._fmt_xdata
 
     def _init_axis(self):
         """
@@ -479,9 +491,7 @@ class AddressSpaceAxes(axes.Axes):
         self._update_transScale()
 
     def _set_lim_and_transforms(self):
-        """
-        Override transform initialization
-        """
+        """Override transform initialization."""
 
         # axis coords to display coords
         self.transAxes = transforms.BboxTransformTo(self.bbox)
@@ -518,12 +528,18 @@ class AddressSpaceAxes(axes.Axes):
         """
         self._status_message = message
 
+    def _fmt_xdata(self, x):
+        """Override the formatting of the x-axis data in the statusbar."""
+        try:
+            return "0x%x" % int(x)
+        except ValueError:
+            return "???"
+
     def format_coord(self, x, y):
         """
         Add the status message to the status bar format string
         """
-        xy_fmt = super(AddressSpaceAxes, self).format_coord(x, y)
+        xy_fmt = super().format_coord(x, y)
         return "%s %s" % (xy_fmt, self._status_message)
-
 
 register_projection(AddressSpaceAxes)
