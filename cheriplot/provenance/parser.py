@@ -32,7 +32,7 @@ import os
 from enum import IntEnum
 from functools import reduce
 
-from cheriplot.core import CallbackTraceParser
+from cheriplot.core import CallbackTraceParser, ThreadedTraceParser, ProgressTimer
 from cheriplot.provenance.model import *
 
 logger = logging.getLogger(__name__)
@@ -238,23 +238,27 @@ class PointerProvenanceParser(CallbackTraceParser):
     def _init_graph(self):
         cache_file = self.path + "_provenance_plot.gt"
         if self.cache and os.path.exists(cache_file):
-            self.dataset = load_graph(cache_file)
+            with ProgressTimer("Load cached graph", logger):
+                self.dataset = load_graph(cache_file)
         else:
             self.dataset = Graph(directed=True)
             vdata = self.dataset.new_vertex_property("object")
+            gpath = self.dataset.new_graph_property("string", self.path)
             self.dataset.vp["data"] = vdata
+            self.dataset.gp["path"] = gpath
 
     def get_model(self):
         return self.dataset
 
     def parse(self, *args, **kwargs):
         cache_file = self.path + "_provenance_plot.gt"
-        if self.cache:
-            if not os.path.exists(cache_file):
+        with ProgressTimer("Parse provenance graph", logger):
+            if self.cache:
+                if not os.path.exists(cache_file):
+                    super().parse(*args, **kwargs)
+                    self.dataset.save(cache_file)
+            else:
                 super().parse(*args, **kwargs)
-                self.dataset.save(cache_file)
-        else:
-            super().parse(*args, **kwargs)
 
     def _set_initial_regset(self, inst, entry, regs):
         """

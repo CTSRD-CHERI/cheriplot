@@ -27,7 +27,7 @@
 
 import logging
 
-from cheriplot.core import SubCommand, BaseTraceTaskDriver
+from cheriplot.core import SubCommand, BaseTraceTaskDriver, ProgressTimer
 from cheriplot.provenance.plot import (
     AddressMapPlotDriver, PtrSizeDerefDriver, PtrSizeBoundDriver, PtrSizeCdfDriver)
 from cheriplot.provenance.parser import PointerProvenanceParser
@@ -51,14 +51,21 @@ class ProvenancePlotDriver(BaseTraceTaskDriver):
                                                trace_path=self.config.trace)
 
     def run(self):
+        # XXX should probably change the way we encapsulte stuff here,
+        # this should be a simple task driver and each subcommand should inherit
+        # from a base driver that provides common arguments so that multiple
+        # traces can be handled more consistently.
         self._parser.parse()
         # get the parsed provenance graph model
         pgm = self._parser.get_model()
 
         # do the filtering of the graph here
-        bfs_transform(pgm, [MaskNullAndKernelVertices(pgm)])
-        bfs_transform(pgm, [MergeCFromPtr(pgm)])
-        bfs_transform(pgm, [MaskCFromPtr(pgm)])
+        with ProgressTimer("Mask NULL and kernel capabilities", logger):
+            flat_transform(pgm, [MaskNullAndKernelVertices(pgm)])
+        with ProgressTimer("Merge cfromptr + csetbounds", logger):
+            flat_transform(pgm, [MergeCFromPtr(pgm)])
+        with ProgressTimer("Mask remaining cfromptr", logger):
+            flat_transform(pgm, [MaskCFromPtr(pgm)])
 
         sub = self.config.subcommand_class(pgm, config=self.config)
         sub.run()

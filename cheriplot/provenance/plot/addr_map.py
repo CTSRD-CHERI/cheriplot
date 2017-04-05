@@ -30,21 +30,24 @@ import logging
 
 from sortedcontainers import SortedDict
 from collections import defaultdict
+from operator import itemgetter
 
 from matplotlib.collections import LineCollection, PatchCollection
 from matplotlib.transforms import Bbox, blended_transform_factory
 from matplotlib.patches import Patch, Rectangle
 from matplotlib.text import Text
 from matplotlib.colors import colorConverter
+from matplotlib.font_manager import FontProperties
 
 from cheriplot.core import (
-    ASAxesPlotBuilderNoTitle, ASAxesPatchBuilder, PickablePatchBuilder)
+    ASAxesPlotBuilderNoTitle, ASAxesPatchBuilder, PickablePatchBuilder,
+    Option)
 from cheriplot.provenance.model import CheriCapPerm, CheriNodeOrigin
 from cheriplot.provenance.plot import VMMapPlotDriver
 
 logger = logging.getLogger(__name__)
 
-class ColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
+class BaseColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
     """
     The patch generator build the matplotlib patches for each
     capability node.
@@ -57,22 +60,15 @@ class ColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
 
     def __init__(self, figure, pgm):
         """
-        XXX TODO:
-        figure -> the figure to attache the click callback
-        pgm -> the provenance graph model
+        Constructor
+
+        :param figure: the figure to attache the click callback
+        :param pgm: the provenance graph model
         """
         super().__init__(figure=figure)
 
         self._pgm = pgm
         """The provenance graph model"""
-
-        # permission composition shorthands
-        load_store = CheriCapPerm.LOAD | CheriCapPerm.STORE
-        load_exec = CheriCapPerm.LOAD | CheriCapPerm.EXEC
-        store_exec = CheriCapPerm.STORE | CheriCapPerm.EXEC
-        load_store_exec = (CheriCapPerm.STORE |
-                           CheriCapPerm.LOAD |
-                           CheriCapPerm.EXEC)
 
         self._collection_map = defaultdict(lambda: [])
         """
@@ -83,17 +79,7 @@ class ColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
         for no permission.
         """
 
-        self._colors = {
-            0: colorConverter.to_rgb("#bcbcbc"),
-            CheriCapPerm.LOAD: colorConverter.to_rgb("k"),
-            CheriCapPerm.STORE: colorConverter.to_rgb("y"),
-            CheriCapPerm.EXEC: colorConverter.to_rgb("m"),
-            load_store: colorConverter.to_rgb("c"),
-            load_exec: colorConverter.to_rgb("b"),
-            store_exec: colorConverter.to_rgb("g"),
-            load_store_exec: colorConverter.to_rgb("r"),
-            "call": colorConverter.to_rgb("#31c648"),
-        }
+        self._colors = {}
         """
         Map capability permission to line colors.
         XXX: keep this for now, move to a colormap
@@ -105,51 +91,21 @@ class ColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
         self._node_map = SortedDict()
         """Maps the Y axis coordinate to the graph node at that position"""
 
-    def _build_patch(self, coords, perms):
-        """
-        Build patch for the given range and type and add it
-        to the patch collection for drawing
-        """
-
-        if perms is None:
-            perms = 0
-        rwx_perm = perms & (CheriCapPerm.LOAD |
-                            CheriCapPerm.STORE |
-                            CheriCapPerm.EXEC)
-        self._collection_map[rwx_perm].append(coords)
-
-    def _build_call_patch(self, coords, origin):
-        """
-        Build patch for a node representing a system call
-        This is added to a different collection so it can be
-        colored differently.
-        """
-        self._collection_map["call"].append(coords)
-
-    def inspect(self, vertex):
-        """Inspect a graph vertex and create the patches for it."""
+    def _clickable_element(self, vertex, y):
+        """remember the node at the given Y for faster indexing."""
         data = self._pgm.vp.data[vertex]
-        assert data.cap.bound >= data.cap.base # XXX should be in the parsers
-        vertex_y = data.cap.t_alloc
-        if self._bbox[0] > data.cap.base:
-            self._bbox[0] = data.cap.base
-        if self._bbox[1] > vertex_y:
-            self._bbox[1] = vertex_y
-        if self._bbox[2] < data.cap.bound:
-            self._bbox[2] = data.cap.bound
-        if self._bbox[3] < vertex_y:
-            self._bbox[3] = vertex_y
+        self._node_map[y] = data
 
-        coords = ((data.cap.base, vertex_y), (data.cap.bound, vertex_y))
-        if data.origin == CheriNodeOrigin.SYS_MMAP:
-            self._build_call_patch(coords, data.origin)
-        else:
-            self._build_patch(coords, data.cap.permissions)
-
-        # mark this address range as interesting
-        self._add_range(data.cap.base, data.cap.bound)
-        # remember the node at the given Y for faster indexing
-        self._node_map[data.cap.t_alloc] = data
+    def _add_bbox(self, xmin, xmax, y):
+        """Update the view bbox."""
+        if self._bbox[0] > xmin:
+            self._bbox[0] = xmin
+        if self._bbox[1] > y:
+            self._bbox[1] = y
+        if self._bbox[2] < xmax:
+            self._bbox[2] = xmax
+        if self._bbox[3] < y:
+            self._bbox[3] = y
 
     def get_patches(self, axes):
         super().get_patches(axes)
@@ -158,24 +114,6 @@ class ColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
                                   colors=[self._colors[key]],
                                   linestyle="solid")
             axes.add_collection(coll)
-
-    def get_legend(self):
-        legend = super().get_legend()
-        for key in self._collection_map.keys():
-            if key == "call":
-                label = "mmap"
-            else:
-                label = ""
-                if key & CheriCapPerm.LOAD:
-                    label += "R"
-                if key & CheriCapPerm.STORE:
-                    label += "W"
-                if key & CheriCapPerm.EXEC:
-                    label += "X"
-                if label == "":
-                    label = "None"
-            legend.append(Patch(color=self._colors[key], label=label))
-        return legend
 
     def get_bbox(self):
         return Bbox.from_extents(*self._bbox)
@@ -224,6 +162,136 @@ class ColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
                 # the previous pick_target
                 pick_target = node
         ax.set_status_message(pick_target)
+
+
+class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
+    """
+    The patch generator build the matplotlib patches for each
+    capability node.
+
+    The nodes are rendered as lines with a different color depending
+    on the permission bits of the capability. The builder produces
+    a LineCollection for each combination of permission bits and
+    creates the lines for the nodes.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # permission composition shorthands
+        load_store = CheriCapPerm.LOAD | CheriCapPerm.STORE
+        load_exec = CheriCapPerm.LOAD | CheriCapPerm.EXEC
+        store_exec = CheriCapPerm.STORE | CheriCapPerm.EXEC
+        load_store_exec = (CheriCapPerm.STORE |
+                           CheriCapPerm.LOAD |
+                           CheriCapPerm.EXEC)
+
+        self._colors = {
+            0: colorConverter.to_rgb("#bcbcbc"),
+            CheriCapPerm.LOAD: colorConverter.to_rgb("k"),
+            CheriCapPerm.STORE: colorConverter.to_rgb("y"),
+            CheriCapPerm.EXEC: colorConverter.to_rgb("m"),
+            load_store: colorConverter.to_rgb("c"),
+            load_exec: colorConverter.to_rgb("b"),
+            store_exec: colorConverter.to_rgb("g"),
+            load_store_exec: colorConverter.to_rgb("r"),
+            "call": colorConverter.to_rgb("#31c648"),
+        }
+
+    def inspect(self, vertex):
+        """Inspect a graph vertex and create the patches for it."""
+        data = self._pgm.vp.data[vertex]
+        assert data.cap.bound >= data.cap.base # XXX should be in the parsers
+        self._add_bbox(data.cap.base, data.cap.bound, data.cap.t_alloc)
+
+        coords = ((data.cap.base, data.cap.t_alloc),
+                  (data.cap.bound, data.cap.t_alloc))
+        if data.origin == CheriNodeOrigin.SYS_MMAP:
+            self._collection_map["call"].append(coords) 
+        else:
+            perms = data.cap.permissions or 0
+            rwx_perm = perms & (CheriCapPerm.LOAD |
+                                CheriCapPerm.STORE |
+                                CheriCapPerm.EXEC)
+            self._collection_map[rwx_perm].append(coords)
+        # mark this address range as interesting
+        self._add_range(data.cap.base, data.cap.bound)
+        self._clickable_element(vertex, data.cap.t_alloc)
+
+    def get_legend(self):
+        legend = super().get_legend()
+        for key in self._collection_map.keys():
+            if key == "call":
+                label = "mmap"
+            else:
+                label = ""
+                if key & CheriCapPerm.LOAD:
+                    label += "R"
+                if key & CheriCapPerm.STORE:
+                    label += "W"
+                if key & CheriCapPerm.EXEC:
+                    label += "X"
+                if label == "":
+                    label = "None"
+            legend.append(Patch(color=self._colors[key], label=label))
+        return legend
+
+
+class DerefPatchBuilder(BaseColorCodePatchBuilder):
+    """
+    The patch generator build the matplotlib patches for each
+    capability node.
+
+    The nodes are rendered as lines with a different color depending
+    on the permission bits of the capability dereferenced. The builder produces
+    a LineCollection for each combination of permission bits and
+    creates the lines for the nodes.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # register the colors we use
+        self._colors["load"] = colorConverter.to_rgb("#687a99")
+        self._colors["store"] = colorConverter.to_rgb("#895106")
+
+    def inspect(self, vertex):
+        """Create a patch for every dereference in the node."""
+        data = self._pgm.vp.data[vertex]
+        # mark this address range as interesting
+        self._add_range(data.cap.base, data.cap.bound)
+
+        min_time = np.inf
+        max_time = 0
+        columns = itemgetter("time", "addr", "type")(data.deref)
+        for time, addr, type_ in zip(*columns):
+            min_time = min(min_time, time)
+            max_time = max(max_time, time)
+            coords = ((data.cap.base, time), (data.cap.bound, time))
+            if type_ == data.DerefType.DEREF_LOAD:
+                self._collection_map["load"].append(coords)
+                # off = patches.Circle((addr, data_y))
+                # self._deref_load.append(off)
+                pass
+            elif type_ == data.DerefType.DEREF_STORE:
+                self._collection_map["store"].append(coords)
+                # off = patches.Circle((addr, data_y))
+                # self._deref_store.append(off)
+                pass
+            elif type_ == data.DerefType.DEREF_CALL:
+                logger.warning("Plot call dereferences not yet supported")
+            self._clickable_element(vertex, time)
+
+        if len(columns):
+            self._add_bbox(data.cap.base, data.cap.bound, min_time)
+            self._add_bbox(data.cap.base, data.cap.bound, max_time)
+        #invalidate collections
+
+    def get_legend(self):
+        handles = [
+            Patch(color=self._colors["load"], label="load"),
+            Patch(color=self._colors["store"], label="store"),
+        ]
+        return handles
 
 
 class VMMapPatchBuilder(ASAxesPatchBuilder):
@@ -303,10 +371,57 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
     def get_xticks(self):
         return self._ticks
 
+    def get_xlabels(self):
+        return ["0x%x" % t for t in self._ticks]
 
-class AddressMapPlot(ASAxesPlotBuilderNoTitle):
+
+class AddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
     """
-    Base class for plots with the address-map view.
+    Plot that shows the capability size in the address space
+    vs the time of allocation (i.e. when the capability is created).
+    """
+    title = "Capabilities derivation time vs capability position"
+    x_label = "Virtual Address"
+    y_label = "Time (million of cycles)"
+
+    publish = Option(help="Adjust plot for publication", action="store_true")
+
+    def _get_axes_rect(self):
+        if self.config.publish:
+            return [0.1, 0.25, 0.85, 0.65]
+        return super()._get_axes_rect()
+
+    def make_axes(self):
+        """
+        Set the y-axis scale to display millions of cycles instead of
+        the number of cyles.
+        """
+        fig, ax = super().make_axes()
+        ax.set_yscale("linear_unit", unit=10**-6)
+        return (fig, ax)
+
+    def make_plot(self):
+        """Create the address-map plot."""
+        super().make_plot()
+        self.ax.invert_yaxis()
+
+    def run(self):
+        self._vmmap_parser.parse()
+        vmmap = self._vmmap_parser.get_model()
+        if self.config.publish:
+            # set the style
+            self._style["font"] = FontProperties(size=20)
+        cap_builder = ColorCodePatchBuilder(figure=self.fig,
+                                            pgm=self._provenance_graph)
+        self.register_patch_builder(self._provenance_graph.vertices(), cap_builder)
+        self.register_patch_builder(vmmap, VMMapPatchBuilder(self.ax))
+        self.process(out_file=self.config.outfile)
+
+
+class AddressMapDerefPlot(ASAxesPlotBuilderNoTitle):
+    """
+    Plot that shows the capability size in the address space
+    vs the time of allocation (i.e. when the capability is created).
     """
     title = "Capabilities derivation time vs capability position"
     x_label = "Virtual Address"
@@ -335,18 +450,22 @@ class AddressMapPlot(ASAxesPlotBuilderNoTitle):
         self.ax.invert_yaxis()
 
 
-class AddressMapPlotDriver(VMMapPlotDriver):
+class AddressMapDerefPlotDriver(VMMapPlotDriver):
+    """
+    Generate the address-map plot showing capabilities
+    at dereference time.
+    """
 
     def run(self):
         self._vmmap_parser.parse()
         vmmap = self._vmmap_parser.get_model()
-        plot = AddressMapPlot(self._provenance_graph, vmmap)
+        plot = AddressMapDerefPlot(self._provenance_graph, vmmap)
         plot.process(out_file=self.config.outfile)
 
 # class SyscallPatchBuilder(PatchBuilder):
 #     """
 #     The patch generator build the matplotlib patches for each
-#     syscall node
+#     syscall data
 
 #     The nodes are rendered as lines with a different color depending
 #     on the system call type.

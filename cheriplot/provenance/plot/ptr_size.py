@@ -35,12 +35,15 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from matplotlib.transforms import Bbox
+from matplotlib.font_manager import FontProperties
 
 from cheriplot.core import (
     ProgressTimer, ProgressPrinter, ExternalLegendTopPlotBuilder,
     BasePlotBuilder, PatchBuilder, LabelManager, TaskDriver,
     Option, Argument)
 
+from cheriplot.provenance.parser import PointerProvenanceParser, ThreadedProvenanceParser
+from cheriplot.provenance.transforms import *
 from cheriplot.provenance.plot import VMMapPlotDriver
 
 logger = logging.getLogger(__name__)
@@ -381,7 +384,19 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
     x_label = "Size"
     y_label = "% of the total number of capabilities"
 
+    extra_traces = Argument(help="Additional traces", nargs="*")
     outfile = Option(help="Output file", default=None)
+    publish = Option(help="Adjust plot for publication", action="store_true")
+
+    def _get_savefig_kwargs(self):
+        kw = super()._get_figure_kwargs()
+        kw["dpi"] = 300
+        return kw
+
+    def _get_axes_rect(self):
+        if self.config.publish:
+            return [0.1, 0.15, 0.85, 0.8]
+        return super()._get_axes_rect()
 
     def _get_legend_kwargs(self):
         kw = super()._get_legend_kwargs()
@@ -391,12 +406,25 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
     def __init__(self, provenance_graph, **kwargs):
         super().__init__(**kwargs)
         self.graph = provenance_graph
+        if self.config.publish:
+            self._style["font"] = FontProperties(size=25)
 
     def make_plot(self):
         super().make_plot()
         self.ax.set_xscale("log", basex=2)
 
     def run(self):
-        datasets = [PtrBoundCdf(self.graph)]
+        extra_pgm = []
+        for path in self.config.extra_traces:
+            parser = PointerProvenanceParser(cache=True, trace_path=path)
+            parser.parse()
+            pgm = parser.get_model()
+            bfs_transform(pgm, [MaskNullAndKernelVertices(pgm)])
+            bfs_transform(pgm, [MergeCFromPtr(pgm)])
+            bfs_transform(pgm, [MaskCFromPtr(pgm)])
+            extra_pgm.append(pgm)
+        datasets = [PtrBoundCdf(pgm) for pgm in extra_pgm]
+        datasets += [PtrBoundCdf(self.graph)]
+        datasets[-1].name = "openssl_default"
         self.register_patch_builder(datasets, CdfPatchBuilder())
         self.process(out_file=self.config.outfile)

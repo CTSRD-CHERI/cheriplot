@@ -56,6 +56,24 @@ def bfs_transform(graph, transforms):
     for t in transforms:
         t.apply_transform()
 
+def flat_transform(graph, transforms):
+    """
+    Run a transformation function for all vertices in the graph
+    """
+    for v in graph.vertices():
+        for t in transforms:
+            t.examine_vertex(v)
+    for t in transforms:
+        t.apply_transform()
+
+class FlatTransform:
+
+    def examine_vertex(self, u):
+        pass
+
+    def apply_transform(self):
+        pass
+
 class BFSTransform(BFSVisitor):
     """
     Base class for Breadth first transformations.
@@ -76,7 +94,7 @@ class BFSTransform(BFSVisitor):
         """
         pass
 
-class SingleMaskBFSTransform(BFSVisitor):
+class SingleMaskBFSTransform(FlatTransform):
     """
     Transform that masks the graph after scanning the vertices
     """
@@ -126,7 +144,10 @@ class MergeCFromPtr(SingleMaskBFSTransform):
                 assert parent is None, \
                     "Found node with more than a single parent"
                 parent = p
-        assert parent is not None, "No unmasked parent for a node"
+        if parent is None:
+            # no unmasked parent for this vertex, do nothing
+            return
+        # parent = next(u.in_neighbours())
         parent_data = self.graph.vp.data[parent]
         data = self.graph.vp.data[u]
         if (parent_data.origin == CheriNodeOrigin.FROMPTR and
