@@ -31,10 +31,9 @@ import struct
 import ctypes
 import enum
 
-from cheriplot.utils import ProgressPrinter
-from cheriplot.core.parser import CallbackTraceParser
-from cheriplot.core.provenance import CheriCap
-from cheriplot.core import TaskDriver, Option, Argument
+
+from cheriplot.provenance import CallbackTraceParser, CheriCap
+from cheriplot.core import TaskDriver, Option, Argument, ProgressPrinter
 
 logger = logging.getLogger(__name__)
 

@@ -29,8 +29,7 @@ import logging
 
 from functools import reduce
 from collections import deque
-from cheriplot.core.parser import CallbackTraceParser
-from cheriplot.core.provenance import CheriCap
+from cheriplot.provenance import CallbackTraceParser, CheriCap
 from cheriplot.core import (
     BaseTraceTaskDriver, ConfigurableComponent, Option, NestedConfig,
     interactive_tool, option_range_validator, any_int_validator)
