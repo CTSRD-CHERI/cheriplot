@@ -1,5 +1,5 @@
 #-
-# Copyright (c) 2016 Alfredo Mazzinghi
+# Copyright (c) 2016-2017 Alfredo Mazzinghi
 # All rights reserved.
 #
 # This software was developed by SRI International and the University of
@@ -510,61 +510,59 @@ class CallbackTraceParser(TraceParser):
         self.trace.scan(_scan, start, end, direction)
         self.progress.finish()
 
+# experimental
+from multiprocessing import Value, Process
+from multiprocessing import Pool
 
-class ThreadedTraceParser:
+class ThreadedTraceParser(CallbackTraceParser):
     """
     Trace parser that scans a trace using multiple processes
 
     The scanning processes are forked from the current parser
     and each one is allocated a range of the trace. The parsed
-    data items are piped through one or more queues. The current
-    process pulls data from the queue(s) and stores it in the
-    dataset
+    dataset is then processed to merge the parts toghether if
+    required.
 
-    XXX: experimental/broken
+    XXX: experimental
     """
 
-    def __init__(self, path, parser, threads=2):
-        self.trace = RawValue(py_object, None)
-        """Trace in shared memory"""
-        self.parser = parser
-        """
-        Callback that handles each trace block, this is run
-        in separate processes
-        """
-        self.n_threads = threads
-        """Number of subprocesses that are spawned"""
-        self.path = path
-        """Trace path"""
+    @classmethod
+    def _slave_parse(cls, trace, start, end, direction):
+        inst = cls(trace)
+        inst.parse(start, end, direction)
 
-        if not os.path.exists(path):
-            raise IOError("File not found %s" % path)
-        self.trace = pct.trace.open(path)
-        if self.trace is None:
-            raise IOError("Can not open trace %s" % path)
+    def __init__(self, threads=os.cpu_count(), **kwargs):
+        super().__init__(**kwargs)
 
-    def __len__(self):
-        if self.trace:
-            return self.trace.size()
-        return 0
+        self.threads = threads
+        """Number of workers to use"""
 
-    def parse(self, *args, **kwargs):
-        start = kwargs.pop("start", 0)
-        end = kwargs.pop("end", len(self))
-        block_size = math.floor((end - start) / self.n_threads)
+        self.pool = Pool(processes=threads)
+        """Subprocess pool"""
+
+    def parse(self, start=None, end=None, direction=0):
+
+        start = start or 0
+        end = end or len(self)
+        block_size = math.floor((end - start) / self.threads)
         start_indexes = np.arange(start, end - block_size + 1, block_size)
         end_indexes = np.arange(start + block_size, end + 1, block_size) - 1
         # the last process consumes any remaining entries left by the
         # rounding of block_size
         end_indexes[-1] = end
 
-        procs = []
-        for idx_start, idx_end in zip(start_indexes, end_indexes):
-            print(idx_start, idx_end)
-            p = Process(target=self.parser, args=(self.path, idx_start, idx_end))
-            procs.append(p)
+        results = []
+        for start_idx, end_idx in zip(start_indexes, end_indexes):
+            result = self.pool.apply_async(self._slave_parse, self.path,
+                                           start_idx, end_idx, direction)
+            results.append(result)
+        # procs = []
+        # for idx_start, idx_end in zip(start_indexes, end_indexes):
+        #     print(idx_start, idx_end)
+        #     p = Process(target=self.parser, args=(self.path, idx_start, idx_end))
+        #     procs.append(p)
 
-        for p in procs:
-            p.start()
-        for p in procs:
-            p.join()
+        # for p in procs:
+        #     p.start()
+        # for p in procs:
+        #     p.join()
