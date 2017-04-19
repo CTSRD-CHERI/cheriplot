@@ -42,7 +42,7 @@ from matplotlib.font_manager import FontProperties
 from cheriplot.core import (
     ASAxesPlotBuilderNoTitle, ASAxesPatchBuilder, PickablePatchBuilder,
     Option)
-from cheriplot.provenance.model import CheriCapPerm, CheriNodeOrigin
+from cheriplot.provenance.model import CheriCapPerm, CheriNodeOrigin, NodeData
 from cheriplot.provenance.plot import VMMapPlotDriver
 
 logger = logging.getLogger(__name__)
@@ -108,6 +108,11 @@ class BaseColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
             self._bbox[3] = y
 
     def get_patches(self, axes):
+        """
+        XXX once we are done with the coordinates in the
+        collections we can throw them away instead of keeping
+        memory used for nothing! (this may have an inpact
+        """
         super().get_patches(axes)
         for key, collection in self._collection_map.items():
             coll = LineCollection(collection,
@@ -202,7 +207,7 @@ class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
         coords = ((data.cap.base, data.cap.t_alloc),
                   (data.cap.bound, data.cap.t_alloc))
         if data.origin == CheriNodeOrigin.SYS_MMAP:
-            self._collection_map["call"].append(coords) 
+            self._collection_map["call"].append(coords)
         else:
             perms = data.cap.permissions or 0
             rwx_perm = perms & (CheriCapPerm.LOAD |
@@ -212,6 +217,27 @@ class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
         # mark this address range as interesting
         self._add_range(data.cap.base, data.cap.bound)
         self._clickable_element(vertex, data.cap.t_alloc)
+
+    def load(self, dataset):
+        """XXX experimental"""
+        for vertex in dataset.vertices():
+            data = self._pgm.vp.data[vertex]
+            assert data.cap.bound >= data.cap.base # XXX should be in the parsers
+            self._add_bbox(data.cap.base, data.cap.bound, data.cap.t_alloc)
+
+            coords = ((data.cap.base, data.cap.t_alloc),
+                      (data.cap.bound, data.cap.t_alloc))
+            if data.origin == CheriNodeOrigin.SYS_MMAP:
+                self._collection_map["call"].append(coords)
+            else:
+                perms = data.cap.permissions or 0
+                rwx_perm = perms & (CheriCapPerm.LOAD |
+                                    CheriCapPerm.STORE |
+                                    CheriCapPerm.EXEC)
+                self._collection_map[rwx_perm].append(coords)
+            # mark this address range as interesting
+            self._add_range(data.cap.base, data.cap.bound)
+            self._clickable_element(vertex, data.cap.t_alloc)
 
     def get_legend(self):
         legend = super().get_legend()
@@ -250,7 +276,11 @@ class DerefPatchBuilder(BaseColorCodePatchBuilder):
         self._colors["store"] = colorConverter.to_rgb("#895106")
 
     def inspect(self, vertex):
-        """Create a patch for every dereference in the node."""
+        """Create a patch for every dereference in the node.
+        XXX this is both slow and fairly memory intensive,
+        may get around it by preallocating a numpy array for
+        the values?
+        """
         data = self._pgm.vp.data[vertex]
         # mark this address range as interesting
         self._add_range(data.cap.base, data.cap.bound)
@@ -276,10 +306,52 @@ class DerefPatchBuilder(BaseColorCodePatchBuilder):
                 logger.warning("Plot call dereferences not yet supported")
             self._clickable_element(vertex, time)
 
-        if len(columns):
+        if len(columns[0]):
             self._add_bbox(data.cap.base, data.cap.bound, min_time)
             self._add_bbox(data.cap.base, data.cap.bound, max_time)
-        #invalidate collections
+
+    def load(self, dataset):
+        """XXX experimental"""
+        n_deref = 0
+        for v in dataset.vertices():
+            data = dataset.vp.data[v]
+            n_deref += len(data.deref["time"])
+        # preallocate dereferences
+        # [xmin, xmax, y, type]
+        derefs = np.empty((n_deref, 4), dtype=int)
+        idx = 0
+        coords = (data.cap.base, data.cap.bound)
+        for v in dataset.vertices():
+            data = dataset.vp.data[v]
+            if len(data.deref["time"]):
+                min_time = np.inf
+                max_time = 0
+                # mark this address range as interesting
+                self._add_range(data.cap.base, data.cap.bound)
+                end_idx = idx + len(data.deref["time"])
+                derefs[idx:end_idx,0:2] = coords
+                derefs[idx:end_idx,2] = data.deref["time"]
+                derefs[idx:end_idx,3] = data.deref["type"]
+                for t in data.deref["time"]:
+                    min_time = min(min_time, t)
+                    max_time = max(max_time, t)
+                    self._clickable_element(v, t)
+                self._add_bbox(data.cap.base, data.cap.bound, min_time)
+                self._add_bbox(data.cap.base, data.cap.bound, max_time)
+        # can probably avoid this mess by duplicating the y coordinate
+        # above, we have to do that anyway below.
+        load_idx = np.where(derefs[:,3] == NodeData.DerefType.DEREF_LOAD.value)
+        load = derefs[load_idx][:,:3]
+        dst = np.empty((len(load),2,2))
+        dst[:,:,0] = load[:,:2]
+        dst[:,:,1] = np.repeat(load[:,2], 2).reshape((len(load),2))
+        self._collection_map["load"] = dst
+        store_idx = np.where(derefs[:,3] == NodeData.DerefType.DEREF_LOAD.value)
+        store = derefs[store_idx][:,:3]
+        dst = np.empty((len(store),2,2))
+        dst[:,:,0] = store[:,:2]
+        dst[:,:,1] = np.repeat(store[:,2], 2).reshape((len(store),2))
+        self._collection_map["store"] = dst
 
     def get_legend(self):
         handles = [
@@ -354,6 +426,12 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
         self.annotations.append(label)
         self._add_range(vmentry.start, vmentry.end)
 
+    def load(self, dataset):
+        """XXX experimental"""
+        # dataset is a vmmap
+        for vme in dataset:
+            self.inspect(vme)
+
     def get_patches(self, axes):
         super().get_patches(axes)
         coll = PatchCollection(self.patches, alpha=0.1,
@@ -370,7 +448,7 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
         return ["0x%x" % t for t in self._ticks]
 
 
-class AddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
+class BaseAddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
     """
     Plot that shows the capability size in the address space
     vs the time of allocation (i.e. when the capability is created).
@@ -380,6 +458,8 @@ class AddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
     y_label = "Time (million of cycles)"
 
     publish = Option(help="Adjust plot for publication", action="store_true")
+
+    patch_builder_class = None
 
     def _get_axes_rect(self):
         if self.config.publish:
@@ -406,56 +486,31 @@ class AddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
         if self.config.publish:
             # set the style
             self._style["font"] = FontProperties(size=20)
-        cap_builder = ColorCodePatchBuilder(figure=self.fig,
-                                            pgm=self._provenance_graph)
+        cap_builder = self.patch_builder_class(figure=self.fig,
+                                               pgm=self._provenance_graph)
         self.register_patch_builder(self._provenance_graph.vertices(), cap_builder)
+        # self.register_patch_builder(self._provenance_graph, cap_builder)
         self.register_patch_builder(vmmap, VMMapPatchBuilder(self.ax))
         self.process(out_file=self.config.outfile)
 
 
-class AddressMapDerefPlot(ASAxesPlotBuilderNoTitle):
+class AddressMapPlotDriver(BaseAddressMapPlotDriver):
     """
     Plot that shows the capability size in the address space
     vs the time of allocation (i.e. when the capability is created).
     """
     title = "Capabilities derivation time vs capability position"
-    x_label = "Virtual Address"
-    y_label = "Time (million of cycles)"
-
-    def __init__(self, provenance_graph, vmmap, **kwargs):
-        super().__init__(**kwargs)
-
-        self.register_patch_builder(provenance_graph.vertices(),
-                                    ColorCodePatchBuilder(figure=self.fig,
-                                                          pgm=provenance_graph))
-        self.register_patch_builder(vmmap, VMMapPatchBuilder(self.ax))
-
-    def make_axes(self):
-        """
-        Set the y-axis scale to display millions of cycles instead of
-        the number of cyles.
-        """
-        fig, ax = super().make_axes()
-        ax.set_yscale("linear_unit", unit=10**-6)
-        return (fig, ax)
-
-    def make_plot(self):
-        """Create the address-map plot."""
-        super().make_plot()
-        self.ax.invert_yaxis()
+    patch_builder_class = ColorCodePatchBuilder
 
 
-class AddressMapDerefPlotDriver(VMMapPlotDriver):
+class AddressMapDerefPlotDriver(BaseAddressMapPlotDriver):
     """
-    Generate the address-map plot showing capabilities
-    at dereference time.
+    Plot that shows the capability size in the address space
+    vs the time of dereference (i.e. when the capability is dereferenced
+    for a load or a store).
     """
-
-    def run(self):
-        self._vmmap_parser.parse()
-        vmmap = self._vmmap_parser.get_model()
-        plot = AddressMapDerefPlot(self._provenance_graph, vmmap)
-        plot.process(out_file=self.config.outfile)
+    title = "Capabilities deallocation time vs capability position"
+    patch_builder_class = DerefPatchBuilder
 
 # class SyscallPatchBuilder(PatchBuilder):
 #     """

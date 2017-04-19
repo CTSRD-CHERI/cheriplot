@@ -39,7 +39,7 @@ from matplotlib.font_manager import FontProperties
 
 from cheriplot.core import (
     ProgressTimer, ProgressPrinter, ExternalLegendTopPlotBuilder,
-    BasePlotBuilder, PatchBuilder, LabelManager, TaskDriver,
+    BasePlotBuilder, PatchBuilder, LabelManager, AutoText, TaskDriver,
     Option, Argument)
 
 from cheriplot.provenance.parser import PointerProvenanceParser, ThreadedProvenanceParser
@@ -80,8 +80,6 @@ class CapSizeHistogram:
             data = np.log2(data)
             h, b = np.histogram(data, bins=self.n_bins)
             # append histogram to the dataframes
-            # self.hist_sources.append(vm_entry)
-            # new_index = len(self.abs_histogram.index)
             self.abs_histogram.loc[vm_entry] = h
             self.norm_histogram.loc[vm_entry] = h / np.sum(h)
 
@@ -185,14 +183,6 @@ class HistogramPatchBuilder(PatchBuilder):
         self.hist = None
         """Histogram model"""
 
-    def on_draw(self, evt):
-        """
-        Adjust labels at the side of the bars so they do not overlap.
-        """
-        for mgr in self.label_managers:
-            mgr.update_label_position(evt.renderer)
-            break
-
     def inspect(self, hist):
         """Prepare the data for plotting on the axes."""
         assert self.hist == None, \
@@ -249,9 +239,9 @@ class HistogramPatchBuilder(PatchBuilder):
         positions = range(1, step * norm_hist.shape[0] + 1, step)
         # init label managers and legend list
         for row in range(norm_hist.shape[0]):
-            self.label_managers.append(LabelManager(direction="vertical"))
-            # self.label_managers[-1].constraint = (0, np.inf)
-
+            mgr = LabelManager(direction="vertical")
+            mgr.set_limits(0, np.inf)
+            self.label_managers.append(mgr)
         # build the bars in the plot
         bottom = np.zeros(norm_hist.shape[0])
         for bin_idx, bin_limit in enumerate(norm_hist.columns):
@@ -266,11 +256,11 @@ class HistogramPatchBuilder(PatchBuilder):
                 # write the absolute count count at the left of each bar
                 text_x = bar.get_x() - bar.get_width() / 2
                 text_y = bar.get_y() + bar.get_height() / 2
-                txt = axes.text(text_x, text_y, " %d " % abs_bin,
-                                   ha="center", va="center",
-                                   rotation="horizontal")
-                self.label_managers[bar_idx].labels.append(txt)
-        self.fig.canvas.mpl_connect("draw_event", self.on_draw)
+                txt = AutoText(text_x, text_y, " %d " % abs_bin,
+                               ha="center", va="center",
+                               rotation="horizontal",
+                               label_manager=self.label_managers[bar_idx])
+                axes.add_artist(txt)
 
 
 class PtrSizePlotDriver(VMMapPlotDriver, ExternalLegendTopPlotBuilder):

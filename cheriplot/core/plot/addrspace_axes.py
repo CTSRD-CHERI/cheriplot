@@ -451,7 +451,7 @@ class AddressSpaceXAxis(axis.XAxis):
     def _update_ticks(self, renderer):
         ticks = super(AddressSpaceXAxis, self)._update_ticks(renderer)
         mgr = LabelManager(direction="h")
-        mgr.labels = [t.label1 for t in ticks]
+        mgr.add_labels([t.label1 for t in ticks])
         mgr.update_label_position(renderer)
         return ticks
 

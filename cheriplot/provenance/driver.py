@@ -29,8 +29,9 @@ import logging
 
 from cheriplot.core import SubCommand, BaseTraceTaskDriver, ProgressTimer
 from cheriplot.provenance.plot import (
-    AddressMapPlotDriver, PtrSizeDerefDriver, PtrSizeBoundDriver, PtrSizeCdfDriver)
-from cheriplot.provenance.parser import PointerProvenanceParser
+    AddressMapPlotDriver, AddressMapDerefPlotDriver, PtrSizeDerefDriver,
+    PtrSizeBoundDriver, PtrSizeCdfDriver)
+from cheriplot.provenance.parser import PointerProvenanceParser, ThreadedProvenanceParser
 from cheriplot.provenance.transforms import *
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class ProvenancePlotDriver(BaseTraceTaskDriver):
     the provenance graph as input.
     """
     addrmap = SubCommand(AddressMapPlotDriver)
+    addrmap_deref = SubCommand(AddressMapDerefPlotDriver)
     ptrsize_cdf = SubCommand(PtrSizeCdfDriver)
     ptrsize_bound = SubCommand(PtrSizeBoundDriver)
     ptrsize_deref = SubCommand(PtrSizeDerefDriver)
