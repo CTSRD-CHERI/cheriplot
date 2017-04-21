@@ -372,7 +372,7 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
 
     title = "CDF of the size of capabilities created"
     x_label = "Size"
-    y_label = "% of the total number of capabilities"
+    y_label = "Proportion of the total number of capabilities"
 
     extra_traces = Argument(help="Additional traces", nargs="*")
     outfile = Option(help="Output file", default=None)
