@@ -46,8 +46,6 @@ to another thread that is not being traced.
 
 To capture a trace the qtrace tool is used. The trace will be saved to the qemu log-file.
 
-Note that currently only a single trace can be taken for each qemu boot as qemu does not correctly rewrite the cvtrace header if the logfile is changed, this should be fixed.
-
 Below there is a complete example for helloworld.
 
 ```
@@ -64,24 +62,18 @@ qwattash@host $ xz helloworld.cvtrace # (optionally compress trace to save space
 
 ### Tools description
 
-All tools provided by cheriplot are in the `tools/` subdirectory in the tree, they are installed with more convenient
-aliases.
+The following tools are provided in cheriplot:
 
 - **cheriplot-tracedump**
-  Provides generic inspection of binary traces, can dump registers and apply various filters. There are two subcommands: the *scan* subcommand is used
-  to scan and search information in cheri traces, the *backtrace* subcommand is used to generate backtraces and call-graphs
-- **cheriplot-pointer-provenance**
-  Main tool for pointer provenance plots, currently only the `--asmap` and `--pfreq` plots are supported, others are WIP.
-- **cheriplot-pointer-oob**
-  Looks for capability manipulations that generate an out-of-bound offset that would trigger an error if dereferenced.
-- **cheriplot-pointer-density**
-  Plots the number of capabilites stored (number of accesses by csc, there may be overcounting if there are a lot of store to the same location) vs the virtual address with page granularity.
-- **cheriplot-capsize-cdf**
-  CDF plot of the capability size.
-- **cheriplot-capsize-bars**
-  Stacked bar plot prototype showing the size of capabilities that cover each memory mapped region in the address space. There are two variants, one takes into account all capabilities found from CSETBOUNDS and CFROMPTR and each capability is counted for a VM entry if it can be dereferenced there. The second takes into account the capabilities that are dereferenced (load and store) in each VM entry.
-
-Note that most plots support the `-c` switch that enables caching of intermediate data structures such as the provenance graph, so that subsequent calls will not scan again the trace since it is time-consuming task.
+  Inspection tool for binary traces. It can dump and filter trace entries based on various parameters (e.g. $pc or memory ranges, register used...).
+- **cheriplot-provenance**
+  Main tool for plots that use the pointer provenance graph. Produce address-map, cdf, capability-size and dereference plots.
+- **cheriplot-tracecmp**
+  Tool that compares binary and text traces to find differences.
+- **cheriplot-treedump**
+  Inspection tool for the provenance graph. It is similar to cheriplot-tracedump but reads data from the provenance graph instead of the raw trace.
+- **cheriplot-backtrace**
+  Produces backtraces and call-graphs from cheri binary traces.
 
 ## License
 
