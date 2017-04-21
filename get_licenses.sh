@@ -1,0 +1,1 @@
+pip freeze | grep '==' | cut -d '=' -f1 | xargs pip show | awk '/Name:/{match(-zsh, /Name: +([a-zA-Z0-9_-]+)/, arr); name=arr[1];} /License:/{match(-zsh, /License: +([a-zA-Z0-9._ -]+)/, arr); print name,": ",arr[1]}'
