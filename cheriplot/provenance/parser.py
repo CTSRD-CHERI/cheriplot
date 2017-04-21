@@ -37,181 +37,181 @@ from cheriplot.provenance.model import *
 
 logger = logging.getLogger(__name__)
 
+class SyscallContext:
+    """
+    Keeps the current syscall context information so that
+    the correct return point can be detected.
+
+    This class contains all the methods that manipulate
+    registers and values that depend on the ABI and constants
+    in CheriBSD.
+    """
+    class SyscallCode(IntEnum):
+        """
+        Enumerate system call numbers that are recognised by the
+        parser and are used to add information to the provenance
+        graph.
+        """
+        SYS_MMAP = 477
+        SYS_MUNMAP = 73
+        # also interesting mprotect and shm* stuff
+
+
+    def __init__(self, *args, **kwargs):
+        self.in_syscall = False
+        """Flag indicates whether we are tracking a systemcall."""
+
+        self.pc_syscall = None
+        """Syscall instruction PC."""
+
+        self.t_syscall = None
+        """Syscall instruction cycle number."""
+
+        self.pc_eret = None
+        """Expected eret instruction PC."""
+
+        self.code = None
+        """Current syscall code."""
+
+    def _get_syscall_code(self, regs):
+        """Get the syscall code for direct and indirect syscalls."""
+        # syscall code in $v0
+        # syscall arguments in $a0-$a7/$c3-$c10
+        code = regs.gpr[1] # $v0
+        indirect_code = regs.gpr[3] # $a0
+        is_indirect = (code == 0 or code == 198)
+        return indirect_code if is_indirect else code
+
+    def scan_syscall_start(self, inst, entry, regs, dataset, regset):
+        """
+        Scan a syscall instruction and detect the syscall type
+        and arguments.
+        """
+        code = self._get_syscall_code(regs)
+        try:
+            self.code = self.SyscallCode(code)
+        except ValueError:
+            # we are not interested in this syscall
+            return
+        self.in_syscall = True
+        self.pc_syscall = entry.pc
+        self.t_syscall = entry.cycles
+        self.pc_eret = entry.pc + 4
+
+        # create a node at syscall start for those system calls for
+        # which we care about the arguments
+        if self.code.value == self.SyscallCode.SYS_MUNMAP:
+            src_reg = 3 # argument in $c3
+            origin = CheriNodeOrigin.SYS_MUNMAP
+        else:
+            # we do not do anything for other syscalls
+            return None
+
+        data = NodeData()
+        data.cap = CheriCap(regs.cap_reg[src_reg])
+        data.cap.t_alloc = entry.cycles
+        # XXX may want a way to store call pc and return pc
+        data.pc = entry.pc
+        data.origin = origin
+        data.is_kernel = False
+        node = dataset.add_vertex()
+        dataset.vp.data[node] = data
+        # attach the new node to the capability node in src_reg
+        # and replace it in the register set
+        parent = regset[src_reg]
+        dataset.add_edge(parent, node)
+        regset[src_reg] = node
+        return node
+
+    def scan_syscall_end(self, inst, entry, regs, dataset, regset):
+        """
+        Scan registers to produce a syscall end node.
+        """
+        self.in_syscall = False
+
+        # create a node for the syscall start
+        if self.code.value == self.SyscallCode.SYS_MMAP:
+            ret_reg = 3 # return in $c3
+            origin = CheriNodeOrigin.SYS_MMAP
+        else:
+            # we do not do anything for other syscalls
+            return None
+
+        data = NodeData()
+        data.cap = CheriCap(regs.cap_reg[ret_reg])
+        data.cap.t_alloc = entry.cycles
+        # XXX may want a way to store call pc and return pc
+        data.pc = entry.pc
+        data.origin = origin
+        data.is_kernel = False
+        node = dataset.add_vertex()
+        dataset.vp.data[node] = data
+        # attach the new node to the capability node in ret_reg
+        # and replace it in the register set
+        parent = regset[ret_reg]
+        dataset.add_edge(parent, node)
+        regset[ret_reg] = node
+        return node
+
+
+class RegisterSet:
+    """
+    Extended register set that keeps track of memory
+    operations on capabilities.
+
+    We need to know where a register value has been read from
+    and where it is stored to. The first is used to infer
+    the correct CapNode to add as parent for a new node,
+    the latter allows us to set the CapNode.address for
+    a newly allocated capability.
+    """
+    def __init__(self, graph):
+        self.reg_nodes = np.empty(32, dtype=object)
+        """Graph node associated with each register."""
+
+        self.memory_map = {}
+        """CheriCapNodes stored in memory."""
+
+        self.pcc = None
+        """Current pcc node"""
+
+        self.graph = graph
+        """The provenance graph"""
+
+    def __getitem__(self, idx):
+        """
+        Fetch the :class:`cheriplot.core.provenance.GraphNode`
+        currently associated to a capability register with the
+        given register number.
+        """
+        return self.reg_nodes[idx]
+
+    def __setitem__(self, idx, val):
+        """
+        Fetch the :class:`cheriplot.core.provenance.GraphNode`
+        currently associated to a capability register with the
+        given register number.
+        """
+        # if the current value of the register set is short-lived
+        # (never stored anywhere and not in any other regset node)
+        # then it is effectively lost and "deallocated"
+        # if self.reg_nodes[idx] is not None:
+        #     n_refs = np.count_nonzero(self.reg_nodes == self.reg_nodes[idx])
+        #     node_data = self.graph.vp.data[self.reg_nodes[idx]]
+        #     # XXX may refine this by checking the memory_map to see if the
+        #     # node is still there
+        #     n_refs += len(node_data.address)
+        #     if n_refs == 1:
+        #         # can safely set the t_free
+        #         disable because we need a way to actually get the current cycle
+        self.reg_nodes[idx] = val
+
+
 class PointerProvenanceParser(CallbackTraceParser):
     """
     Parsing logic that builds the provenance graph used in
     all the provenance-based plots.
     """
-
-    class RegisterSet:
-        """
-        Extended register set that keeps track of memory
-        operations on capabilities.
-
-        We need to know where a register value has been read from
-        and where it is stored to. The first is used to infer
-        the correct CapNode to add as parent for a new node,
-        the latter allows us to set the CapNode.address for
-        a newly allocated capability.
-        """
-        def __init__(self, graph):
-            self.reg_nodes = np.empty(32, dtype=object)
-            """Graph node associated with each register."""
-
-            self.memory_map = {}
-            """CheriCapNodes stored in memory."""
-
-            self.pcc = None
-            """Current pcc node"""
-
-            self.graph = graph
-            """The provenance graph"""
-
-        def __getitem__(self, idx):
-            """
-            Fetch the :class:`cheriplot.core.provenance.GraphNode`
-            currently associated to a capability register with the
-            given register number.
-            """
-            return self.reg_nodes[idx]
-
-        def __setitem__(self, idx, val):
-            """
-            Fetch the :class:`cheriplot.core.provenance.GraphNode`
-            currently associated to a capability register with the
-            given register number.
-            """
-            # if the current value of the register set is short-lived
-            # (never stored anywhere and not in any other regset node)
-            # then it is effectively lost and "deallocated"
-            # if self.reg_nodes[idx] is not None:
-            #     n_refs = np.count_nonzero(self.reg_nodes == self.reg_nodes[idx])
-            #     node_data = self.graph.vp.data[self.reg_nodes[idx]]
-            #     # XXX may refine this by checking the memory_map to see if the
-            #     # node is still there
-            #     n_refs += len(node_data.address)
-            #     if n_refs == 1:
-            #         # can safely set the t_free
-            #         disable because we need a way to actually get the current cycle
-            self.reg_nodes[idx] = val
-
-
-    class SyscallContext:
-        """
-        Keeps the current syscall context information so that
-        the correct return point can be detected.
-
-        This class contains all the methods that manipulate
-        registers and values that depend on the ABI and constants
-        in CheriBSD.
-        """
-        class SyscallCode(IntEnum):
-            """
-            Enumerate system call numbers that are recognised by the
-            parser and are used to add information to the provenance
-            graph.
-            """
-            SYS_MMAP = 477
-            SYS_MUNMAP = 73
-            # also interesting mprotect and shm* stuff
-
-
-        def __init__(self, *args, **kwargs):
-            self.in_syscall = False
-            """Flag indicates whether we are tracking a systemcall."""
-
-            self.pc_syscall = None
-            """Syscall instruction PC."""
-
-            self.t_syscall = None
-            """Syscall instruction cycle number."""
-
-            self.pc_eret = None
-            """Expected eret instruction PC."""
-
-            self.code = None
-            """Current syscall code."""
-
-        def _get_syscall_code(self, regs):
-            """Get the syscall code for direct and indirect syscalls."""
-            # syscall code in $v0
-            # syscall arguments in $a0-$a7/$c3-$c10
-            code = regs.gpr[1] # $v0
-            indirect_code = regs.gpr[3] # $a0
-            is_indirect = (code == 0 or code == 198)
-            return indirect_code if is_indirect else code
-
-        def scan_syscall_start(self, inst, entry, regs, dataset, regset):
-            """
-            Scan a syscall instruction and detect the syscall type
-            and arguments.
-            """
-            code = self._get_syscall_code(regs)
-            try:
-                self.code = self.SyscallCode(code)
-            except ValueError:
-                # we are not interested in this syscall
-                return
-            self.in_syscall = True
-            self.pc_syscall = entry.pc
-            self.t_syscall = entry.cycles
-            self.pc_eret = entry.pc + 4
-
-            # create a node at syscall start for those system calls for
-            # which we care about the arguments
-            if self.code.value == self.SyscallCode.SYS_MUNMAP:
-                src_reg = 3 # argument in $c3
-                origin = CheriNodeOrigin.SYS_MUNMAP
-            else:
-                # we do not do anything for other syscalls
-                return None
-
-            data = NodeData()
-            data.cap = CheriCap(regs.cap_reg[src_reg])
-            data.cap.t_alloc = entry.cycles
-            # XXX may want a way to store call pc and return pc
-            data.pc = entry.pc
-            data.origin = origin
-            data.is_kernel = False
-            node = dataset.add_vertex()
-            dataset.vp.data[node] = data
-            # attach the new node to the capability node in src_reg
-            # and replace it in the register set
-            parent = regset[src_reg]
-            dataset.add_edge(parent, node)
-            regset[src_reg] = node
-            return node
-
-        def scan_syscall_end(self, inst, entry, regs, dataset, regset):
-            """
-            Scan registers to produce a syscall end node.
-            """
-            self.in_syscall = False
-
-            # create a node for the syscall start
-            if self.code.value == self.SyscallCode.SYS_MMAP:
-                ret_reg = 3 # return in $c3
-                origin = CheriNodeOrigin.SYS_MMAP
-            else:
-                # we do not do anything for other syscalls
-                return None
-
-            data = NodeData()
-            data.cap = CheriCap(regs.cap_reg[ret_reg])
-            data.cap.t_alloc = entry.cycles
-            # XXX may want a way to store call pc and return pc
-            data.pc = entry.pc
-            data.origin = origin
-            data.is_kernel = False
-            node = dataset.add_vertex()
-            dataset.vp.data[node] = data
-            # attach the new node to the capability node in ret_reg
-            # and replace it in the register set
-            parent = regset[ret_reg]
-            dataset.add_edge(parent, node)
-            regset[ret_reg] = node
-            return node
-
 
     def __init__(self, cache=False, **kwargs):
         super().__init__(**kwargs)
@@ -226,13 +226,13 @@ class PointerProvenanceParser(CallbackTraceParser):
         is completely initialised.
         """
 
-        self.regset = self.RegisterSet(self.dataset)
+        self.regset = RegisterSet(self.dataset)
         """
         Register set that maps capability registers
         to nodes in the provenance tree.
         """
 
-        self.syscall_context = self.SyscallContext()
+        self.syscall_context = SyscallContext()
         """Keep state related to system calls entry end return"""
 
     def _init_graph(self):
@@ -873,3 +873,8 @@ class PointerProvenanceParser(CallbackTraceParser):
             return
         if (cb.is_capability and cd.is_capability):
             self.regset[cd.cap_index] = self.regset[cb.cap_index]
+
+
+class ThreadedProvenanceParser(ThreadedTraceParser, PointerProvenanceParser):
+    # this is for testing purposes
+    pass
