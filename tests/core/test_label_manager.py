@@ -103,7 +103,7 @@ def v_label_set(request):
 def test_resolve_horizontal_overlap(mock_method, renderer, hlabel_manager, h_label_set):
     mock_method.side_effect = lambda self, renderer=None: (
         mtransform.Bbox.from_bounds(self._x, self._y, label_width, label_height))
-    hlabel_manager.labels = h_label_set
+    hlabel_manager.add_labels(h_label_set)
     hlabel_manager.update_label_position(renderer)
     assert_no_hoverlap(h_label_set)
 
@@ -111,7 +111,7 @@ def test_resolve_horizontal_overlap(mock_method, renderer, hlabel_manager, h_lab
 def test_resolve_vertical_overlap(mock_method, renderer, vlabel_manager, v_label_set):
     mock_method.side_effect = lambda self, renderer=None: (
         mtransform.Bbox.from_bounds(self._x, self._y, label_width, label_height))
-    vlabel_manager.labels = v_label_set
+    vlabel_manager.add_labels(v_label_set)
     vlabel_manager.update_label_position(renderer)
     assert_no_voverlap(v_label_set)
 
@@ -120,7 +120,7 @@ def test_resolve_vertical_overlap(mock_method, renderer, vlabel_manager, v_label
 def test_resolve_h_overlap_constrain(mock_method, renderer, hlabel_manager, h_label_set):
     mock_method.side_effect = lambda self, renderer=None: (
         mtransform.Bbox.from_bounds(self._x, self._y, label_width, label_height))
-    hlabel_manager.labels = h_label_set
+    hlabel_manager.add_labels(h_label_set)
     hlabel_manager.constraint = (0.3, np.inf)
     hlabel_manager.update_label_position(renderer)
     assert_no_hoverlap(h_label_set, xmin=0.3, xmax=np.inf)
