@@ -39,11 +39,24 @@ class VMMapFileParser(ConfigurableComponent):
     """
     Parse a vmmap file created by procstat or libprocstat-based vmmap_dump tool
     """
-    vmmap_file = Argument(
+    vmmap_file = Argument(nargs="?",
         help="File that specify the VM mappings for the traced process")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+
+        self.vmmap = VMMapModel()
+        """Model that describes vmmap entries."""
+
+        self.map_file = None
+        """File where the entries are specified."""
+
+        self.csv_style = False
+        """The map file can be csv or space-separated."""
+
+        if self.config.vmmap_file is None:
+            return
+
         try:
             self.map_file = open(self.config.vmmap_file, "r")
         except IOError:
@@ -59,12 +72,14 @@ class VMMapFileParser(ConfigurableComponent):
             has_csv_delim = False
         self.csv_style = has_csv_delim
 
-        self.vmmap = VMMapModel()
-
     def get_model(self):
         return self.vmmap
 
     def parse(self):
+        if not self.map_file:
+            # nothing to parse
+            return
+
         if self.csv_style:
             logger.info("Try to load vmmap_dump memory map file")
             vmmap_dump_cols = ["start", "end", "offset", "perm", "res", "pres",
