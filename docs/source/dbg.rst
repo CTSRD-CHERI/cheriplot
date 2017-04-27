@@ -1,7 +1,7 @@
-cheriplot.provenance
+cheriplot.dbg
 ---
 
-.. automodule:: cheriplot.provenance
+.. automodule:: cheriplot.dbg
    :members:
    :undoc-members:
    :show-inheritance:

@@ -6,7 +6,7 @@ The core module contains the implementation of the base parser and matplotlib pr
 AddressSpaceAxes
 ----------------
 
-.. automodule:: cheriplot.core.addrspace_axes
+.. automodule:: cheriplot.core.plot
    :members:
    :undoc-members:
    :show-inheritance:
@@ -29,6 +29,11 @@ callback methods defined by subclasses. Callback methods must have the form "sca
 
 Tool
 ----
+
+.. automodule:: cheriplot.core.driver
+   :members:
+   :undoc-members:
+   :show-inheritance:
 
 .. automodule:: cheriplot.core.tool
    :members:

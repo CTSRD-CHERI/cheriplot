@@ -9,9 +9,8 @@ Overview
 .. toctree::
    :maxdepth: 2
 
-   cheriplot
-   tools
-
+   Cheriplot <cheriplot>
+   Tracing how-to <tracing_howto>
 
 * :ref:`genindex`
 * :ref:`modindex`
