@@ -59,10 +59,11 @@ class BaseToolTaskDriver(TaskDriver):
 
         # instrument the run method to do profiling
         if self.config.profile:
-            def profiling_run(self_):
+            run_method = self.run
+            def profiling_run():
                 try:
                     pr = cProfile.Profile()
-                    pr.runcall(self.run)
+                    pr.runcall(run_method)
                 finally:
                     # print profiling results
                     pr.create_stats()
