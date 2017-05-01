@@ -34,6 +34,9 @@ from cached_property import cached_property
 from functools import partialmethod
 from graph_tool.all import *
 
+__all__ = ("CheriCapPerm", "CheriNodeOrigin", "CheriCap", "NodeData",
+           "ProvenanceGraphManager")
+
 class CheriCapPerm(IntEnum):
     """
     Enumeration of bitmask for the capability permission bits.
@@ -49,6 +52,12 @@ class CheriCapPerm(IntEnum):
     SEAL = 1 << 7
     # XXXAM qemu currently uses 8, spec says 10
     SYSTEM_REGISTERS = 1 << 10 | 1 << 8
+
+    @classmethod
+    def all(cls):
+        return (cls.GLOBAL | cls.EXEC | cls.LOAD | cls.STORE |
+                cls.CAP_LOAD | cls.CAP_STORE | cls.CAP_STORE_LOCAL |
+                cls.SEAL | cls.SYSTEM_REGISTERS)
 
 
 class CheriNodeOrigin(IntEnum):
@@ -76,9 +85,44 @@ class ProvenanceGraphManager:
     Handle graph operations, load and save and
     provides shortcuts to the graph properties
     """
-    pass
+
+    def __init__(self, cache_file=None):
+        """
+        Create a graph manager. A new graph is generated
+        if the cache file is not specified or does not exist.
+        """
+        self.cache_file = cache_file
+        if cache_file and os.path.exists(cache_file):
+            self.graph = load_graph(cache_file)
+        else:
+            self.graph = Graph()
+            # CHERI capability properties
+            # prop_base = self.graph.new_vertex_property("object")
+            # prop_len = self.graph.new_vertex_property("object")
+            # prop_off = self.graph.new_vertex_property("object")
+            # prop_perm = self.graph.new_vertex_property("int32_t")
+            # prop_otype = self.graph.new_vertex_property("int32_t")
+            # prop_valid = self.graph.new_vertex_property("bool")
+            # prop_seal = self.graph.new_vertex_property("bool")
+            # prop_t_alloc = self.graph.new_vertex_property("object")
+            # prop_t_free = self.graph.new_vertex_property("object")
+            prop_data = self.graph.new_vertex_property("object")
+            self.graph.vp["data"] = prop_data
+        self._init_props()
+
+    def _init_props(self):
+        # graph data
+        self.data = self.graph.vp.data
     
-    
+    def load(self, cache_file):
+        self.graph = load_graph(cache_file)
+        self.cache_file = cache_file
+        self._init_props()
+
+    def save(self, dest=None):
+        if dest is None:
+            dest = self.cache_file
+        self.graph.save(dest)
 
 
 class CheriCap:

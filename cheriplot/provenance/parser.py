@@ -31,11 +31,38 @@ import os
 
 from enum import IntEnum
 from functools import reduce
+from graph_tool.all import Graph, load_graph
 
 from cheriplot.core import CallbackTraceParser, ThreadedTraceParser, ProgressTimer
 from cheriplot.provenance.model import *
 
 logger = logging.getLogger(__name__)
+
+__all__ = ("PointerProvenanceParser", "MissingParentError",
+           "DereferenceUnknownCapabilityError")
+
+
+class MissingParentError(RuntimeError):
+    """
+    Exception raised when attempting to create a provenance node but a
+    valid parent is not found.
+    This is a fatal error condition.
+    """
+    pass
+
+
+class DereferenceUnknownCapabilityError(RuntimeError):
+    """
+    Exception raised when a capability dereference is found
+    but it is not possible to determine the corresponding
+    vertex in the graph where the dereference should be registered.
+    This happens when a previously unseen capability register is
+    dereferenced or in case of bugs in the vertex propagation in
+    the register set.
+    This is a fatal error condition.
+    """
+    pass
+
 
 class SyscallContext:
     """
@@ -280,10 +307,11 @@ class PointerProvenanceParser(CallbackTraceParser):
                     cap.base = 0
                     cap.offset = 0
                     cap.length = 0xffffffffffffffff
-                    cap.permissions = 0xffff # all XXX should we only have EXEC and few other?
+                    # all XXX should we only have EXEC and few other?
+                    cap.permissions = CheriCapPerm.all()
+                    cap.objtype = 0
                     cap.valid = True
-                    # set the guessed capability value to the vertex data
-                    # property
+                    cap.t_alloc = 0
                     self.dataset.vp.data[node].cap = cap
                     self.regset[idx] = node
                     logger.warning("Guessing KCC %s", self.dataset.vp.data[node])
@@ -295,14 +323,10 @@ class PointerProvenanceParser(CallbackTraceParser):
                     cap.base = 0
                     cap.offset = 0
                     cap.length = 0xffffffffffffffff
-                    # cap.permissions = (
-                    #     CheriCapPerm.LOAD | CheriCapPerm.STORE |
-                    #     CheriCapPerm.EXEC | CheriCapPerm.GLOBAL |
-                    #     CheriCapPerm.CAP_LOAD | CheriCapPerm.CAP_STORE |
-                    #     CheriCapPerm.CAP_STORE_LOCAL | CheriCapPerm.SEAL |
-                    #     CheriCapPerm.SYSTEM_REGISTERS)
-                    cap.permissions = 0xffff # all
+                    cap.objtype = 0
+                    cap.permissions = CheriCapPerm.all()
                     cap.valid = True
+                    cap.t_alloc = 0
                     self.dataset.vp.data[node].cap = cap
                     self.regset[idx] = node
                     logger.warning("Guessing KDC %s", self.dataset.vp.data[node])
@@ -350,10 +374,10 @@ class PointerProvenanceParser(CallbackTraceParser):
             return False
 
         if self._has_exception(entry):
-            # if an exception occurred adjust EPCC node from PCC,
+            # If an exception occurred adjust EPCC node from PCC,
             # this also handles syscall exceptions.
             # if the instruction is an eret that is causing an exception
-            # EPCC and PCC do not change and we end up in an handler again
+            # EPCC and PCC do not change and we end up in an handler again.
             logger.debug("except {%d}: update epcc %s, update pcc %s",
                          entry.cycles,
                          self.dataset.vp.data[self.regset.pcc],
@@ -625,11 +649,13 @@ class PointerProvenanceParser(CallbackTraceParser):
         except KeyError:
             logger.error("{%d} Dereference unknown capability %s",
                          entry.cycles, inst)
-            raise RuntimeError("Dereference unknown capability")
+            raise DereferenceUnknownCapabilityError(
+                "Dereference unknown capability")
         if node is None:
             logger.error("{%d} Dereference unknown capability %s",
                          entry.cycles, inst)
-            raise RuntimeError("Dereference unknown capability")
+            raise DereferenceUnknownCapabilityError(
+                "Dereference unknown capability")
         node_data = self.dataset.vp.data[node]
         # instead of the capability register offset we use the
         # entry memory_address so we capture any extra offset in
@@ -731,8 +757,10 @@ class PointerProvenanceParser(CallbackTraceParser):
                     # seen the content of this register yet.
                     node = self.make_root_node(entry, inst.op0.value,
                                                time=entry.cycles)
+                    node_data = self.dataset.vp.data[node]
+                    node_data.address[entry.cycles] = entry.memory_address
                     logger.debug("Found %s value %s from memory load",
-                                 inst.op0.name, self.dataset.vp.data[node])
+                                 inst.op0.name, node_data)
                     self.regset.memory_map[entry.memory_address] = node
                 self.regset[cd] = node
         return False
@@ -841,8 +869,8 @@ class PointerProvenanceParser(CallbackTraceParser):
             op = inst.operands[src_op_index]
             parent = self.regset[op.cap_index]
         except:
-            logger.error("Error searching for parent node of %s", node)
-            raise
+            logger.error("Error searching for parent node of %s", data)
+            raise MissingParentError("Missing parent for %s", data)
 
         # there must be a parent if the root nodes for the initial register
         # set have been created
@@ -850,10 +878,10 @@ class PointerProvenanceParser(CallbackTraceParser):
         # available, this may be the case of replacing the guess of KDC
         if parent == None:
             logger.error("Missing parent for %s, src_operand=%d %s, "
-                         "dst_operand=%d %s", node,
+                         "dst_operand=%d %s", data,
                          src_op_index, inst.operands[src_op_index],
                          dst_op_index, inst.operands[dst_op_index])
-            raise RuntimeError("Missing parent for %s" % node)
+            raise MissingParentError("Missing parent for %s" % data)
 
         # create the vertex in the graph and assign the data to it
         vertex = self.dataset.add_vertex()

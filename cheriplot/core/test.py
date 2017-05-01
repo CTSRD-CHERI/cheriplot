@@ -65,9 +65,9 @@ class MockTraceWriter:
 
     def _side_effect(self, entry, key, val):
         if key == "load":
-            entry.is_load = val
+            entry.is_load = True
         elif key == "store":
-            entry.is_store = val
+            entry.is_store = True
         elif key == "mem":
             entry.memory_address = val
         elif key == "exc":

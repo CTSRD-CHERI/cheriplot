@@ -6,7 +6,6 @@ import pytest
 import logging
 import tempfile
 
-from unittest import mock
 from cheriplot.provenance import (
     PointerProvenanceParser, CheriNodeOrigin, CheriCapPerm, MissingParentError)
 
@@ -183,6 +182,17 @@ trace_pcc_epcc_tracking = (
     # code/handling, just the fact that an exception happened
     # because it is the only thing that matters for provenance
     # tracking.
+    #
+    # XXX we currently have a problem here. Is pcc updated or not?
+    # it depends whether the exception is caused on instruction fetch
+    # of the following nop or instruction fetch of the jumped address.
+    # we have no way to know that, we would need to emit epcc when
+    # this happens but it can not always be done. e.g. when the
+    # instruction actually committed and we already have a value:
+    #
+    # ld $at, <addr> with external interrupt
+    # -> instr commit with $at value in the trace entry
+    #
     ("cjr $c2", {"exc": 1}),
     ("nop", {}),
     ("cgetpcc $c1", {"c1": kcc}),
@@ -261,6 +271,8 @@ trace_ddc = (
             parent=0, origin=CheriNodeOrigin.SETBOUNDS)        
     }),
 )
+
+# XXX add test for tracking movement of nodes across registers
 
 
 @pytest.mark.parametrize("trace", [
