@@ -55,6 +55,7 @@ class VMMapFileParser(ConfigurableComponent):
         """The map file can be csv or space-separated."""
 
         if self.config.vmmap_file is None:
+            logger.debug("No vmmap file, empty vmmap")
             return
 
         try:

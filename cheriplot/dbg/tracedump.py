@@ -29,10 +29,13 @@ import logging
 
 from functools import reduce
 from collections import deque
-from cheriplot.provenance import CallbackTraceParser, CheriCap
 from cheriplot.core import (
-    BaseTraceTaskDriver, ConfigurableComponent, Option, NestedConfig,
-    interactive_tool, option_range_validator, any_int_validator)
+    CallbackTraceParser, BaseTraceTaskDriver, ConfigurableComponent,
+    Option, NestedConfig, interactive_tool, option_range_validator,
+    any_int_validator)
+from cheriplot.vmmap import VMMapFileParser
+from cheriplot.provenance import CheriCap
+from cheriplot.dbg.symbols import SymReader
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +48,6 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
     start = Option("-s", type=int, default=0, help="Start offset in the trace")
     end = Option("-e", type=int, default=None, help="Stop offset in the trace")
     show_regs = Option("-r", action="store_true", help="Dump register content")
-    # show_regs = Option("-r", help="Dump register content")
     instr = Option(default=None, help="Find instruction occurrences")
     reg = Option(
         default=None,
@@ -91,7 +93,7 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
         help="Return a trace entry when matches any of the conditions "
         "instead of all")
 
-    def __init__(self, **kwargs):
+    def __init__(self, sym_reader, **kwargs):
         """
         This parser filters the trace according to a set of match
         conditions. Multiple match conditions can be used at the same time
@@ -107,6 +109,9 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
 
         self._kernel_mode = False
         """Keep track of kernel-userspace transitions"""
+
+        self.sym_reader = sym_reader
+        """Helper used to search symbols for addresses"""
 
         self.filters = [
             self._match_instr,
@@ -153,17 +158,38 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
         else:
             # no exception
             exception = ""
-        print("{%d:%d} 0x%x %s %s" % (entry.asid, entry.cycles, entry.pc,
-                                      inst.inst.name, exception))
+        instr_dump = "{%d:%d} 0x%x %s %s" % (
+            entry.asid, entry.cycles, entry.pc, inst.inst.name, exception)
+        sym = None
+        # XXX it would be nice to have an inst.is_branch property
+        # it should be provided by LLVM quite easily
+        if inst.opcode == "cjalr":
+            sym_addr = inst.op1.value.base + inst.op1.value.offset
+            sym = self.sym_reader.find_symbol(sym_addr)
+        elif inst.opcode == "cjr":
+            sym_addr = inst.op0.value.base + inst.op0.value.offset
+            sym = self.sym_reader.find_symbol(sym_addr)
+        elif inst.opcode == "jalr" or inst.opcode == "jr":
+            sym_addr = inst.op0.value
+            sym = self.sym_reader.find_symbol(sym_addr)
+        if sym:
+            instr_dump = "%s (%s)" % (instr_dump, sym)
+        print(instr_dump)
         # dump read/write
         if inst.cd is None:
             # no operands for the instruction
             return
 
-        if entry.is_load:
-            print("$%s = [%x]" % (inst.cd.name, entry.memory_address))
-        elif entry.is_store:
-            print("[%x] = $%s" % (entry.memory_address, inst.cd.name))
+        if entry.is_load or entry.is_store:
+            sym = self.sym_reader.find_symbol(entry.memory_address)
+            if sym:
+                loc = "[%x (%s)]" % (entry.memory_address, sym)
+            else:
+                loc = "[%x]" % entry.memory_address
+            if entry.is_load:
+                print("$%s = %s" % (inst.cd.name, loc))
+            else:
+                print("%s = $%s" % (loc, inst.cd.name))
 
         if (entry.gpr_number() != -1):
             gpr_value = inst.cd.value
@@ -339,10 +365,21 @@ class PytracedumpDriver(BaseTraceTaskDriver):
     [<register_value_valid>] <register> = <value>"""
 
     scan = NestedConfig(TraceDumpParser)
+    symbols_path = Option(
+        nargs="*",
+        help="Path where to look for binaries in the vmmap, "
+        "default is current directory.",
+        default=["."])
+    vmmap = NestedConfig(VMMapFileParser)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.vmmap = VMMapFileParser(config=self.config.vmmap)
+        self.vmmap.parse()
+        self.symbols = SymReader(vmmap=self.vmmap,
+                                 path=self.config.symbols_path)
         self.parser = TraceDumpParser(trace_path=self.config.trace,
+                                      sym_reader=self.symbols,
                                       config=self.config.scan)
 
     def update_config(self, config):
