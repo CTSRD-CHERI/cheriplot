@@ -31,10 +31,12 @@ from cheriplot.core import SubCommand, BaseTraceTaskDriver, ProgressTimer
 from cheriplot.provenance.plot import (
     AddressMapPlotDriver, AddressMapDerefPlotDriver, PtrSizeDerefDriver,
     PtrSizeBoundDriver, PtrSizeCdfDriver)
-from cheriplot.provenance.parser import PointerProvenanceParser, ThreadedProvenanceParser
+from cheriplot.provenance.parser import PointerProvenanceParser
 from cheriplot.provenance.transforms import *
 
 logger = logging.getLogger(__name__)
+
+__all__ = ("ProvenancePlotDriver",)
 
 class ProvenancePlotDriver(BaseTraceTaskDriver):
     """

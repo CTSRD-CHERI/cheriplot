@@ -29,6 +29,7 @@
 Parser for cheri trace files based on the cheritrace library.
 """
 
+import sys
 import os
 import math
 import numpy as np
@@ -37,6 +38,7 @@ import logging
 
 import pycheritrace as pct
 
+from multiprocessing import Pool, Value, Manager, Lock, Condition
 from enum import Enum
 from functools import reduce
 from cached_property import cached_property
@@ -47,7 +49,7 @@ from cheriplot.core.utils import ProgressPrinter
 logger = logging.getLogger(__name__)
 
 __all__ = ("TraceParser", "CallbackTraceParser", "Operand", "Instruction",
-           "ThreadedTraceParser")
+           "threaded_parser")
 
 class TraceParser:
     """
@@ -71,7 +73,7 @@ class TraceParser:
                 raise IOError("Can not open trace %s" % trace_path)
 
     def __len__(self):
-        if self.trace:
+        if self.trace is not None:
             return self.trace.size()
         return 0
 
@@ -470,7 +472,6 @@ class CallbackTraceParser(TraceParser):
         :param direction: scan direction (forward = 0, backward=1)
         :type direction: int
         """
-
         if start is None:
             start = 0
         if end is None:
@@ -507,62 +508,156 @@ class CallbackTraceParser(TraceParser):
             self._last_regs = regs
             return ret
 
+        logger.debug("scanning %s %s %d %d %d", self.trace, _scan, start, end, direction)
         self.trace.scan(_scan, start, end, direction)
         self.progress.finish()
 
-# experimental
-from multiprocessing import Value, Process
-from multiprocessing import Pool
 
-class ThreadedTraceParser(CallbackTraceParser):
+class threaded_parser:
     """
-    Trace parser that scans a trace using multiple processes
+    Decorator for trace parsers that runs the
+    parser in different processes.
 
     The scanning processes are forked from the current parser
     and each one is allocated a range of the trace. The parsed
     dataset is then processed to merge the parts toghether if
     required.
-
-    XXX: experimental
     """
 
-    @classmethod
-    def _slave_parse(cls, trace, start, end, direction):
-        inst = cls(trace)
-        inst.parse(start, end, direction)
+    class _ParserBuilder:
+        """
+        Wrapper that builds the parser in the worker processes.
+        This is required since Swig objects are not pickle-able.
+        """
+        def __init__(self, klass, kwargs):
+            self.klass = klass
+            self.kwargs = kwargs
 
-    def __init__(self, threads=os.cpu_count(), **kwargs):
-        super().__init__(**kwargs)
+        def __call__(self):
+            return self.klass(**self.kwargs)
+
+    @staticmethod
+    def _worker_parse(result_cbk, parser_builder, parse_args):
+        """
+        Multiprocessing parser worker body.
+
+        This is the main function running a parser worker in
+        a separate process.
+        """
+        parser = parser_builder()
+        logger.debug("Trace created %d %s", os.getpid(), parser.trace)
+        parser._worker_parse(*parse_args)
+        if callable(result_cbk):
+            return result_cbk(parser)
+        elif hasattr(parser, "mp_result"):
+            return parser.mp_result()
+        else:
+            logger.warning("Worker finished, provide a result_cbk "
+                           "to extract the result from the parser")
+        return None
+
+    def __init__(self, threads=os.cpu_count(), result_cbk=None,
+                 merge_cbk=None):
+        """
+        Decorator constructor
+
+        :param threads: number of worker processes to use.
+        :param result_cbk: callback used to extract the partial
+        result from a worker.
+        This defaults to the decorated-class mp_result.
+        :param merge_cbk: callback used to merge partial results
+        when parsing has completed.
+        This defaults to the decorated-class mp_merge.
+        """
+        assert threads > 0, "At least a worker process must be used!"
+
+        self.result_cbk = result_cbk
+        """
+        Callable used to fetch the result of the parser to send it
+        to the master process.
+        """
+
+        self.merge_cbk = merge_cbk
+        """Callback used to merge the results from the workers."""
 
         self.threads = threads
-        """Number of workers to use"""
+        """Number of workers to use."""
 
-        self.pool = Pool(processes=threads)
-        """Subprocess pool"""
+        self.pool = None
+        """Subprocess pool."""
 
-    def parse(self, start=None, end=None, direction=0):
+        self.results = []
+        """Async results."""
 
-        start = start or 0
-        end = end or len(self)
-        block_size = math.floor((end - start) / self.threads)
-        start_indexes = np.arange(start, end - block_size + 1, block_size)
-        end_indexes = np.arange(start + block_size, end + 1, block_size) - 1
-        # the last process consumes any remaining entries left by the
-        # rounding of block_size
-        end_indexes[-1] = end
+        self.manager = Manager()
+        """Manager for the pool."""
 
-        results = []
-        for start_idx, end_idx in zip(start_indexes, end_indexes):
-            result = self.pool.apply_async(self._slave_parse, self.path,
-                                           start_idx, end_idx, direction)
-            results.append(result)
-        # procs = []
-        # for idx_start, idx_end in zip(start_indexes, end_indexes):
-        #     print(idx_start, idx_end)
-        #     p = Process(target=self.parser, args=(self.path, idx_start, idx_end))
-        #     procs.append(p)
+    def __call__(self, klass):
+        """
+        Wrap the parser parse() method to use
+        the process pool.
+        """
+        klass_init = klass.__init__
+        klass.mp = self
 
-        # for p in procs:
-        #     p.start()
-        # for p in procs:
-        #     p.join()
+        def _wrap_init(self_, **kwargs):
+            self_.captured_kwargs = kwargs
+            klass_init(self_, **kwargs)
+            self_.pid = os.getpid()
+
+        def _wrap_parse(self_, start=None, end=None, direction=0):
+            """
+            Parse the trace with multiple subprocesses.
+            """
+            # split the start-end interval in sub-invervals for the workers
+            start = start if start != None else  0
+            end = end + 1 if end != None else len(self_)
+            block_size = math.floor((end - start) / self_.mp.threads)
+            rest = (end - start) % self_.mp.threads
+            start_indexes = np.arange(start, end - rest, block_size)
+            end_indexes = np.arange(start + block_size - 1, end - rest,
+                                    block_size)
+            # add the remaining to the last block
+            end_indexes[-1] += rest
+
+            # delay pool creation because the decorated calss must be available
+            # in subprocesses as well.
+            # Also avoid spawning processes for nothing if parse()
+            # is never called.
+            self_.mp.pool = Pool(processes=self_.mp.threads)
+            # run the workers
+            for start_idx, end_idx in zip(start_indexes, end_indexes):
+                builder = self_.mp._ParserBuilder(klass, self_.captured_kwargs)
+                # make sure that start and end are python integers otherwise
+                # cheritrace bindings will complain about numpy.int
+                parse_args = (int(start_idx), int(end_idx), direction)
+                # prepare the worker main arguments
+                args = (self_.mp.result_cbk, builder, parse_args)
+                result = self_.mp.pool.apply_async(
+                    threaded_parser._worker_parse, args)
+                self_.mp.results.append(result)
+            # wait for all workers to finish
+            self_.mp.pool.close()
+            self_.mp.pool.join()
+            # propagate exceptions and fetch results
+            results = []
+            for r in self_.mp.results:
+                results.append(r.get())
+            # merge partial results
+            if callable(self_.mp.merge_cbk):
+                self_.mp.merge_cbk(self_, results)
+            elif hasattr(self_, "mp_merge"):
+                self_.mp_merge(results)
+            else:
+                logger.warning("Multiprocessing parser finished, provide a "
+                               "merge_cbk to merge partial results")
+
+        # if a single worker would be spawned, just run the
+        # parser in the current process.
+        if self.threads > 1:
+            klass.__init__ = _wrap_init
+            klass._worker_parse = klass.parse
+            klass.parse = _wrap_parse
+        else:
+            logger.debug("Running %s with 1 worker")
+        return klass

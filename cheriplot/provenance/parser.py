@@ -33,7 +33,7 @@ from enum import IntEnum
 from functools import reduce
 from graph_tool.all import Graph, load_graph
 
-from cheriplot.core import CallbackTraceParser, ThreadedTraceParser, ProgressTimer
+from cheriplot.core import CallbackTraceParser, ProgressTimer
 from cheriplot.provenance.model import *
 
 logger = logging.getLogger(__name__)
@@ -901,8 +901,3 @@ class PointerProvenanceParser(CallbackTraceParser):
             return
         if (cb.is_capability and cd.is_capability):
             self.regset[cd.cap_index] = self.regset[cb.cap_index]
-
-
-class ThreadedProvenanceParser(ThreadedTraceParser, PointerProvenanceParser):
-    # this is for testing purposes
-    pass

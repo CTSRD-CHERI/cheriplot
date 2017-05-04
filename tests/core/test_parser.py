@@ -5,10 +5,15 @@ Test the core parser callback handling
 import pytest
 import logging
 from unittest import mock
+from tempfile import NamedTemporaryFile
+from itertools import chain
 
-from cheriplot.core import CallbackTraceParser
+from cheriplot.core import CallbackTraceParser, threaded_parser
+from cheriplot.core.test import MockTraceWriter
 
 logging.basicConfig(level=logging.DEBUG)
+
+logger = logging.getLogger(__name__)
 
 # globally referenced mocks used to mock parser methods
 mock_scan_all = mock.Mock(name="scan_all_callback")
@@ -210,3 +215,53 @@ def test_callbacks(parser_setup, opcode):
     for cbk in callbacks:
         assert cbk in expect[opcode], "Callback method not expected %s" % cbk
 
+
+@threaded_parser(threads=2)
+class ThreadedParserTest(CallbackTraceParser):
+    """
+    test the threaded parser to check that the entries it
+    reads are sensible
+    """
+
+    expected_trace = (
+        ("lui $at, 0x00", {"1": 0x00}),
+        ("lui $at, 0x22", {"1": 0x22}),
+        ("lui $at, 0x44", {"1": 0x44}),
+        ("lui $at, 0x88", {"1": 0x88}),
+        ("lui $at, 0xcc", {"1": 0xcc}),
+    )
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # keep track of entry values found
+        self.entries = []
+
+    def scan_all(self, instr, entry, regs, last, idx):
+        self.entries.append(instr.op0.value)
+        assert entry.cycles == idx
+        assert entry.pc == 0x2000 + idx * 4
+        expected_entry = ThreadedParserTest.expected_trace[idx][1]
+        assert expected_entry["1"] == instr.op0.value
+        return False
+
+    def mp_result(self):
+        return self.entries
+
+    def mp_merge(self, mp_results):
+        # check that all the entries  have been inspected
+        entries_seen = list(chain(*mp_results))
+        values = [e[1]["1"] for e in ThreadedParserTest.expected_trace]
+        assert len(entries_seen) == 5
+        assert set(entries_seen) == set(values)
+
+
+def test_threaded_parser():
+
+    with NamedTemporaryFile() as tmp:
+        # write mock trace
+        w = MockTraceWriter(tmp.name)
+        w.write_trace(ThreadedParserTest.expected_trace, pc=0x2000)
+
+        # parse the trace and check that it did run
+        p = ThreadedParserTest(trace_path=tmp.name)
+        p.parse()

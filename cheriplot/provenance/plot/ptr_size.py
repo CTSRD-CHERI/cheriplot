@@ -41,7 +41,7 @@ from cheriplot.core import (
     ProgressTimer, ProgressPrinter, ExternalLegendTopPlotBuilder,
     BasePlotBuilder, PatchBuilder, LabelManager, AutoText, TaskDriver,
     Option, Argument)
-from cheriplot.provenance.parser import PointerProvenanceParser, ThreadedProvenanceParser
+from cheriplot.provenance.parser import PointerProvenanceParser
 from cheriplot.provenance.transforms import *
 from cheriplot.provenance.plot import VMMapPlotDriver
 
