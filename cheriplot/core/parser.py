@@ -522,6 +522,11 @@ class threaded_parser:
     and each one is allocated a range of the trace. The parsed
     dataset is then processed to merge the parts toghether if
     required.
+
+    The decorated class should define the methods `mp_result()`
+    and `mp_merge(entries)`. These are called to extract the
+    partial results from workers and merge them in the
+    main process pareser.
     """
 
     class _ParserBuilder:

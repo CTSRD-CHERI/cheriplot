@@ -250,6 +250,7 @@ class ThreadedParserTest(CallbackTraceParser):
     def mp_merge(self, mp_results):
         # check that all the entries  have been inspected
         entries_seen = list(chain(*mp_results))
+        self.entries = entries_seen
         values = [e[1]["1"] for e in ThreadedParserTest.expected_trace]
         assert len(entries_seen) == 5
         assert set(entries_seen) == set(values)
@@ -265,3 +266,4 @@ def test_threaded_parser():
         # parse the trace and check that it did run
         p = ThreadedParserTest(trace_path=tmp.name)
         p.parse()
+        assert len(p.entries) == 5

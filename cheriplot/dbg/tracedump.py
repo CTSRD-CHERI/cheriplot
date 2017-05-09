@@ -26,11 +26,14 @@
 #
 
 import logging
+import sys
+import tempfile
+import shutil
 
 from functools import reduce
 from collections import deque
 from cheriplot.core import (
-    CallbackTraceParser, BaseTraceTaskDriver, ConfigurableComponent,
+    CallbackTraceParser, threaded_parser, BaseTraceTaskDriver, ConfigurableComponent,
     Option, NestedConfig, interactive_tool, option_range_validator,
     any_int_validator)
 from cheriplot.vmmap import VMMapFileParser
@@ -39,6 +42,7 @@ from cheriplot.dbg.symbols import SymReader
 
 logger = logging.getLogger(__name__)
 
+@threaded_parser()
 class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
     """Parser that performs filtering and search operations on a trace"""
 
@@ -47,6 +51,11 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
 
     start = Option("-s", type=int, default=0, help="Start offset in the trace")
     end = Option("-e", type=int, default=None, help="Stop offset in the trace")
+    outfile = Option(
+        "-o",
+        type=str,
+        default=None,
+        help="Write output to the given file")
     show_regs = Option("-r", action="store_true", help="Dump register content")
     instr = Option(default=None, help="Find instruction occurrences")
     reg = Option(
@@ -124,6 +133,12 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
             self._match_perm
         ]
 
+        self.out = sys.stdout
+        """Output file stream"""
+
+        if self.config.outfile:
+            self.out = tempfile.NamedTemporaryFile(mode="w")
+
         self.update_config(self.config)
 
     def update_config(self, config):
@@ -144,13 +159,14 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
     def dump_regs(self, entry, regs, last_regs):
         for idx in range(0,31):
             real_regnum = idx + 1
-            print("[%d] $%d = %x" % (
+            self.out.write("[%d] $%d = %x\n" % (
                 regs.valid_gprs[idx],
                 real_regnum,
                 regs.gpr[idx]))
         for idx in range(0,32):
-            print("[%d] $c%d = %s" % (regs.valid_caps[idx], idx,
-                                      self.dump_cap(regs.cap_reg[idx])))
+            self.out.write("[%d] $c%d = %s\n" % (
+                regs.valid_caps[idx], idx,
+                self.dump_cap(regs.cap_reg[idx])))
 
     def dump_instr(self, inst, entry, idx):
         if entry.exception != 31:
@@ -174,7 +190,8 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
             sym = self.sym_reader.find_symbol(sym_addr)
         if sym:
             instr_dump = "%s (%s)" % (instr_dump, sym)
-        print(instr_dump)
+        self.out.write(instr_dump)
+        self.out.write("\n")
         # dump read/write
         if inst.cd is None:
             # no operands for the instruction
@@ -187,26 +204,28 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
             else:
                 loc = "[%x]" % entry.memory_address
             if entry.is_load:
-                print("$%s = %s" % (inst.cd.name, loc))
+                self.out.write("$%s = %s\n" % (inst.cd.name, loc))
             else:
-                print("%s = $%s" % (loc, inst.cd.name))
+                self.out.write("%s = $%s\n" % (loc, inst.cd.name))
 
         if (entry.gpr_number() != -1):
             gpr_value = inst.cd.value
             gpr_name = inst.cd.name
-            print("$%s = %x" % (gpr_name, gpr_value))
+            self.out.write("$%s = %x\n" % (gpr_name, gpr_value))
         elif (entry.capreg_number() != -1):
             cap_name = inst.cd.name
             cap_value = inst.cd.value
-            print("$%s = %s" % (
+            self.out.write("$%s = %s\n" % (
                 cap_name, self.dump_cap(cap_value)))
 
     def dump_kernel_user_switch(self, entry):
         if self._kernel_mode != entry.is_kernel():
             if entry.is_kernel():
-                print("Enter kernel mode {%d:%d}" % (entry.asid, entry.cycles))
+                self.out.write("Enter kernel mode {%d:%d}\n" % (
+                    entry.asid, entry.cycles))
             else:
-                print("Enter user mode {%d:%d}" % (entry.asid, entry.cycles))
+                self.out.write("Enter user mode {%d:%d}\n" % (
+                    entry.asid, entry.cycles))
             self._kernel_mode = entry.is_kernel()
 
     def do_dump(self, inst, entry, regs, last_regs, idx):
@@ -344,7 +363,22 @@ class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
         return False
 
     def parse(self, start=None, end=None, direction=0):
-        super().parse(self.config.start, self.config.end)
+        start = start or self.config.start
+        end = end or self.config.end
+        super().parse(start, end)
+
+    def mp_result(self):
+        """Return the temporary file."""
+        self.out.flush()
+        return self.out.name
+
+    def mp_merge(self, results):
+        """Concatenate temporary files"""
+        if self.config.outfile:
+            with open(self.config.outfile, 'wb') as out:
+                for in_file in results:
+                    with open(in_file,'rb') as fd:
+                        shutil.copyfileobj(fd, out, 1024*1024*50)
 
 
 @interactive_tool(key="scan")
@@ -371,6 +405,10 @@ class PytracedumpDriver(BaseTraceTaskDriver):
         "default is current directory.",
         default=["."])
     vmmap = NestedConfig(VMMapFileParser)
+    threads = Option(
+        type=int,
+        default=1,
+        help="Run the tool with the given number of workers")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -381,10 +419,11 @@ class PytracedumpDriver(BaseTraceTaskDriver):
         self.parser = TraceDumpParser(trace_path=self.config.trace,
                                       sym_reader=self.symbols,
                                       config=self.config.scan)
+        self.parser.mp.threads = self.config.threads
 
     def update_config(self, config):
         super().update_config(config)
         self.parser.update_config(config.scan)
 
     def run(self):
-        self.parser.parse()
+        self.parser.parse(self.config.scan.start, self.config.scan.end)
