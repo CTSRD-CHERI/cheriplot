@@ -472,6 +472,13 @@ class CallbackTraceParser(TraceParser):
         :param direction: scan direction (forward = 0, backward=1)
         :type direction: int
         """
+        self._do_parse(start, end, direction)
+
+    def _do_parse(self, start, end, direction):
+        """
+        Actual implementation of the tracing progression.
+        See :meth:`CallbackTraceParser.parse`.
+        """
         if start is None:
             start = 0
         if end is None:
@@ -610,9 +617,10 @@ class threaded_parser:
             klass_init(self_, **kwargs)
             self_.pid = os.getpid()
 
-        def _wrap_parse(self_, start=None, end=None, direction=0):
+        def _wrap_parse(self_, start, end, direction):
             """
             Parse the trace with multiple subprocesses.
+            This hooks the trace parser _do_parse method
             """
             # split the start-end interval in sub-invervals for the workers
             start = start if start != None else  0
@@ -661,8 +669,8 @@ class threaded_parser:
         # parser in the current process.
         if self.threads > 1:
             klass.__init__ = _wrap_init
-            klass._worker_parse = klass.parse
-            klass.parse = _wrap_parse
+            klass._worker_parse = klass._do_parse
+            klass._do_parse = _wrap_parse
         else:
             logger.debug("Running %s with 1 worker")
         return klass

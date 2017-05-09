@@ -33,8 +33,9 @@ from enum import IntEnum
 from functools import reduce
 from graph_tool.all import Graph, load_graph
 
-from cheriplot.core import CallbackTraceParser, ProgressTimer
+from cheriplot.core import CallbackTraceParser, ProgressTimer, threaded_parser
 from cheriplot.provenance.model import *
+from cheriplot.provenance.transforms import bfs_transform, BFSTransform
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,7 @@ class RegisterSet:
     a newly allocated capability.
     """
     def __init__(self, graph):
-        self.reg_nodes = np.empty(32, dtype=object)
+        self.reg_nodes = [None] * 32
         """Graph node associated with each register."""
 
         self.memory_map = {}
@@ -205,12 +206,44 @@ class RegisterSet:
         self.graph = graph
         """The provenance graph"""
 
+    def __getstate__(self):
+        """
+        Make object pickle-able, graph-tool vertices are not pickleable
+        but their index is.
+        """
+        logger.debug("Pickling partial result register set")
+        return {
+            "reg_nodes": [self.graph.vertex_index[u] if u != None else None
+                          for u in self.reg_nodes],
+            "memory_map": {k: self.graph.vertex_index[u]
+                           for k,u in self.memory_map.items()},
+            "pcc": self.graph.vertex_index[self.pcc],
+        }
+
+    def __setstate__(self, data):
+        """
+        Make object pickle-able.
+
+        Restore internal state. Note that this does not recover the vertex
+        instances from the graph as we do not require this when propagating
+        partial results from the workers.
+        XXX Doing so saves some time although it may be desirable to
+        perform the operation to avoid confusion.
+        Note also that the graph is dropped, this is to avoid pickling the
+        graph twice.
+        """
+        logger.debug("Unpickling partial result register set")
+        self.reg_nodes = data["reg_nodes"]
+        self.memory_map = data["memory_map"]
+        self.pcc = data["pcc"]
+
     def __getitem__(self, idx):
         """
         Fetch the :class:`cheriplot.core.provenance.GraphNode`
         currently associated to a capability register with the
         given register number.
         """
+        assert idx < 32, "Out of bound register set fetch"
         return self.reg_nodes[idx]
 
     def __setitem__(self, idx, val):
@@ -219,6 +252,7 @@ class RegisterSet:
         currently associated to a capability register with the
         given register number.
         """
+        assert idx < 32, "Out of bound register set assignment"
         # if the current value of the register set is short-lived
         # (never stored anywhere and not in any other regset node)
         # then it is effectively lost and "deallocated"
@@ -234,6 +268,102 @@ class RegisterSet:
         self.reg_nodes[idx] = val
 
 
+class MergePartialSubgraph(BFSTransform):
+    """
+    Merge a partial subgraph into the main graph.
+
+    This is used to merge partial results from
+    multiprocessing workers that parse the
+    provenance graph.
+
+    The transform must be run on the subgraph that is
+    should be merged.
+    """
+
+    def __init__(self, graph, subgraph, initial_regset, final_regset,
+                 previous_regset):
+
+        self.graph = graph
+        """Merged graph that we are building"""
+
+        self.subgraph = subgraph
+        """Subgraph to be merged"""
+
+        self.initial_regset = initial_regset
+        """
+        Regset mapping initial register state to vertices in the
+        subgraph.
+
+        Note: the register set contains vertex handles for the subgraph.
+        """
+
+        self.final_regset = final_regset
+        """
+        Regset mapping the final register state of the worker to the
+        vertices in the merged graph. This is generated from the final
+        regset given to the transform, which contains vertex handles for
+        the subgraph.
+        """
+
+        self.previous_regset = previous_regset
+        """
+        Regset mapping the final state of the registers of the last merged
+        subgraph to vertices in the merged graph.
+
+        Note: the register set contains vertex handles for the merged graph.
+        """
+
+        self.copy_vertex_map = subgraph.new_vertex_property("long")
+        """
+        Map vertex index in the subgraph to a vertex index in the
+        merged graph.
+        """
+
+    def get_final_regset(self):
+        """
+        Return the register set mapping the final state of the worker
+        partial graph to vertices in the merged graph.
+        This is used as input to the next merge operation as previous_regset.
+        """
+        regset = RegisterSet(None)
+        for idx in range(len(self.final_regset.reg_nodes)):
+            v = self.final_regset[idx]
+            regset[idx] = self.copy_vertex_map[v] if v != None else None
+        v_pcc = self.final_regset.pcc
+        regset.pcc = self.copy_vertex_map[v_pcc] if v_pcc != None else None
+        regset.memory_map = self.final_regset.memory_map
+        return regset
+
+    def examine_vertex(self, u):
+        if u in self.initial_regset.reg_nodes:
+            index = self.initial_regset.reg_nodes.index(u)
+            # this is a dummy vertex do not copy it
+            # but map it to its corresponding vertex
+            if self.previous_regset[index] is None:
+                # in this case mark all the children as root,
+                # note that those vertices still have to be copied
+                for v in u.out_neighbours():
+                    self.subgraph.vp.data[v].origin = CheriNodeOrigin.ROOT
+            else:
+                self.copy_vertex_map[u] = self.previous_regset[index]
+        elif u == self.initial_regset.pcc:
+            # this is a dummy vertex, same as above
+            self.copy_vertex_map[u] = self.previous_regset.pcc
+        else:
+            # need to copy the vertex in the merged graph and then
+            # recreate the edges
+            v = self.graph.add_vertex()
+            self.graph.vp.data[v] = self.subgraph.vp.data[u]
+            self.copy_vertex_map[u] = v
+            for u_in in u.in_neighbours():
+                # v_in must exist because we are doing BFS
+                # however if u_in is a root v_in is None
+                v_in = self.copy_vertex_map[u_in]
+                if v_in != None:
+                    self.graph.add_edge(v_in, v)
+
+
+@threaded_parser()
 class PointerProvenanceParser(CallbackTraceParser):
     """
     Parsing logic that builds the provenance graph used in
@@ -259,6 +389,13 @@ class PointerProvenanceParser(CallbackTraceParser):
         to nodes in the provenance tree.
         """
 
+        self.initial_regset = None
+        """
+        The initial register set is created in worker processes
+        to keep track of the initial dummy graph vertices that
+        are created.
+        """
+
         self.syscall_context = SyscallContext()
         """Keep state related to system calls entry end return"""
 
@@ -274,9 +411,6 @@ class PointerProvenanceParser(CallbackTraceParser):
             self.dataset.vp["data"] = vdata
             self.dataset.gp["path"] = gpath
 
-    def get_model(self):
-        return self.dataset
-
     def parse(self, *args, **kwargs):
         cache_file = self.path + "_provenance_plot.gt"
         with ProgressTimer("Parse provenance graph", logger):
@@ -286,6 +420,69 @@ class PointerProvenanceParser(CallbackTraceParser):
                     self.dataset.save(cache_file)
             else:
                 super().parse(*args, **kwargs)
+
+    def get_model(self):
+        return self.dataset
+
+    def mp_result(self):
+        """
+        Return the partial result from a worker process.
+
+        The returned data is a tuple containing:
+        - the partial graph
+        - the initial register set if this worker did not
+          parse the first chunk of the trace
+        - the final register set
+        - the memory map holding the live vertices in memory,
+          included in the final register set
+
+        :return: (partial_graph, initial_regset, final_regset)
+        """
+        return (self.get_model(), self.initial_regset, self.regset)
+
+    def mp_merge(self, results):
+        """
+        Populate the dataset from the partial results.
+
+        Note: this method is run in the main process,
+        assuming that the results are in-order w.r.t.
+        the trace entries indexes that were used.
+        """
+        prev_regset = None
+        for idx, (graph, initial_regset, final_regset) in enumerate(results):
+            with ProgressTimer("Merge partial worker result [%d/%d]" % (
+                    idx + 1, len(results)), logger):
+                if initial_regset == None:
+                    self.dataset = graph
+                    prev_regset = final_regset
+                else:
+                    # copy the graph into the merged dataset and
+                    # merge the root nodes from the initial register set
+                    # with the previous register set
+                    transform = MergePartialSubgraph(
+                        self.dataset, graph, initial_regset,
+                        final_regset, prev_regset)
+                    bfs_transform(graph, [transform])
+                    prev_regset = transform.get_final_regset()
+
+    def _do_parse(self, start, end, direction):
+        """
+        This sets up the different initialization of the graph and
+        register set, depending on the start index.
+
+        If the start == 0 then we initialize the register set from
+        what we find before the first return to userspace.
+        Otherwise we create dummy graph roots for each register
+        that will be used during the merge.
+        """
+        if start != 0:
+            self.initial_regset = RegisterSet(self.dataset)
+            # create dummy initial nodes
+            self.initial_regset.reg_nodes = list(self.dataset.add_vertex(32))
+            self.initial_regset.pcc = self.dataset.add_vertex()
+        # for testing
+        end = start + 100000
+        super()._do_parse(start, end, direction)
 
     def _set_initial_regset(self, inst, entry, regs):
         """

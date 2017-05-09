@@ -41,14 +41,17 @@ def bfs_transform(graph, transforms):
     however running multiple transforms at once saves time
     because the root vertices have to be searched only once.
     """
-    roots = []
-    # find roots (normally there should be only one)
-    for v in graph.vertices():
-        if v.in_degree() == 0:
-            roots.append(v)
+    # roots = []
+    # # find roots (normally there should be only one)
+    # for v in graph.vertices():
+    #     if v.in_degree() == 0:
+    #         roots.append(v)
+    # for t in transforms:
+    #     for v in roots:
+    #         bfs_search(graph, v, t)
+
     for t in transforms:
-        for v in roots:
-            bfs_search(graph, v, t)
+        bfs_search(graph, visitor=t)
     # apply the transforms here so that they can not
     # invalidate the vertex handles even if one of them
     # deletes vertices (note that property maps are not
@@ -91,10 +94,11 @@ class BFSTransform(BFSVisitor):
         This method is called at the end of the visit.
         It is used to apply the transformation to the
         graph when it is safe to do so.
+        (e.g. deleting marked vertices)
         """
         pass
 
-class SingleMaskBFSTransform(FlatTransform):
+class SingleMaskFlatTransform(FlatTransform):
     """
     Transform that masks the graph after scanning the vertices
     """
@@ -114,7 +118,7 @@ class SingleMaskBFSTransform(FlatTransform):
             vf.a |= np.logical_not(self.vertex_mask.a)
 
 
-class MaskNullAndKernelVertices(SingleMaskBFSTransform):
+class MaskNullAndKernelVertices(SingleMaskFlatTransform):
     """
     Transform that masks kernel vertices and null capabilities.
     """
@@ -126,7 +130,7 @@ class MaskNullAndKernelVertices(SingleMaskBFSTransform):
             self.vertex_mask[u] = True
 
 
-class MergeCFromPtr(SingleMaskBFSTransform):
+class MergeCFromPtr(SingleMaskFlatTransform):
     """
     Transform that adds merged vertices that represent
     a cfromtpr immediately followed by a csetbounds and masks the
@@ -161,7 +165,7 @@ class MergeCFromPtr(SingleMaskBFSTransform):
                 for child in parent.out_neighbours():
                     self.graph.add_edge(next_parent, child)
 
-class MaskCFromPtr(SingleMaskBFSTransform):
+class MaskCFromPtr(SingleMaskFlatTransform):
     """
     Transform that removes cfromptr vertices that are never stored
     in memory nor used for dereferencing.

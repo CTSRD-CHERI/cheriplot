@@ -27,11 +27,12 @@
 
 import logging
 
-from cheriplot.core import SubCommand, BaseTraceTaskDriver, ProgressTimer
+from cheriplot.core import SubCommand, BaseTraceTaskDriver, ProgressTimer, Option
 from cheriplot.provenance.plot import (
     AddressMapPlotDriver, AddressMapDerefPlotDriver, PtrSizeDerefDriver,
     PtrSizeBoundDriver, PtrSizeCdfDriver)
 from cheriplot.provenance.parser import PointerProvenanceParser
+from cheriplot.provenance.stats import ProvenanceStatsDriver
 from cheriplot.provenance.transforms import *
 
 logger = logging.getLogger(__name__)
@@ -48,11 +49,17 @@ class ProvenancePlotDriver(BaseTraceTaskDriver):
     ptrsize_cdf = SubCommand(PtrSizeCdfDriver)
     ptrsize_bound = SubCommand(PtrSizeBoundDriver)
     ptrsize_deref = SubCommand(PtrSizeDerefDriver)
+    stats = SubCommand(ProvenanceStatsDriver)
+    threads = Option(
+        type=int,
+        default=1,
+        help="Run the tool with the given number of workers")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._parser = PointerProvenanceParser(cache=self.config.cache,
                                                trace_path=self.config.trace)
+        self._parser.mp.threads = self.config.threads
 
     def run(self):
         # XXX should probably change the way we encapsulte stuff here,
@@ -62,6 +69,8 @@ class ProvenancePlotDriver(BaseTraceTaskDriver):
         self._parser.parse()
         # get the parsed provenance graph model
         pgm = self._parser.get_model()
+        # free the parser to reclaim memory
+        del self._parser
 
         # do the filtering of the graph here
         with ProgressTimer("Mask NULL and kernel capabilities", logger):
