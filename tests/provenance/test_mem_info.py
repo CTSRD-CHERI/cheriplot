@@ -211,13 +211,64 @@ trace_mem_deref_unknown_reg = (
     }),
 )
 
+# test for the subgraph merge logic with
+# v0 - - > Dummy -> ROOT(v5)
+#               `-> v4
+# with dereference/store data to check it is propagated correctly.
+# trace init is repeated because we need to control the exact
+# number of instruction to make the workers split the trace
+# at the intended point.
+trace_mem_mp_deref_merge = (
+    ("cmove $c1, $c1", { # vertex 0
+        "c1": start_cap,
+        "vertex": mk_vertex(start_cap, pc=0, t_alloc=0)
+    }),
+    (None, { # inferred kcc vertex 1
+        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
+    }),
+    (None, { # inferred kdc vertex 2
+        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
+    }),
+    ("cmove $c31, $c31", { # vertex 3
+        "c31": pcc,
+        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
+    }),
+    ("eret", {}), # mark initialization end
+    ("nop", {}),
+    # split worker set here
+    # derive something from c1 (which is a dummy vertex in worker 2)
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("csetbounds $c2, $c1, $at", { # vertex 4
+        "c2": pct_cap(0x1000, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x100, perm),
+                            parent=0, origin=CheriNodeOrigin.SETBOUNDS),
+    }),
+    # dereference and store c1 so that the dummy vertex takes some
+    # data to propagate to v0
+    ("csc $c1, $zero, 0x0($c1)", {
+        "c1": start_cap,
+        "mem": 0x1000,
+        "store": True,
+        "vertex_deref": mk_vertex_deref(0, 0x1000, True, "store"),
+        "vertex_store": mk_vertex_store(0, 0x1000),
+    }),
+    # create a root that goes in c1
+    ("cgetdefault $c1", { # vertex 5
+        "c1": ddc,
+        "vertex": mk_vertex(ddc)
+    })
+)
+
+@pytest.mark.timeout(4)
+@pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
     (trace_mem_init, trace_mem_st_ld),
     (trace_mem_init, trace_mem_2st_ld),
     (trace_mem_init, trace_mem_st_ld_root),
     (trace_mem_init, trace_mem_st_ld_invalid),
+    (trace_mem_mp_deref_merge,),
 ])
-def test_mem_tracking(trace):
+def test_mem_tracking(trace, threads):
     """Test provenance parser with the simplest trace possible."""
 
     with tempfile.NamedTemporaryFile() as tmp:
@@ -231,18 +282,21 @@ def test_mem_tracking(trace):
 
         # get parsed graph
         parser = PointerProvenanceParser(trace_path=tmp.name)
+        parser.mp.threads = threads
         parser.parse()
         # check the provenance graph model
         pgm = parser.get_model()
         assert_graph_equal(w.pgm.graph, pgm)
 
+@pytest.mark.timeout(4)
+@pytest.mark.parametrize("threads", [1])
 @pytest.mark.parametrize("trace,exc_type", [
     ((trace_mem_init, trace_mem_deref_unknown_cap),
      DereferenceUnknownCapabilityError),
     ((trace_mem_init, trace_mem_deref_unknown_reg),
      DereferenceUnknownCapabilityError),
 ])
-def test_mem_errors(trace, exc_type):
+def test_mem_errors(trace, exc_type, threads):
     """
     Test expected failure conditions where 
     the parser should throw an error.
@@ -259,5 +313,6 @@ def test_mem_errors(trace, exc_type):
 
         # get parsed graph
         parser = PointerProvenanceParser(trace_path=tmp.name)
+        parser.mp.threads = threads
         with pytest.raises(exc_type) as excinfo:
             parser.parse()

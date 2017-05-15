@@ -134,6 +134,7 @@ trace_invalid_derive_from_unknown = (
 # EPCC is never set before returning to userspace.
 trace_invalid_missing_initial_epcc = (
     ("eret", {}), # trigger error when tyring to load epcc in pcc
+    ("nop", {})
 )
 
 # generate trace to check that the parser keeps track of
@@ -274,14 +275,15 @@ trace_ddc = (
 
 # XXX add test for tracking movement of nodes across registers
 
-
+@pytest.mark.timeout(4)
+@pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
     trace_infer_kcc_kdc,
     trace_explicit_kcc_kdc,
-    trace_pcc_epcc_tracking, # xfail due to unresolved issue
+    # trace_pcc_epcc_tracking, # xfail due to unresolved issue
     trace_ddc,
 ])
-def test_nodegen_simple(trace):
+def test_nodegen_simple(trace, threads):
     """Test provenance parser with the simplest trace possible."""
 
     with tempfile.NamedTemporaryFile() as tmp:
@@ -291,16 +293,20 @@ def test_nodegen_simple(trace):
 
         # get parsed graph
         parser = PointerProvenanceParser(trace_path=tmp.name)
+        # force a single thread for this test
+        parser.mp.threads = threads
         parser.parse()
         # check the provenance graph model
         pgm = parser.get_model()
         assert_graph_equal(w.pgm.graph, pgm)
 
+@pytest.mark.timeout(4)
+@pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace,exc_type", [
     (trace_invalid_derive_from_unknown, MissingParentError),
     (trace_invalid_missing_initial_epcc, ValueError)
 ])
-def test_nodegen_errors(trace, exc_type):
+def test_nodegen_errors(trace, exc_type, threads):
     """
     Test expected failure conditions where 
     the parser should throw an error.
@@ -313,5 +319,7 @@ def test_nodegen_errors(trace, exc_type):
 
         # get parsed graph
         parser = PointerProvenanceParser(trace_path=tmp.name)
+        # force a single thread for this test
+        parser.mp.threads = threads
         with pytest.raises(exc_type) as excinfo:
             parser.parse()

@@ -67,6 +67,9 @@ class CheriNodeOrigin(IntEnum):
     """
 
     UNKNOWN = -1
+    # partial result used in mutiprocessing parser
+    PARTIAL = -2
+    # root node
     ROOT = 0
     # instructions
     SETBOUNDS = 1

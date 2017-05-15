@@ -472,6 +472,10 @@ class CallbackTraceParser(TraceParser):
         :param direction: scan direction (forward = 0, backward=1)
         :type direction: int
         """
+        if start is None:
+            start = 0
+        if end is None:
+            end = len(self)
         self._do_parse(start, end, direction)
 
     def _do_parse(self, start, end, direction):
@@ -479,10 +483,7 @@ class CallbackTraceParser(TraceParser):
         Actual implementation of the tracing progression.
         See :meth:`CallbackTraceParser.parse`.
         """
-        if start is None:
-            start = 0
-        if end is None:
-            end = len(self)
+        logger.debug("Scan trace [%d, %d]", start, end)
         # fast progress processing, calling progress.advance() in each
         # _scan call is too expensive
         progress_points = list(range(start, end, int((end - start) / 100) + 1))
@@ -544,9 +545,41 @@ class threaded_parser:
         def __init__(self, klass, kwargs):
             self.klass = klass
             self.kwargs = kwargs
+            # signal the parser that this is a worker process
+            kwargs["worker_process"] = True
 
         def __call__(self):
             return self.klass(**self.kwargs)
+
+
+    class _MultiprocessState:
+        """
+        This holds the state for multiprocessing for a parser
+        instance.
+        """
+
+        def __init__(self, threads, result_cbk=None, merge_cbk=None):
+            self.result_cbk = result_cbk
+            """
+            Callable used to fetch the result of the parser to send it
+            to the master process.
+            """
+
+            self.pid = os.getpid()
+            """Current process PID"""
+
+            self.merge_cbk = merge_cbk
+            """Callback used to merge the results from the workers."""
+
+            self.threads = threads
+            """Number of workers to use."""
+
+            self.pool = None
+            """Subprocess pool."""
+
+            self.results = []
+            """Async results."""
+
 
     @staticmethod
     def _worker_parse(result_cbk, parser_builder, parse_args):
@@ -557,7 +590,7 @@ class threaded_parser:
         a separate process.
         """
         parser = parser_builder()
-        logger.debug("Trace created %d %s", os.getpid(), parser.trace)
+        logger.debug("Trace created %d", os.getpid())
         parser._worker_parse(*parse_args)
         if callable(result_cbk):
             return result_cbk(parser)
@@ -595,33 +628,34 @@ class threaded_parser:
         self.threads = threads
         """Number of workers to use."""
 
-        self.pool = None
-        """Subprocess pool."""
-
-        self.results = []
-        """Async results."""
-
-        self.manager = Manager()
-        """Manager for the pool."""
-
     def __call__(self, klass):
         """
-        Wrap the parser parse() method to use
+        Wrap the parser _do_parse() method to use
         the process pool.
         """
         klass_init = klass.__init__
-        klass.mp = self
 
         def _wrap_init(self_, **kwargs):
+            self_.is_worker = kwargs.pop("worker_process", False)
             self_.captured_kwargs = kwargs
             klass_init(self_, **kwargs)
-            self_.pid = os.getpid()
+            self_.mp = threaded_parser._MultiprocessState(
+                self.threads, self.result_cbk, self.merge_cbk)
 
         def _wrap_parse(self_, start, end, direction):
             """
             Parse the trace with multiple subprocesses.
             This hooks the trace parser _do_parse method
             """
+            assert self_.mp.threads > 0, "Number of workers must be > 0"
+            logger.debug("Begin multiprocessing parse (master pid:%d)",
+                         os.getpid())
+            if self_.mp.threads == 1:
+                # no need to start the pool and split the work, do everything
+                # in the current process
+                logger.debug("Running %s with 1 worker", klass.__name__)
+                return self_._worker_parse(start, end, direction)
+
             # split the start-end interval in sub-invervals for the workers
             start = start if start != None else  0
             end = end + 1 if end != None else len(self_)
@@ -640,10 +674,11 @@ class threaded_parser:
             self_.mp.pool = Pool(processes=self_.mp.threads)
             # run the workers
             for start_idx, end_idx in zip(start_indexes, end_indexes):
-                builder = self_.mp._ParserBuilder(klass, self_.captured_kwargs)
+                builder = threaded_parser._ParserBuilder(
+                    klass, dict(self_.captured_kwargs))
                 # make sure that start and end are python integers otherwise
                 # cheritrace bindings will complain about numpy.int
-                parse_args = (int(start_idx), int(end_idx), direction)
+                parse_args = (int(start_idx), int(end_idx), int(direction))
                 # prepare the worker main arguments
                 args = (self_.mp.result_cbk, builder, parse_args)
                 result = self_.mp.pool.apply_async(
@@ -656,6 +691,10 @@ class threaded_parser:
             results = []
             for r in self_.mp.results:
                 results.append(r.get())
+
+            # we don't need the pool anymore, kill anything that may
+            # be still there
+            self_.mp.pool.terminate()
             # merge partial results
             if callable(self_.mp.merge_cbk):
                 self_.mp.merge_cbk(self_, results)
@@ -665,12 +704,7 @@ class threaded_parser:
                 logger.warning("Multiprocessing parser finished, provide a "
                                "merge_cbk to merge partial results")
 
-        # if a single worker would be spawned, just run the
-        # parser in the current process.
-        if self.threads > 1:
-            klass.__init__ = _wrap_init
-            klass._worker_parse = klass._do_parse
-            klass._do_parse = _wrap_parse
-        else:
-            logger.debug("Running %s with 1 worker")
+        klass.__init__ = _wrap_init
+        klass._worker_parse = klass._do_parse
+        klass._do_parse = _wrap_parse
         return klass

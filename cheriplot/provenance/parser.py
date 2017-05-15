@@ -42,6 +42,13 @@ logger = logging.getLogger(__name__)
 __all__ = ("PointerProvenanceParser", "MissingParentError",
            "DereferenceUnknownCapabilityError")
 
+class SubgraphMergeError(RuntimeError):
+    """
+    Exception raised when there is an error during the merge
+    of partial results from multiprocessing workers.
+    """
+    pass
+
 
 class MissingParentError(RuntimeError):
     """
@@ -193,6 +200,7 @@ class RegisterSet:
     the latter allows us to set the CapNode.address for
     a newly allocated capability.
     """
+
     def __init__(self, graph):
         self.reg_nodes = [None] * 32
         """Graph node associated with each register."""
@@ -200,7 +208,7 @@ class RegisterSet:
         self.memory_map = {}
         """CheriCapNodes stored in memory."""
 
-        self.pcc = None
+        self._pcc = None
         """Current pcc node"""
 
         self.graph = graph
@@ -211,14 +219,16 @@ class RegisterSet:
         Make object pickle-able, graph-tool vertices are not pickleable
         but their index is.
         """
-        logger.debug("Pickling partial result register set")
-        return {
+        logger.debug("Pickling partial result register set %d", os.getpid())
+        state = {
             "reg_nodes": [self.graph.vertex_index[u] if u != None else None
                           for u in self.reg_nodes],
             "memory_map": {k: self.graph.vertex_index[u]
                            for k,u in self.memory_map.items()},
-            "pcc": self.graph.vertex_index[self.pcc],
-        }
+            "_pcc": (self.graph.vertex_index[self._pcc]
+                     if self._pcc != None else None),
+            }
+        return state
 
     def __setstate__(self, data):
         """
@@ -235,7 +245,53 @@ class RegisterSet:
         logger.debug("Unpickling partial result register set")
         self.reg_nodes = data["reg_nodes"]
         self.memory_map = data["memory_map"]
-        self.pcc = data["pcc"]
+        self._pcc = data["_pcc"]
+
+    @property
+    def pcc(self):
+        return self._pcc
+
+    @pcc.setter
+    def pcc(self, value):
+        if self._pcc != None:
+            data = self.graph.vp.data[self._pcc]
+            if data.origin == CheriNodeOrigin.PARTIAL:
+                self.graph.add_edge(self._pcc, val)
+        self._pcc = value
+
+    def has_pcc(self, allow_root=False):
+        """
+        Check if the register set contains a valid pcc
+
+        :param idx: the register index to check
+        :param allow_root: a root can be created if the register
+        does not have a valid node.
+        """
+        if self.pcc == None:
+            return False
+        if allow_root:
+            data = self.graph.vp.data[self.pcc]
+            if data.origin == CheriNodeOrigin.PARTIAL:
+                return False
+        return True
+
+    def has_reg(self, idx, allow_root=False):
+        """
+        Check if the register set contains a valid entry for
+        the given register index
+
+        :param idx: the register index to check
+        :param allow_root: a root can be created if the register
+        does not have a valid node.
+        """
+        assert idx < 32, "Out of bound register set index"
+        if self[idx] == None:
+            return False
+        if allow_root:
+            data = self.graph.vp.data[self[idx]]
+            if data.origin == CheriNodeOrigin.PARTIAL:
+                return False
+        return True
 
     def __getitem__(self, idx):
         """
@@ -265,6 +321,18 @@ class RegisterSet:
         #     if n_refs == 1:
         #         # can safely set the t_free
         #         disable because we need a way to actually get the current cycle
+
+        # if the node is a root and we have a PARTIAL dummy node in the register
+        # set, the root is attached to the dummy.
+        if val != None:
+            val_data = self.graph.vp.data[val]
+            if (val_data.origin == CheriNodeOrigin.ROOT and
+                self.reg_nodes[idx] != None):
+
+                node = self.reg_nodes[idx]
+                node_data = self.graph.vp.data[node]
+                if node_data.origin == CheriNodeOrigin.PARTIAL:
+                    self.graph.add_edge(node, val)
         self.reg_nodes[idx] = val
 
 
@@ -313,10 +381,16 @@ class MergePartialSubgraph(BFSTransform):
         Note: the register set contains vertex handles for the merged graph.
         """
 
-        self.copy_vertex_map = subgraph.new_vertex_property("long")
+        self.copy_vertex_map = subgraph.new_vertex_property("long", val=-1)
         """
         Map vertex index in the subgraph to a vertex index in the
         merged graph.
+        """
+
+        self.omit_vertex_map = subgraph.new_vertex_property("bool", val=False)
+        """
+        Mark vertices in the subgraph that should be ignored when moving
+        to the merged graph.
         """
 
     def get_final_regset(self):
@@ -328,38 +402,140 @@ class MergePartialSubgraph(BFSTransform):
         regset = RegisterSet(None)
         for idx in range(len(self.final_regset.reg_nodes)):
             v = self.final_regset[idx]
-            regset[idx] = self.copy_vertex_map[v] if v != None else None
+            if v == None or self.copy_vertex_map[v] < 0:
+                regset.reg_nodes[idx] = None
+            else:
+                regset.reg_nodes[idx] = self.copy_vertex_map[v]
+
         v_pcc = self.final_regset.pcc
         regset.pcc = self.copy_vertex_map[v_pcc] if v_pcc != None else None
         regset.memory_map = self.final_regset.memory_map
         return regset
 
+    def _merge_partial_vertex_data(self, u_data, v_data):
+        """
+        Copy dereferences and stores from a subgraph dummy vertex
+        to a vertex in the merged graph.
+
+        :param u_data: the source vertex data
+        :param v_data: the destination vertex data
+        """
+        v_data.address.update(u_data.address)
+        for key, val in u_data.deref.items():
+            v_data.deref[key].extend(val)
+
     def examine_vertex(self, u):
-        if u in self.initial_regset.reg_nodes:
-            index = self.initial_regset.reg_nodes.index(u)
-            # this is a dummy vertex do not copy it
-            # but map it to its corresponding vertex
-            if self.previous_regset[index] is None:
-                # in this case mark all the children as root,
-                # note that those vertices still have to be copied
-                for v in u.out_neighbours():
-                    self.subgraph.vp.data[v].origin = CheriNodeOrigin.ROOT
+        """
+        Merge each vertex of the subgraph in the main merged graph.
+
+        There are 3 cases:
+        1. u is a dummy vertex (origin = PARTIAL) in the subgraph,
+        therefore it is in the initial regset.
+        The corresponding previous regset entry is None.
+        2. same as (1) but the corresponding regset entry is not None.
+        3. u is a normal vertex (all origin types except PARTIAL).
+
+        Case (1) has 2 sub-cases:
+        1.1. all the out-neighbours of u are ROOT vertices.
+        In this case the dummy vertex u is deleted and the out-neightbours
+        are moved to the merged-graph.
+        1.2. there is at least 1 out-neighbour of u that is not a ROOT.
+        In this case a MissingParentError is raised, there is nothing to
+        derive a non-root vertex from.
+
+        Case (2) has 2 sub-cases:
+        2.1. all the out-neighbours of u are ROOT vertices.
+        The ROOT vertices are not moved to the merged-graph, instead
+        their out-neightbours are attached to the existing parent from
+        the previous regset. This is because the ROOTs must not be created
+        if we have something to derive from.
+        2.2. there is at least 1 out-neightbour of u that is not a ROOT.
+        In this case ROOT vertices are suppressed as in (2.1) and the
+        non-ROOT vertices are directly attached to the corresponding vertex
+        in the previous regset (in the merged-graph).
+
+        Case (3) is trivial to handle, the vertex is moved to the merged
+        graph and the edges are recreated.
+        """
+        # u = current vertex
+        # v = corresponding vertex in the merged graph
+        # w = extra temporary vertex handle
+        if self.omit_vertex_map[u]:
+            # nothing to do for this vertex, it is marked to be omitted
+            return
+
+        if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
+            logger.debug("Merge initial vertex subgraph:%s", u)
+            # case (1) (2)
+            # Do not add the dummy vertex to the copy_vertex_map
+            # so the edges PARTIAL -> ROOT are not moved and
+            # only ROOT vertices are moved normally when they are
+            # found in case (3)
+            if u in self.initial_regset.reg_nodes:
+                index = self.initial_regset.reg_nodes.index(u)
+                v = self.previous_regset[index]
             else:
-                self.copy_vertex_map[u] = self.previous_regset[index]
-        elif u == self.initial_regset.pcc:
-            # this is a dummy vertex, same as above
-            self.copy_vertex_map[u] = self.previous_regset.pcc
+                index = "pcc"
+                v = self.previous_regset.pcc
+
+            u_data = self.subgraph.vp.data[u]
+            if v is None:
+                # case (1)
+                # The dummy vertex must not have been dereferenced,
+                # because this counts as an empty register now.
+                # it can have been stored, it is just storing None.
+                if len(u_data.deref["time"]):
+                    raise SubgraphMergeError("PARTIAL vertex was dereferenced "
+                                             "but is merged to None, idx:%s"
+                                             % index)
+                logger.debug("initial vertex prev graph:None")
+                for u_out in u.out_neighbours():
+                    u_out_data = self.subgraph.vp.data[u_out]
+                    if u_out_data.origin != CheriNodeOrigin.ROOT:
+                        raise MissingParentError(
+                            "Missing parent for %s" % u_out_data)
+            else:
+                # case (2)
+                # propagate PARTIAL metadata to the parent.
+                # remove ROOT children since the ROOT should not
+                # have been created.
+                logger.debug("initial vertex prev graph:%s", v)
+                self.copy_vertex_map[u] = v
+                v_data = self.graph.vp.data[v]
+                self._merge_partial_vertex_data(u_data, v_data)
+                for u_out in u.out_neighbours():
+                    logger.debug("initial vertex out-neighbour subgraph:%s",
+                                 u_out)
+                    # check that v_data agrees with all roots
+                    # that will be suppressed
+                    u_out_data = self.subgraph.vp.data[u_out]
+                    if u_out_data.origin == CheriNodeOrigin.ROOT:
+                        # suppress u_out but attach its children to
+                        # the dummy so the connectivity is preserved
+                        # so all dereferences and stores of u_out are merged in the
+                        # parent
+                        self._merge_partial_vertex_data(u_out_data, v_data)
+                        if (u_out_data.cap.base != v_data.cap.base or
+                            u_out_data.cap.length != v_data.cap.length):
+                            raise SubgraphMergeError(
+                                "Can not merge ROOT in previous regset"
+                                " root:%s parent:%s" % (u_out_data, v_data))
+                        self.omit_vertex_map[u_out] = True
+                        for w in u_out.out_neighbours():
+                            self.subgraph.add_edge(u, w)
         else:
-            # need to copy the vertex in the merged graph and then
-            # recreate the edges
+            logger.debug("Merge normal vertex subgraph:%s", u)
+            # case (3)
             v = self.graph.add_vertex()
             self.graph.vp.data[v] = self.subgraph.vp.data[u]
             self.copy_vertex_map[u] = v
             for u_in in u.in_neighbours():
+                logger.debug("in-neighbour subgraph:%s", u_in)
                 # v_in must exist because we are doing BFS
                 # however if u_in is a root v_in is None
                 v_in = self.copy_vertex_map[u_in]
-                if v_in != None:
+                if v_in >= 0:
+                    logger.debug("valid in-neighbour subgraph:%s", u_in)
                     self.graph.add_edge(v_in, v)
 
 
@@ -464,6 +640,7 @@ class PointerProvenanceParser(CallbackTraceParser):
                         final_regset, prev_regset)
                     bfs_transform(graph, [transform])
                     prev_regset = transform.get_final_regset()
+                logger.debug("XXX new-prev-regset %s", prev_regset.reg_nodes)
 
     def _do_parse(self, start, end, direction):
         """
@@ -478,10 +655,19 @@ class PointerProvenanceParser(CallbackTraceParser):
         if start != 0:
             self.initial_regset = RegisterSet(self.dataset)
             # create dummy initial nodes
-            self.initial_regset.reg_nodes = list(self.dataset.add_vertex(32))
-            self.initial_regset.pcc = self.dataset.add_vertex()
-        # for testing
-        end = start + 100000
+            reg_nodes = list(self.dataset.add_vertex(32))
+            pcc_node = self.dataset.add_vertex()
+            for n in reg_nodes + [pcc_node]:
+                data = NodeData()
+                data.origin = CheriNodeOrigin.PARTIAL
+                self.dataset.vp.data[n] = data
+            self.initial_regset.reg_nodes = reg_nodes
+            self.initial_regset.pcc = pcc_node
+            self.regset.reg_nodes = list(reg_nodes)
+            self.regset.pcc = pcc_node
+            self.regs_valid = True
+        # # for testing
+        # end = start + 100000 XXX
         super()._do_parse(start, end, direction)
 
     def _set_initial_regset(self, inst, entry, regs):
@@ -643,7 +829,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         """
         if not self._do_scan(entry):
             return False
-        if self.regset[regnum] is None:
+        if not self.regset.has_reg(regnum, allow_root=True):
             # no node was ever created for the register, it contained something
             # invalid
             node = self.make_root_node(entry, inst.op0.value,
@@ -669,7 +855,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         """
         if not self._do_scan(entry):
             return False
-        if self.regset[inst.op0.cap_index] is None:
+        if not self.regset.has_reg(inst.op0.cap_index, allow_root=True):
             node = self.make_root_node(entry, inst.op0.value,
                                        time=entry.cycles)
             self.regset[inst.op0.cap_index] = node
@@ -712,7 +898,7 @@ class PointerProvenanceParser(CallbackTraceParser):
     def scan_cgetpcc(self, inst, entry, regs, last_regs, idx):
         if not self._do_scan(entry):
             return False
-        if self.regset.pcc is None:
+        if not self.regset.has_pcc(allow_root=True):
             # never seen anything in pcc so we create a new node
             node = self.make_root_node(entry, inst.op0.value,
                                        time=entry.cycles)
@@ -785,7 +971,7 @@ class PointerProvenanceParser(CallbackTraceParser):
 
         if inst.opcode == "cjr":
             # discard current pcc and replace it
-            if self.regset[inst.op0.cap_index] is not None:
+            if self.regset[inst.op0.cap_index] is not None: # XXX
                 # we already have a node for the new PCC
                 self.regset.pcc = self.regset[inst.op0.cap_index]
                 pcc_data = self.dataset.vp.data[self.regset.pcc]
@@ -803,7 +989,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         elif inst.opcode == "cjalr":
             # save current pcc
             cd_idx = inst.op0.cap_index
-            if self.regset.pcc is None:
+            if not self.regset.pcc_valid:
                 # create a root node for PCC that is in cd
                 old_pcc_node = self.make_root_node(entry, inst.op0.value,
                                                    time=entry.cycles)
@@ -812,7 +998,7 @@ class PointerProvenanceParser(CallbackTraceParser):
             self.regset[cd_idx] = old_pcc_node
 
             # discard current pcc and replace it
-            if self.regset[inst.op1.cap_index] is not None:
+            if self.regset[inst.op1.cap_index] is not None: # XXX
                 # we already have a node for the new PCC
                 self.regset.pcc = self.regset[inst.op1.cap_index]
                 pcc_data = self.dataset.vp.data[self.regset.pcc]
@@ -921,7 +1107,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         """
         if not self._do_scan(entry):
             return False
-
+        logger.debug("scan clc")
         cd = inst.op0.cap_index
         try:
             node = self.regset.memory_map[entry.memory_address]
@@ -929,7 +1115,6 @@ class PointerProvenanceParser(CallbackTraceParser):
             logger.debug("Load c%d from new location 0x%x",
                          cd, entry.memory_address)
             node = None
-
         # if the capability loaded from memory is valid, it
         # can be safely assumed that it corresponds to the node
         # stored in the memory_map for that location, if there is
@@ -938,6 +1123,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         # Otherwise something has changed the memory location so we
         # clear the memory_map and the regset entry.
         if not inst.op0.value.valid:
+            logger.debug("clc load invalid, clear memory vertex map")
             self.regset[cd] = None
             if node is not None:
                 del self.regset.memory_map[entry.memory_address]
@@ -945,7 +1131,8 @@ class PointerProvenanceParser(CallbackTraceParser):
             # check if the load instruction has committed
             old_cd = CheriCap(last_regs.cap_reg[cd])
             curr_cd = CheriCap(regs.cap_reg[cd])
-            if old_cd != curr_cd:
+            logger.debug("clc op0 valid old_cd %s curr_cd %s", old_cd, curr_cd)
+            if old_cd != curr_cd or not self._has_exception(entry):
                 # the destination register was updated so the
                 # instruction did commit
 
@@ -983,18 +1170,21 @@ class PointerProvenanceParser(CallbackTraceParser):
             return False
 
         cd = inst.op0.cap_index
-        node = self.regset[cd]
 
         if inst.op0.value.valid:
             # if this is not a data access
 
-            if node is None:
+            if not self.regset.has_reg(cd, allow_root=True):
+            # if self.regset[cd] == None: XXX
+                # XXX may decide to disable and have an exception here
                 # need to create one
                 node = self.make_root_node(entry, inst.op0.value,
                                            time=entry.cycles)
                 self.regset[cd] = node
                 logger.debug("Found %s value %s from memory store",
                              inst.op0.name, node)
+            else:
+                node = self.regset[cd]
 
             # if there is a node associated with the register that is
             # being stored, save it in the memory_map for the memory location
@@ -1062,12 +1252,12 @@ class PointerProvenanceParser(CallbackTraceParser):
         data = NodeData.from_operand(inst.operands[dst_op_index])
         data.origin = origin
         # try to get a parent node
-        try:
-            op = inst.operands[src_op_index]
+        op = inst.operands[src_op_index]
+        if self.regset.has_reg(op.cap_index, allow_root=False):
             parent = self.regset[op.cap_index]
-        except:
+        else:
             logger.error("Error searching for parent node of %s", data)
-            raise MissingParentError("Missing parent for %s", data)
+            raise MissingParentError("Missing parent for %s" % data)
 
         # there must be a parent if the root nodes for the initial register
         # set have been created

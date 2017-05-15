@@ -2,6 +2,7 @@
 import pytest
 import logging
 
+from io import StringIO
 from graph_tool.all import subgraph_isomorphism
 
 from cheriplot.provenance import (
@@ -10,6 +11,19 @@ from cheriplot.provenance import (
 from cheriplot.core.test import MockTraceWriter
 
 logger = logging.getLogger(__name__)
+
+def dump_vertices(graph):
+    dump = StringIO()
+    for v in graph.vertices():
+        data = graph.vp.data[v]
+        dump.write("%s\n" % data)
+    return dump.getvalue()
+
+def dump_edges(graph):
+    dump = StringIO()
+    for e in graph.edges():
+        dump.write("%d -> %d\n" % (e.source(), e.target()))
+    return dump.getvalue()
 
 def assert_vertex_equal(u_data, v_data):
     """
@@ -37,15 +51,18 @@ def assert_graph_equal(expect, other):
     This is intended mostly for testing purposes.
     """
     assert expect.num_vertices() == other.num_vertices(),\
-        "Number of vertices differ expected %d, found %d" % (
-            expect.num_vertices(), other.num_vertices())
+        "Number of vertices differ expected %d, found %d\n%s\n\n%s" % (
+            expect.num_vertices(), other.num_vertices(),
+            dump_vertices(expect), dump_vertices(other))
     n_vertices = expect.num_vertices()
 
     # check if the graphs are isomorphic
     # there must exist an isomorphism for which the vertex
     # data matches, so we check all of them.
     isomaps = subgraph_isomorphism(expect, other, subgraph=False)
-    assert len(isomaps) > 0, "Graph topology differ"
+    assert len(isomaps) > 0, "Graph topology differ: %s\n%s\n\n%s\n%s" % (
+        dump_vertices(expect), dump_edges(expect),
+        dump_vertices(other), dump_edges(other))
     errors = []
     for isomap in isomaps:
         try:            
