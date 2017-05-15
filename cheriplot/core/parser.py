@@ -695,6 +695,7 @@ class threaded_parser:
             # we don't need the pool anymore, kill anything that may
             # be still there
             self_.mp.pool.terminate()
+            del self_.mp.pool
             # merge partial results
             if callable(self_.mp.merge_cbk):
                 self_.mp.merge_cbk(self_, results)

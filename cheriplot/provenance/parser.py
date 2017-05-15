@@ -247,16 +247,37 @@ class RegisterSet:
         self.memory_map = data["memory_map"]
         self._pcc = data["_pcc"]
 
+    def _attach_subgraph_merge(self, regset_vertex, input_vertex):
+        """
+        If needed, attach a graph vertex to a
+        partial-vertex marker in the register set
+
+        :param regset_vertex: the vertex currently contained in the
+        register set
+        :param input_vertex: the vertex that is being assigned
+        """
+        # if the node is a root and we have a PARTIAL dummy node in the register
+        # set and the node is not already attached to a PARTIAL dummy node,
+        # the root is attached to the dummy.
+        if input_vertex == None or regset_vertex == None:
+            return
+
+        in_data = self.graph.vp.data[input_vertex]
+        if in_data.origin == CheriNodeOrigin.ROOT:
+            for n in input_vertex.in_neighbours():
+                if self.graph.vp.data[n].origin == CheriNodeOrigin.PARTIAL:
+                    return
+            curr_data = self.graph.vp.data[regset_vertex]
+            if curr_data.origin == CheriNodeOrigin.PARTIAL:
+                self.graph.add_edge(regset_vertex, input_vertex)
+
     @property
     def pcc(self):
         return self._pcc
 
     @pcc.setter
     def pcc(self, value):
-        if self._pcc != None:
-            data = self.graph.vp.data[self._pcc]
-            if data.origin == CheriNodeOrigin.PARTIAL:
-                self.graph.add_edge(self._pcc, val)
+        self._attach_subgraph_merge(self._pcc, value)
         self._pcc = value
 
     def has_pcc(self, allow_root=False):
@@ -321,18 +342,7 @@ class RegisterSet:
         #     if n_refs == 1:
         #         # can safely set the t_free
         #         disable because we need a way to actually get the current cycle
-
-        # if the node is a root and we have a PARTIAL dummy node in the register
-        # set, the root is attached to the dummy.
-        if val != None:
-            val_data = self.graph.vp.data[val]
-            if (val_data.origin == CheriNodeOrigin.ROOT and
-                self.reg_nodes[idx] != None):
-
-                node = self.reg_nodes[idx]
-                node_data = self.graph.vp.data[node]
-                if node_data.origin == CheriNodeOrigin.PARTIAL:
-                    self.graph.add_edge(node, val)
+        self._attach_subgraph_merge(self.reg_nodes[idx], val)
         self.reg_nodes[idx] = val
 
 
@@ -514,15 +524,20 @@ class MergePartialSubgraph(BFSTransform):
                         # the dummy so the connectivity is preserved
                         # so all dereferences and stores of u_out are merged in the
                         # parent
+                        if len(list(u_out.in_neighbours())) != 1:
+                            raise SubgraphMergeError(
+                                "ROOT attached to multiple partial nodes")
                         self._merge_partial_vertex_data(u_out_data, v_data)
+                        # XXX do not err, just add the root as it is?
                         if (u_out_data.cap.base != v_data.cap.base or
                             u_out_data.cap.length != v_data.cap.length):
-                            raise SubgraphMergeError(
-                                "Can not merge ROOT in previous regset"
-                                " root:%s parent:%s" % (u_out_data, v_data))
-                        self.omit_vertex_map[u_out] = True
-                        for w in u_out.out_neighbours():
-                            self.subgraph.add_edge(u, w)
+                            logger.debug("do not suppress ROOT %s, previous "
+                                         "regset does not have matching "
+                                         "bounds %s", u_out_data, v_data)
+                        else:
+                            self.omit_vertex_map[u_out] = True
+                            for w in u_out.out_neighbours():
+                                self.subgraph.add_edge(u, w)
         else:
             logger.debug("Merge normal vertex subgraph:%s", u)
             # case (3)
@@ -904,7 +919,7 @@ class PointerProvenanceParser(CallbackTraceParser):
                                        time=entry.cycles)
             self.regset.pcc = node
             logger.debug("cgetpcc: new node from pcc %s",
-                         regnum, self.dataset.vp.data[node])
+                         self.dataset.vp.data[node])
         self.regset[inst.op0.cap_index] = self.regset.pcc
         return False
 

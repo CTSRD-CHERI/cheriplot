@@ -273,11 +273,59 @@ trace_ddc = (
     }),
 )
 
-# XXX add test for tracking movement of nodes across registers
+# Check that multiprocess parsing correctly merges vertices that
+# are moved from one register to another.
+# Also check that the single-process parser can do the same.
+#
+# generate:
+# worker-1:
+# ROOT(pcc), ROOT(kcc), ROOT(kdc), ROOT(c1)
+# worker-2:
+# DUMMY(c1) -> ROOT(pcc)
+#          `-> B
+# expect:
+# ROOT(pcc)
+# ROOT(kcc)
+# ROOT(kdc)
+# ROOT(ddc) -> B
+#          `-> B
+trace_mp_move_and_setbounds = (
+    ("cmove $c1, $c1", { # vertex 0
+        "c1": ddc,
+        "vertex": mk_vertex(ddc, pc=0, t_alloc=0)
+    }),
+    (None, { # kcc vertex 1
+        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
+    }),
+    (None, { # kdc vertex 2
+        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
+    }),
+    ("cmove $c31, $c31", { # pcc vertex 3
+        "c31": pcc,
+        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
+    }),
+    ("eret", {}),
+    # split worker's set here
+    ("cmove $c2, $c1", {
+        "c2": ddc,
+    }),
+    # this makes a DUMMY(c1) -> ROOT(c1) in worker #2
+    ("cgetpcc $c1", {
+        "c1": pcc,
+    }),
+    # this makes DUMMY(c2) -> v4
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("csetbounds $c1, $c2, $at", { # vertex 4
+        "c1": pct_cap(0x1000, 0x00, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x1000, 0x00, 0x100, perm),
+                            parent=0, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+)
 
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
+    trace_mp_move_and_setbounds,
     trace_infer_kcc_kdc,
     trace_explicit_kcc_kdc,
     # trace_pcc_epcc_tracking, # xfail due to unresolved issue
