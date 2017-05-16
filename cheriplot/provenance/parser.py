@@ -247,12 +247,6 @@ class VertexMemoryMap:
         """
         self.vertex_map[addr] = vertex
 
-    # def __getitem__(self, key):
-    #     return self.vertex_map[key]
-
-    # def __setitem__(self, key, value):
-    #     self.vertex_map[key] = value
-
 
 class MPVertexMemoryMap(VertexMemoryMap):
     """
@@ -279,17 +273,6 @@ class MPVertexMemoryMap(VertexMemoryMap):
         if vertex and addr not in self.initial_map:
             self.initial_map[addr] = vertex
         return super().mem_load(addr, vertex)
-
-    # def __setitem__(self, key, value):
-    #     if key not in self.initial_map and value != None:
-    #         self.initial_map[key] = value
-    #         # dummy = self.graph.add_vertex()
-    #         # data = NodeData()
-    #         # data.origin = CheriNodeOrigin.PARTIAL
-    #         # self.graph.vp.data[dummy] = data
-    #         # self.graph.add_edge(dummy, value)
-    #         # self.initial_map[key] = dummy
-    #     super().__setitem__(key, value)
 
 
 class RegisterSet:
