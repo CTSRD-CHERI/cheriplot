@@ -189,24 +189,128 @@ class SyscallContext:
         return node
 
 
+class VertexMemoryMap:
+    """
+    Helper object that keeps track of the graph vertex associated
+    with each memory location used in the trace.
+    """
+
+    def __init__(self, graph):
+        self.vertex_map = {}
+        self.graph = graph
+
+    def __getstate__(self):
+        """
+        Make object pickle-able, the graph-tool vertices index are used
+        instead of the vertex object.
+        """
+        logger.debug("Pickling partial result vertex-memory map %d",
+                     os.getpid())
+        state = {
+            "vertex_map": {k: int(v) for k,v in self.vertex_map.items()}
+        }
+        return state
+
+    def __setstate__(self, data):
+        """
+        Make object pickle-able, the graph-tool vertices index are used
+        instead of the vertex object.
+        """
+        logger.debug("Unpickling partial result vertex-memory map")
+        self.vertex_map = data["vertex_map"]
+
+    def clear(self, addr):
+        """
+        Unregister the vertex associated with the given memory location
+        """
+        del self.vertex_map[addr]
+
+    def mem_load(self, addr, vertex=None):
+        """
+        Register a memory load at given address and return
+        the vertex for that address if any.
+        If a vertex is specified, the vertex is set
+        in the memory map at the given address.
+        """
+        if vertex:
+            self.vertex_map[addr] = vertex
+        try:
+            return self.vertex_map[addr]
+        except KeyError:
+            return None
+
+    def mem_store(self, addr, vertex):
+        """
+        Register a memory store at given address and
+        store the vertex in the memory map for the given
+        address.
+        """
+        self.vertex_map[addr] = vertex
+
+    # def __getitem__(self, key):
+    #     return self.vertex_map[key]
+
+    # def __setitem__(self, key, value):
+    #     self.vertex_map[key] = value
+
+
+class MPVertexMemoryMap(VertexMemoryMap):
+    """
+    Vertex map used by multiprocessing workers to record the
+    initial state of the map so that the initial vertices can
+    be merged with the results from other workers.
+    """
+
+    def __init__(self, graph):
+        super().__init__(graph)
+
+        self.initial_map = {}
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["initial_map"] = {k: int(v) for k,v in self.initial_map.items()}
+        return state
+
+    def __setstate__(self, data):
+        super().__setstate__(data)
+        self.initial_map = data["initial_map"]
+
+    def mem_load(self, addr, vertex=None):
+        if vertex and addr not in self.initial_map:
+            self.initial_map[addr] = vertex
+        return super().mem_load(addr, vertex)
+
+    # def __setitem__(self, key, value):
+    #     if key not in self.initial_map and value != None:
+    #         self.initial_map[key] = value
+    #         # dummy = self.graph.add_vertex()
+    #         # data = NodeData()
+    #         # data.origin = CheriNodeOrigin.PARTIAL
+    #         # self.graph.vp.data[dummy] = data
+    #         # self.graph.add_edge(dummy, value)
+    #         # self.initial_map[key] = dummy
+    #     super().__setitem__(key, value)
+
+
 class RegisterSet:
     """
-    Extended register set that keeps track of memory
-    operations on capabilities.
+    Helper object that keeps track of the graph vertex associated
+    with each register in the register file.
 
     We need to know where a register value has been read from
     and where it is stored to. The first is used to infer
     the correct CapNode to add as parent for a new node,
     the latter allows us to set the CapNode.address for
     a newly allocated capability.
+
+    The register set is also used in the subgraph merge
+    resolution to produce the full graph from partial
+    results from worker processes.
     """
 
     def __init__(self, graph):
         self.reg_nodes = [None] * 32
         """Graph node associated with each register."""
-
-        self.memory_map = {}
-        """CheriCapNodes stored in memory."""
 
         self._pcc = None
         """Current pcc node"""
@@ -223,8 +327,6 @@ class RegisterSet:
         state = {
             "reg_nodes": [self.graph.vertex_index[u] if u != None else None
                           for u in self.reg_nodes],
-            "memory_map": {k: self.graph.vertex_index[u]
-                           for k,u in self.memory_map.items()},
             "_pcc": (self.graph.vertex_index[self._pcc]
                      if self._pcc != None else None),
             }
@@ -244,7 +346,6 @@ class RegisterSet:
         """
         logger.debug("Unpickling partial result register set")
         self.reg_nodes = data["reg_nodes"]
-        self.memory_map = data["memory_map"]
         self._pcc = data["_pcc"]
 
     def _attach_subgraph_merge(self, regset_vertex, input_vertex):
@@ -359,7 +460,7 @@ class MergePartialSubgraph(BFSTransform):
     """
 
     def __init__(self, graph, subgraph, initial_regset, final_regset,
-                 previous_regset):
+                 previous_regset, vertex_map, previous_vmap):
 
         self.graph = graph
         """Merged graph that we are building"""
@@ -391,6 +492,22 @@ class MergePartialSubgraph(BFSTransform):
         Note: the register set contains vertex handles for the merged graph.
         """
 
+        self.vertex_map = vertex_map
+        """
+        VertexMemoryMap with the initial and final state of graph
+        vertices in memory after the subgraph has been parsed.
+
+        Note: the map contains vertex handles from the subgraph.
+        """
+
+        self.previous_vmap = previous_vmap
+        """
+        VertexMemoryMap with the final state of graph vertices in memory
+        from the previous subgraph merge step.
+
+        Note: the map contains vertex handles from the merged graph.
+        """
+
         self.copy_vertex_map = subgraph.new_vertex_property("long", val=-1)
         """
         Map vertex index in the subgraph to a vertex index in the
@@ -406,7 +523,8 @@ class MergePartialSubgraph(BFSTransform):
     def get_final_regset(self):
         """
         Return the register set mapping the final state of the worker
-        partial graph to vertices in the merged graph.
+        partial graph to vertices in the merged graph (that have been
+        generated during this merge step).
         This is used as input to the next merge operation as previous_regset.
         """
         regset = RegisterSet(None)
@@ -419,8 +537,22 @@ class MergePartialSubgraph(BFSTransform):
 
         v_pcc = self.final_regset.pcc
         regset.pcc = self.copy_vertex_map[v_pcc] if v_pcc != None else None
-        regset.memory_map = self.final_regset.memory_map
+        # regset.memory_map = self.final_regset.memory_map
         return regset
+
+    def get_final_vmap(self):
+        """
+        Return the vertex-memory-map containing the final state of
+        the worker partial graph expressed with vertices in the merged graph
+        (that have been generated during this merge step).
+        This is used as input to the next merge operation as previous_vmap.
+        """
+        vmap = VertexMemoryMap(None)
+        for key,u in self.vertex_map.vertex_map.items():
+            if self.copy_vertex_map[u] >= 0:
+                # valid vertex handle
+                vmap.vertex_map[key] = self.copy_vertex_map[u]
+        return vmap
 
     def _merge_partial_vertex_data(self, u_data, v_data):
         """
@@ -433,6 +565,143 @@ class MergePartialSubgraph(BFSTransform):
         v_data.address.update(u_data.address)
         for key, val in u_data.deref.items():
             v_data.deref[key].extend(val)
+
+    def _merge_initial_vertex(self, u):
+        """
+        Merge a vertex that is contained in the initial register set.
+        In this case u is a dummy vertex used only for marking.
+        """
+        # case (1) (2) in examine_vertex.
+        # Do not add the dummy vertex to the copy_vertex_map
+        # so the edges PARTIAL -> ROOT are not moved and
+        # only ROOT vertices are moved normally when they are
+        # found in case (3) of examine_vertex.
+        if u in self.initial_regset.reg_nodes:
+            index = self.initial_regset.reg_nodes.index(u)
+            v = self.previous_regset[index]
+        else:
+            index = "pcc"
+            v = self.previous_regset.pcc
+        logger.debug("Merge initial vertex (register %s)", index)
+
+        if v is None:
+            self._merge_initial_vertex_to_none(u)
+        else:
+            self._merge_initial_vertex_to_prev(u, v)
+
+    def _merge_initial_mem_vertex(self, u):
+        """
+        Merge a vertex that is contained in the initial vertex
+        memory map of a worker.
+        """
+        u_addr = None
+        for key,val in self.vertex_map.initial_map.items():
+            if val == u:
+                u_addr = key
+                break
+        try:
+            v = self.previous_vmap.vertex_map[u_addr]
+            u_data = self.subgraph.vp.data[u]
+            v_data = self.graph.vp.data[v]
+            if (u_data.cap.base != v_data.cap.base or
+                u_data.cap.length != v_data.cap.length):
+                # this is an error, the worker found something inconsistent
+                # in the trace for this memory address.
+                raise SubgraphMergeError(
+                    "Incompatible vertex in prev_vmap at address 0x%x,"
+                    " curr:%s prev:%s" % (u_addr, u_data, v_data))
+            else:
+                # the root can be merged with the prev_vmap content
+                self.copy_vertex_map[u] = v
+                if u_data.origin == CheriNodeOrigin.ROOT:
+                    # if the vertex is root, remove the store address
+                    # assigned in the root (it is always the one with lower
+                    # key (i.e. time) value) because it does not really
+                    # express a store but the fact that the root has been
+                    # found there for the first time. (indeed the capability
+                    # was at that address)
+                    u_data.address.popitem()
+                self._merge_partial_vertex_data(u_data, v_data)
+        except KeyError:
+            # otherwise merge the root vertex normally
+            logger.debug("Root vertex found in merged vertex map: %s", u)
+            self._merge_subgraph_vertex(u)
+
+    def _merge_initial_vertex_to_none(self, u):
+        """
+        Merge an initial vertex that have no parent in
+        the previous regset.
+        """
+        # case (1) in examine_vertex
+        # The dummy vertex must not have been dereferenced,
+        # because this counts as an empty register now.
+        # it can have been stored, it is just storing None.
+        u_data = self.subgraph.vp.data[u]
+        if len(u_data.deref["time"]):
+            raise SubgraphMergeError("PARTIAL vertex was dereferenced "
+                                     "but is merged to None")
+        logger.debug("initial vertex prev graph:None")
+        for u_out in u.out_neighbours():
+            u_out_data = self.subgraph.vp.data[u_out]
+            if u_out_data.origin != CheriNodeOrigin.ROOT:
+                raise MissingParentError(
+                    "Missing parent for %s" % u_out_data)
+
+    def _merge_initial_vertex_to_prev(self, u, v):
+        """
+        Merge an initial vertex that have an existing parent
+        in the previous regset.
+        """
+        # case (2) of examine_vertex
+        # propagate PARTIAL metadata to the parent.
+        # remove ROOT children since the ROOT should not
+        # have been created.
+        u_data = self.subgraph.vp.data[u]
+        logger.debug("initial vertex prev graph:%s", v)
+        self.copy_vertex_map[u] = v
+        v_data = self.graph.vp.data[v]
+        self._merge_partial_vertex_data(u_data, v_data)
+        for u_out in u.out_neighbours():
+            logger.debug("initial vertex out-neighbour subgraph:%s",
+                         u_out)
+            # check that v_data agrees with all roots
+            # that will be suppressed
+            u_out_data = self.subgraph.vp.data[u_out]
+            if u_out_data.origin == CheriNodeOrigin.ROOT:
+                # suppress u_out but attach its children to
+                # the dummy so the connectivity is preserved
+                # so all dereferences and stores of u_out are merged in the
+                # parent
+                if len(list(u_out.in_neighbours())) != 1:
+                    raise SubgraphMergeError(
+                        "ROOT attached to multiple partial nodes")
+                self._merge_partial_vertex_data(u_out_data, v_data)
+                if (u_out_data.cap.base != v_data.cap.base or
+                    u_out_data.cap.length != v_data.cap.length):
+                    logger.debug("do not suppress ROOT %s, previous "
+                                 "regset does not have matching "
+                                 "bounds %s", u_out_data, v_data)
+                else:
+                    self.omit_vertex_map[u_out] = True
+                    for w in u_out.out_neighbours():
+                        self.subgraph.add_edge(u, w)
+
+    def _merge_subgraph_vertex(self, u):
+        """
+        Merge a generic vertex from the subgraph to the main merged graph.
+        """
+        # case (3) of examine_vertex
+        v = self.graph.add_vertex()
+        self.graph.vp.data[v] = self.subgraph.vp.data[u]
+        self.copy_vertex_map[u] = v
+        for u_in in u.in_neighbours():
+            logger.debug("in-neighbour subgraph:%s", u_in)
+            # v_in must exist because we are doing BFS
+            # however if u_in is a root v_in is None
+            v_in = self.copy_vertex_map[u_in]
+            if v_in >= 0:
+                logger.debug("valid in-neighbour subgraph:%s", u_in)
+                self.graph.add_edge(v_in, v)
 
     def examine_vertex(self, u):
         """
@@ -467,91 +736,19 @@ class MergePartialSubgraph(BFSTransform):
         Case (3) is trivial to handle, the vertex is moved to the merged
         graph and the edges are recreated.
         """
-        # u = current vertex
-        # v = corresponding vertex in the merged graph
-        # w = extra temporary vertex handle
         if self.omit_vertex_map[u]:
             # nothing to do for this vertex, it is marked to be omitted
             return
 
         if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
             logger.debug("Merge initial vertex subgraph:%s", u)
-            # case (1) (2)
-            # Do not add the dummy vertex to the copy_vertex_map
-            # so the edges PARTIAL -> ROOT are not moved and
-            # only ROOT vertices are moved normally when they are
-            # found in case (3)
-            if u in self.initial_regset.reg_nodes:
-                index = self.initial_regset.reg_nodes.index(u)
-                v = self.previous_regset[index]
-            else:
-                index = "pcc"
-                v = self.previous_regset.pcc
-
-            u_data = self.subgraph.vp.data[u]
-            if v is None:
-                # case (1)
-                # The dummy vertex must not have been dereferenced,
-                # because this counts as an empty register now.
-                # it can have been stored, it is just storing None.
-                if len(u_data.deref["time"]):
-                    raise SubgraphMergeError("PARTIAL vertex was dereferenced "
-                                             "but is merged to None, idx:%s"
-                                             % index)
-                logger.debug("initial vertex prev graph:None")
-                for u_out in u.out_neighbours():
-                    u_out_data = self.subgraph.vp.data[u_out]
-                    if u_out_data.origin != CheriNodeOrigin.ROOT:
-                        raise MissingParentError(
-                            "Missing parent for %s" % u_out_data)
-            else:
-                # case (2)
-                # propagate PARTIAL metadata to the parent.
-                # remove ROOT children since the ROOT should not
-                # have been created.
-                logger.debug("initial vertex prev graph:%s", v)
-                self.copy_vertex_map[u] = v
-                v_data = self.graph.vp.data[v]
-                self._merge_partial_vertex_data(u_data, v_data)
-                for u_out in u.out_neighbours():
-                    logger.debug("initial vertex out-neighbour subgraph:%s",
-                                 u_out)
-                    # check that v_data agrees with all roots
-                    # that will be suppressed
-                    u_out_data = self.subgraph.vp.data[u_out]
-                    if u_out_data.origin == CheriNodeOrigin.ROOT:
-                        # suppress u_out but attach its children to
-                        # the dummy so the connectivity is preserved
-                        # so all dereferences and stores of u_out are merged in the
-                        # parent
-                        if len(list(u_out.in_neighbours())) != 1:
-                            raise SubgraphMergeError(
-                                "ROOT attached to multiple partial nodes")
-                        self._merge_partial_vertex_data(u_out_data, v_data)
-                        # XXX do not err, just add the root as it is?
-                        if (u_out_data.cap.base != v_data.cap.base or
-                            u_out_data.cap.length != v_data.cap.length):
-                            logger.debug("do not suppress ROOT %s, previous "
-                                         "regset does not have matching "
-                                         "bounds %s", u_out_data, v_data)
-                        else:
-                            self.omit_vertex_map[u_out] = True
-                            for w in u_out.out_neighbours():
-                                self.subgraph.add_edge(u, w)
+            self._merge_initial_vertex(u)
+        elif u in self.vertex_map.initial_map.values():
+            logger.debug("Merge initial mem vertex subgraph:%s", u)
+            self._merge_initial_mem_vertex(u)
         else:
             logger.debug("Merge normal vertex subgraph:%s", u)
-            # case (3)
-            v = self.graph.add_vertex()
-            self.graph.vp.data[v] = self.subgraph.vp.data[u]
-            self.copy_vertex_map[u] = v
-            for u_in in u.in_neighbours():
-                logger.debug("in-neighbour subgraph:%s", u_in)
-                # v_in must exist because we are doing BFS
-                # however if u_in is a root v_in is None
-                v_in = self.copy_vertex_map[u_in]
-                if v_in >= 0:
-                    logger.debug("valid in-neighbour subgraph:%s", u_in)
-                    self.graph.add_edge(v_in, v)
+            self._merge_subgraph_vertex(u)
 
 
 @threaded_parser()
@@ -580,11 +777,22 @@ class PointerProvenanceParser(CallbackTraceParser):
         to nodes in the provenance tree.
         """
 
+        self.vertex_map = VertexMemoryMap(self.dataset)
+        """
+        Helper that tracks the graph vertex stored at
+        a given memory location.
+        Internally also keeps track of the vertices that are
+        stored/loaded in previously unseen memory addresses.
+        This is used to correctly merge the subgraphs from
+        multiprocessing workers.
+        """
+
         self.initial_regset = None
         """
         The initial register set is created in worker processes
         to keep track of the initial dummy graph vertices that
-        are created.
+        are created. This is used to correctly merge the
+        subgraphs.
         """
 
         self.syscall_context = SyscallContext()
@@ -624,12 +832,14 @@ class PointerProvenanceParser(CallbackTraceParser):
         - the initial register set if this worker did not
           parse the first chunk of the trace
         - the final register set
-        - the memory map holding the live vertices in memory,
-          included in the final register set
+        - the initial and final vertex memory maps, 
+        holding the live vertices in memory
 
-        :return: (partial_graph, initial_regset, final_regset)
+        :return: (partial_graph, initial_regset, final_regset,
+        vertex_map)
         """
-        return (self.get_model(), self.initial_regset, self.regset)
+        return (self.get_model(), self.initial_regset,
+                self.regset, self.vertex_map)
 
     def mp_merge(self, results):
         """
@@ -639,23 +849,29 @@ class PointerProvenanceParser(CallbackTraceParser):
         assuming that the results are in-order w.r.t.
         the trace entries indexes that were used.
         """
+        # regset and vertex-map carried from the previous subgraph
+        # merge step
         prev_regset = None
-        for idx, (graph, initial_regset, final_regset) in enumerate(results):
+        prev_vmap = None
+        for idx, result in enumerate(results):
+            (graph, initial_regset, final_regset, vertex_map) = result
             with ProgressTimer("Merge partial worker result [%d/%d]" % (
                     idx + 1, len(results)), logger):
                 if initial_regset == None:
                     self.dataset = graph
                     prev_regset = final_regset
+                    prev_vmap = vertex_map
                 else:
                     # copy the graph into the merged dataset and
                     # merge the root nodes from the initial register set
                     # with the previous register set
                     transform = MergePartialSubgraph(
-                        self.dataset, graph, initial_regset,
-                        final_regset, prev_regset)
+                        self.dataset, graph,
+                        initial_regset, final_regset, prev_regset,
+                        vertex_map, prev_vmap)
                     bfs_transform(graph, [transform])
                     prev_regset = transform.get_final_regset()
-                logger.debug("XXX new-prev-regset %s", prev_regset.reg_nodes)
+                    prev_vmap = transform.get_final_vmap()
 
     def _do_parse(self, start, end, direction):
         """
@@ -667,7 +883,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         Otherwise we create dummy graph roots for each register
         that will be used during the merge.
         """
-        if start != 0:
+        if start != 0: # check that we are in a worker process instead
             self.initial_regset = RegisterSet(self.dataset)
             # create dummy initial nodes
             reg_nodes = list(self.dataset.add_vertex(32))
@@ -681,8 +897,8 @@ class PointerProvenanceParser(CallbackTraceParser):
             self.regset.reg_nodes = list(reg_nodes)
             self.regset.pcc = pcc_node
             self.regs_valid = True
-        # # for testing
-        # end = start + 100000 XXX
+            # use the MP vertex map
+            self.vertex_map = MPVertexMemoryMap(self.dataset)
         super()._do_parse(start, end, direction)
 
     def _set_initial_regset(self, inst, entry, regs):
@@ -1124,12 +1340,10 @@ class PointerProvenanceParser(CallbackTraceParser):
             return False
         logger.debug("scan clc")
         cd = inst.op0.cap_index
-        try:
-            node = self.regset.memory_map[entry.memory_address]
-        except KeyError:
+        node = self.vertex_map.mem_load(entry.memory_address)
+        if node is None:
             logger.debug("Load c%d from new location 0x%x",
                          cd, entry.memory_address)
-            node = None
         # if the capability loaded from memory is valid, it
         # can be safely assumed that it corresponds to the node
         # stored in the memory_map for that location, if there is
@@ -1141,7 +1355,7 @@ class PointerProvenanceParser(CallbackTraceParser):
             logger.debug("clc load invalid, clear memory vertex map")
             self.regset[cd] = None
             if node is not None:
-                del self.regset.memory_map[entry.memory_address]
+                self.vertex_map.clear(entry.memory_address)
         else:
             # check if the load instruction has committed
             old_cd = CheriCap(last_regs.cap_reg[cd])
@@ -1160,7 +1374,7 @@ class PointerProvenanceParser(CallbackTraceParser):
                     node_data.address[entry.cycles] = entry.memory_address
                     logger.debug("Found %s value %s from memory load",
                                  inst.op0.name, node_data)
-                    self.regset.memory_map[entry.memory_address] = node
+                    self.vertex_map.mem_load(entry.memory_address, node)
                 self.regset[cd] = node
         return False
 
@@ -1204,7 +1418,7 @@ class PointerProvenanceParser(CallbackTraceParser):
             # if there is a node associated with the register that is
             # being stored, save it in the memory_map for the memory location
             # written by csc
-            self.regset.memory_map[entry.memory_address] = node
+            self.vertex_map.mem_store(entry.memory_address, node)
             # set the address attribute of the node vertex data property
             node_data = self.dataset.vp.data[node]
             node_data.address[entry.cycles] = entry.memory_address

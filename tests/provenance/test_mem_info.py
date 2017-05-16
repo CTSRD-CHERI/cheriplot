@@ -122,6 +122,7 @@ trace_mem_2st_ld = (
         "vertex_store": mk_vertex_store(0, 0x150),
         "vertex_deref": mk_vertex_deref(4, 0x150, True, "store")
     }),
+    # worker set split here
     # create new cap in c1
     ("csetbounds $c1, $c2, $at", { # vertex 5
         "c1": pct_cap(0x1000, 0x0, 0x150, perm),
@@ -215,7 +216,7 @@ trace_mem_deref_unknown_reg = (
 # v0 - - > Dummy -> ROOT(v5)
 #               `-> v4
 # with dereference/store data to check it is propagated correctly.
-# trace init is repeated because we need to control the exact
+# Trace init is repeated because we need to control the exact
 # number of instruction to make the workers split the trace
 # at the intended point.
 trace_mem_mp_deref_merge = (
@@ -259,6 +260,53 @@ trace_mem_mp_deref_merge = (
     })
 )
 
+# Test subgraph merge logic for memory-propagated graph vertices.
+# A vertex is stored in worker-1 and loaded from worker-2 to make
+# sure that anything generated in worker-2 from the loaded vertex
+# is correctly attached to the original vertex in worker-1.
+#
+# Trace init is repeated because we need to control the exact
+# number of instruction to make the workers split the trace
+# at the intended point.
+trace_mem_mp_vertex_map = (
+    ("cmove $c1, $c1", { # vertex 0
+        "c1": start_cap,
+        "vertex": mk_vertex(start_cap, pc=0, t_alloc=0)
+    }),
+    (None, { # inferred kcc vertex 1
+        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
+    }),
+    (None, { # inferred kdc vertex 2
+        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
+    }),
+    ("cmove $c31, $c31", { # vertex 3
+        "c31": pcc,
+        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
+    }),
+    ("eret", {}), # mark initialization end
+    # store c1 in memory
+    ("csc $c1, $zero, 0x0($c1)", {
+        "c1": start_cap,
+        "store": True,
+        "mem": 0x1000,
+        "vertex_store": mk_vertex_store(0, 0x1000),
+        "vertex_deref": mk_vertex_deref(0, 0x1000, True, "store"),
+    }),
+    # split worker set here
+    ("clc $c2, $zero, 0x0($c1)", {
+        "c2": start_cap,
+        "load": True,
+        "mem": 0x1000,
+        "vertex_deref": mk_vertex_deref(0, 0x1000, True, "load")
+    }),
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("csetbounds $c3, $c2, $at", { # vertex 4
+        "c3": pct_cap(0x1000, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x100, perm),
+                            parent=0, origin=CheriNodeOrigin.SETBOUNDS),
+    }),
+)
+
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
@@ -267,6 +315,7 @@ trace_mem_mp_deref_merge = (
     (trace_mem_init, trace_mem_st_ld_root),
     (trace_mem_init, trace_mem_st_ld_invalid),
     (trace_mem_mp_deref_merge,),
+    (trace_mem_mp_vertex_map,),
 ])
 def test_mem_tracking(trace, threads):
     """Test provenance parser with the simplest trace possible."""

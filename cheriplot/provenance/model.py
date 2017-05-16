@@ -32,6 +32,7 @@ Provenance graph implementation and helper classes.
 from enum import IntEnum
 from cached_property import cached_property
 from functools import partialmethod
+from collections import OrderedDict
 from graph_tool.all import *
 
 __all__ = ("CheriCapPerm", "CheriNodeOrigin", "CheriCap", "NodeData",
@@ -269,7 +270,7 @@ class NodeData:
         return data
 
     def __init__(self):
-        self.address = {}
+        self.address = OrderedDict()
         """
         Map the time when the capability is stored in memory to
         the address where it is stored location.
