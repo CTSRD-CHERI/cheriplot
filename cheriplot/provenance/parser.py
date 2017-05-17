@@ -72,6 +72,15 @@ class DereferenceUnknownCapabilityError(RuntimeError):
     pass
 
 
+class UnexpectedOperationError(RuntimeError):
+    """
+    Exception raised when a seemingly impossible operation
+    occurred.
+    This is a fatal error condition.
+    """
+    pass
+
+
 class SyscallContext:
     """
     Keeps the current syscall context information so that
@@ -734,6 +743,117 @@ class MergePartialSubgraph(BFSTransform):
             self._merge_subgraph_vertex(u)
 
 
+class ExceptionPccFixupSubparser:
+    """
+    Subparser that fixes the content of pcc/epcc
+    when a capability branch with an exception is
+    found.
+
+    XXX add a better description for the problem?
+    """
+
+    def __init__(self, dataset, regset):
+        self.dataset = dataset
+        self.regset = regset
+        """The main parser register set"""
+
+        self._exc_pcc = None
+        self._exc_addr = None
+
+    def scan_mfc0(self, inst, entry, regs, last_regs, idx):
+        if self._exc_addr != None:
+            # badvaddr
+            if inst.op1.gpr_index == 8:
+                badvaddr = inst.op0.value
+                if badvaddr == self._exc_addr + 4:
+                    # not committed
+                    # epcc = pcc_before_jmp
+                    self.regset[31] = self._exc_pcc
+            self._exc_addr = None
+        return False
+
+    def scan_cjr(self, inst, entry, regs, last_regs, idx):
+        """
+        Discard current pcc and replace it.
+        If the cjr has an exception, the previous pcc is saved
+        so that if the instruction did not commit, epcc can
+        be set to the correct pcc.
+        """
+        if inst.has_exception:
+            self._exc_pcc = self.regset.pcc
+            self._exc_addr = entry.pc
+        # discard current pcc and replace it
+        if self.regset.has_reg(inst.op0.cap_index):
+            # we already have a node for the new PCC
+            self.regset.pcc = self.regset[inst.op0.cap_index]
+            pcc_data = self.dataset.vp.data[self.regset.pcc]
+            if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
+                logger.error("Loading PCC without exec permissions? %s %s",
+                             inst, pcc_data)
+                raise UnexpectedOperationError(
+                    "Loading PCC without exec permissions")
+        else:
+            # we should create a node here but this should really
+            # not be happening, the node is None only when the
+            # register content has never been seen before.
+            logger.error("Found cjr with unexpected "
+                         "target capability %s", inst)
+            raise UnexpectedOperationError("cjr to unknown capability")
+        return False
+
+    def scan_cjalr(self, inst, entry, regs, last_regs, idx):
+        if inst.has_exception:
+            self._exc_pcc = self.regset.pcc
+            self._exc_addr = entry.pc
+        # save current pcc
+        cd_idx = inst.op0.cap_index
+        if not self.regset.has_pcc(allow_root=True):
+            # create a root node for PCC that is in cd
+            old_pcc_node = self.make_root_node(entry, inst.op0.value,
+                                                   time=entry.cycles)
+        else:
+            old_pcc_node = self.regset.pcc
+        self.regset[cd_idx] = old_pcc_node
+
+        # discard current pcc and replace it
+        if self.regset.has_reg(inst.op1.cap_index):
+            # we already have a node for the new PCC
+            self.regset.pcc = self.regset[inst.op1.cap_index]
+            pcc_data = self.dataset.vp.data[self.regset.pcc]
+            if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
+                logger.error("Loading PCC without exec permissions? %s %s",
+                             inst, pcc_data)
+                raise UnexpectedOperationError(
+                    "Loading PCC without exec permissions")
+            else:
+                # we should create a node here but this should really
+                # not be happening, the node is None only when the
+                # register content has never been seen before.
+                logger.error("Found cjalr with unexpected "
+                             "target capability %s", inst)
+                raise UnexpectedOperationError("cjalr to unknown capability")
+        return False
+
+    def scan_ccall(self, inst, entry, regs, last_regs, idx):
+        # XXX TODO the semantic regarding ccall
+        # depends on the selector field, we may not
+        # have an exception here, or always have one
+        raise NotImplementedError("ccall pcc fixup not yet implemented")
+
+    def scan_creturn(self, inst, entry, regs, last_regs, idx):
+        # XXX TODO the semantic regarding ccall
+        # depends on the selector field, we may not
+        # have an exception here, or always have one
+        raise NotImplementedError("creturn pcc fixup not yet implemented")
+
+
+class ExceptionEpccFixupSubparser:
+    """
+    Update pcc and epcc on exception
+    """
+    pass
+
+
 @threaded_parser()
 class PointerProvenanceParser(CallbackTraceParser):
     """
@@ -781,6 +901,9 @@ class PointerProvenanceParser(CallbackTraceParser):
         self.syscall_context = SyscallContext()
         """Keep state related to system calls entry end return"""
 
+        pcc_fixup = ExceptionPccFixupSubparser(self.dataset, self.regset)
+        self._add_subparser(pcc_fixup)
+
     def _init_graph(self):
         cache_file = self.path + "_provenance_plot.gt"
         if self.cache and os.path.exists(cache_file):
@@ -815,7 +938,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         - the initial register set if this worker did not
           parse the first chunk of the trace
         - the final register set
-        - the initial and final vertex memory maps, 
+        - the initial and final vertex memory maps,
         holding the live vertices in memory
 
         :return: (partial_graph, initial_regset, final_regset,
@@ -1182,52 +1305,8 @@ class PointerProvenanceParser(CallbackTraceParser):
         """
         if not self._do_scan(entry):
             return False
-
-        if inst.opcode == "cjr":
-            # discard current pcc and replace it
-            if self.regset[inst.op0.cap_index] is not None: # XXX
-                # we already have a node for the new PCC
-                self.regset.pcc = self.regset[inst.op0.cap_index]
-                pcc_data = self.dataset.vp.data[self.regset.pcc]
-                if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
-                    logger.error("Loading PCC without exec permissions? %s %s",
-                                 inst, pcc_data)
-                    raise RuntimeError("Loading PCC without exec permissions")
-            else:
-                # we should create a node here but this should really
-                # not be happening, the node is None only when the
-                # register content has never been seen before.
-                logger.error("Found cjr with unexpected "
-                             "target capability %s", inst)
-                raise RuntimeError("cjr to unknown capability")
-        elif inst.opcode == "cjalr":
-            # save current pcc
-            cd_idx = inst.op0.cap_index
-            if not self.regset.pcc_valid:
-                # create a root node for PCC that is in cd
-                old_pcc_node = self.make_root_node(entry, inst.op0.value,
-                                                   time=entry.cycles)
-            else:
-                old_pcc_node = self.regset.pcc
-            self.regset[cd_idx] = old_pcc_node
-
-            # discard current pcc and replace it
-            if self.regset[inst.op1.cap_index] is not None: # XXX
-                # we already have a node for the new PCC
-                self.regset.pcc = self.regset[inst.op1.cap_index]
-                pcc_data = self.dataset.vp.data[self.regset.pcc]
-                if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
-                    logger.error("Loading PCC without exec permissions? %s %s",
-                                 inst, pcc_data)
-                    raise RuntimeError("Loading PCC without exec permissions")
-            else:
-                # we should create a node here but this should really
-                # not be happening, the node is None only when the
-                # register content has never been seen before.
-                logger.error("Found cjalr with unexpected "
-                             "target capability %s", inst)
-                raise RuntimeError("cjalr to unknown capability")
-        elif inst.opcode == "ccall" or inst.opcode == "creturn":
+        if (inst.opcode == "ccall" or inst.opcode == "creturn" or
+              inst.opcode == "cjr" or inst.opcode == "cjalr"):
             # these are handled by software so all register assignments
             # are already parsed there
             return False

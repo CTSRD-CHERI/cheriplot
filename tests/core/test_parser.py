@@ -206,8 +206,8 @@ def test_callbacks(parser_setup, opcode):
 
     # multiple calls should be idempotent
     # this makes sure that the internal state is not altered by mistake
-    parser._get_callbacks(inst)
-    callbacks = parser._get_callbacks(inst)
+    parser._cbk_manager.get_callbacks(inst)
+    callbacks = list(parser._cbk_manager.get_callbacks(inst))
 
     assert len(callbacks) == len(expect[opcode]), \
         "Number of callbacks differ for %s with setup %s" % (

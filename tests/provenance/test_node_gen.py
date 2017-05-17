@@ -184,18 +184,11 @@ trace_pcc_epcc_tracking = (
     # because it is the only thing that matters for provenance
     # tracking.
     #
-    # XXX we currently have a problem here. Is pcc updated or not?
-    # it depends whether the exception is caused on instruction fetch
-    # of the following nop or instruction fetch of the jumped address.
-    # we have no way to know that, we would need to emit epcc when
-    # this happens but it can not always be done. e.g. when the
-    # instruction actually committed and we already have a value:
-    #
-    # ld $at, <addr> with external interrupt
-    # -> instr commit with $at value in the trace entry
-    #
     ("cjr $c2", {"exc": 1}),
     ("nop", {}),
+    # $at is set to the cjr address
+    # required to correctly set epcc
+    ("mfc0 $at, $8", {"1": 0x1024}),
     ("cgetpcc $c1", {"c1": kcc}),
     ("lui $at, 0x400", {"1": 0x400}),
     ("csetoffset $c1, $c1, $at", {
@@ -208,8 +201,8 @@ trace_pcc_epcc_tracking = (
             pct_cap(0x400, 0x0, 0x100, CheriCapPerm.all()),
             parent=0, origin=CheriNodeOrigin.SETBOUNDS)
     }),
-    # there is confusion here, c31 should be the c2 from cjr or pcc pointing
-    # to cjr?
+    # c31 here should be the pcc, NOT updated with the content of c2
+    # after cjr
     # it depends on how exceptions can happen with cjr
     # TLB load on the first instruction -> pcc already updated
     # TLB load on the delay slot instruction fetch -> pcc not updated
@@ -328,7 +321,7 @@ trace_mp_move_and_setbounds = (
     trace_mp_move_and_setbounds,
     trace_infer_kcc_kdc,
     trace_explicit_kcc_kdc,
-    # trace_pcc_epcc_tracking, # xfail due to unresolved issue
+    trace_pcc_epcc_tracking,
     trace_ddc,
 ])
 def test_nodegen_simple(trace, threads):

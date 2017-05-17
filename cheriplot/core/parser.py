@@ -29,27 +29,27 @@
 Parser for cheri trace files based on the cheritrace library.
 """
 
-import sys
-import os
+import exrex
 import math
 import numpy as np
-import exrex
 import logging
-
+import os
 import pycheritrace as pct
+import sys
 
-from multiprocessing import Pool, Value, Manager, Lock, Condition
+from cached_property import cached_property
+from collections import defaultdict
 from enum import Enum
 from functools import reduce
-from cached_property import cached_property
 from itertools import chain
+from multiprocessing import Pool, Value, Manager, Lock, Condition
 
 from cheriplot.core.utils import ProgressPrinter
 
 logger = logging.getLogger(__name__)
 
 __all__ = ("TraceParser", "CallbackTraceParser", "Operand", "Instruction",
-           "threaded_parser")
+           "threaded_parser", "CallbackSubParser")
 
 class TraceParser:
     """
@@ -80,7 +80,8 @@ class TraceParser:
 
 class Operand:
     """
-    Helper class used to parse memory operands
+    Helper class used to parse instruction operands,
+    this wraps a pycheritrace operand_info.
     """
 
     def __init__(self, op_info, instr, is_target=False):
@@ -200,68 +201,6 @@ class Instruction:
     information in addition to the pycheritrace disassembler.
     """
 
-    class IClass(Enum):
-        """
-        Enumerate instruction classes for
-        :meth:`.Instruction.is_type`.
-        """
-
-        I_CAP_LOAD = "cap_load"
-        """Load via capability."""
-        I_CAP_STORE = "cap_store"
-        """Store via capability."""
-        I_CAP_CAST = "cap_cast"
-        """Cast capability to or from pointer."""
-        I_CAP_ARITH = "cap_arith"
-        """Arithmetic capability manipulation."""
-        I_CAP_BOUND = "cap_bound"
-        """Change capability bounds."""
-        I_CAP_FLOW = "cap_flow"
-        """Capability flow control."""
-        I_CAP_CPREG = "cap_cpreg"
-        """Manipulation of reserved coprocessor registers"""
-        I_CAP_CMP = "cap_cmp"
-        """Capability comparison"""
-        I_CAP_OTHER = "cap_other"
-        """Other capability instruction not in previous classes."""
-        I_CAP = "cap"
-        """Generic capability instruction."""
-
-    # map each instruction class to a set of opcodes
-    iclass_map = {
-        IClass.I_CAP_LOAD: list(chain(
-            exrex.generate("cl[dc][ri]?|cl[bhw][u]?[ri]?"),
-            exrex.generate("cll[cd]|cll[bhw][u]?"))),
-        IClass.I_CAP_STORE: list(chain(
-            exrex.generate("cs[bhwdc][ri]?"),
-            exrex.generate("csc[cbhwd]"))),
-        IClass.I_CAP_CAST: [
-            "ctoptr", "cfromptr"],
-        IClass.I_CAP_ARITH: [
-            "cincoffset", "csetoffset", "csub",
-            "cincbase"],
-        IClass.I_CAP_BOUND: [
-            "csetbounds", "csetboundsexact"],
-        IClass.I_CAP_FLOW: [
-            "cbtu", "cbts", "cjr", "cjalr",
-            "ccall", "creturn"],
-        IClass.I_CAP_CPREG: [
-            "csetdefault", "cgetdefault", "cgetepcc", "csetepcc",
-            "cgetkcc", "csetkcc", "cgetkdc", "csetkdc", "cgetpcc",
-            "cgetpccsetoffset"],
-        IClass.I_CAP_CMP: [
-            "ceq", "cne", "clt", "cle", "cltu", "cleu", "cexeq"],
-        IClass.I_CAP_OTHER: [
-            "cgetperm", "cgettype", "cgetbase", "cgetlen",
-            "cgettag", "cgetsealed", "cgetoffset",
-            "cseal", "cunseal", "candperm",
-            "ccleartag", "cclearregs",
-            "cgetcause", "csetcause", "ccheckperm", "cchecktype",
-            "clearlo", "clearhi", "cclearlo", "cclearhi",
-            "fpclearlo", "fpclearhi", "cmove"]
-        }
-    iclass_map[IClass.I_CAP] = list(chain(*iclass_map.values()))
-
     def __init__(self, inst, entry, regset, prev_regset):
         """
         Construct instruction from pycheritrace instruction.
@@ -331,6 +270,10 @@ class Instruction:
     cb = op1
     rt = op2
 
+    @property
+    def has_exception(self):
+        return self.entry.exception != 31
+
     def __str__(self):
         instr_repr = "<Inst {%d} pc:0x%x %s " % (
             self.entry.cycles, self.entry.pc, self.opcode)
@@ -338,6 +281,176 @@ class Instruction:
             instr_repr += str(op)
         instr_repr += ">"
         return instr_repr
+
+
+class IClass(Enum):
+    """
+    Enumerate instruction classes with
+    the relative callback name.
+    There are two more reserved classes
+    I_ALL and I_EXCEPTION that define
+    the callback invoked for every instruction
+    and whenever an instruction causes an exception.
+    """
+
+    I_CAP_LOAD = "cap_load"
+    """Load via capability."""
+    I_CAP_STORE = "cap_store"
+    """Store via capability."""
+    I_CAP_CAST = "cap_cast"
+    """Cast capability to or from pointer."""
+    I_CAP_ARITH = "cap_arith"
+    """Arithmetic capability manipulation."""
+    I_CAP_BOUND = "cap_bound"
+    """Change capability bounds."""
+    I_CAP_FLOW = "cap_flow"
+    """Capability flow control."""
+    I_CAP_CPREG = "cap_cpreg"
+    """Manipulation of reserved coprocessor registers"""
+    I_CAP_CMP = "cap_cmp"
+    """Capability comparison"""
+    I_CAP_OTHER = "cap_other"
+    """Other capability instruction not in previous classes."""
+    I_CAP = "cap"
+    """Generic capability instruction."""
+
+
+class CallbacksManager:
+    """
+    Gather callbacks from CallbackTraceParser and
+    any registered subparser.
+    The extractor returns the callbacks registered
+    for a given instruction during the parse loop.
+    This saves time by avoiding to check for callbacks
+    dynamically during the loop.
+    """
+
+    iclass_map = None
+    """
+    This is meant to be overridden in subclasses to define
+    architecture-specific mapping from instruction to
+    instruction classes.
+    """
+
+    def __init__(self):
+        self._callbacks = defaultdict(lambda: [])
+        """
+        Map the instruction mnemonic to the list of callbacks
+        registered to handle it.
+        """
+
+    def gather_callbacks(self, obj):
+        """
+        Fetch callbacks defined in the given object.
+        All functions starting with the "scan_" prefix are treated as
+        callbacks.
+        All callbacks of the form "scan_<mnemonic>" are called when
+        an instruction with a matching mnemonic is found.
+
+        Additionally callbacks for instruction classes can be registerd
+        as "scan_<iclass>" (e.g. scan_cap_cmp), these are called
+        whenever an instruction in that class is found (this is specified
+        in the CallbackManager.iclass_map).
+
+        There are some reserved callback names:
+        - scan_all: this callback will be invoked for every instruction.
+        - scan_exception: this callback will be invoked when the parser
+        finds an instruction that generate an exception.
+
+        This step ensures that all callbacks are be stored
+        in _callbacks[<opcode>] so that the get_callbacks function
+        can retrieve them in ~O(1).
+        """
+        for attr in dir(obj):
+            method = getattr(obj, attr)
+            if (not attr.startswith("scan_") or not callable(method)):
+                continue
+            # remove the scan_ prefix
+            cbk_name = attr[5:]
+            for iclass in IClass:
+                if cbk_name == iclass.value:
+                    # add the iclass callback for all the
+                    # instructions in such class
+                    opcodes = self.iclass_map.get(iclass, [])
+                    for opcode in opcodes:
+                        self._callbacks[opcode].append(method)
+                    break
+            else:
+                self._callbacks[cbk_name].append(method)
+        logger.debug("CallbackManager loaded callbacks:\n%s",
+                     self._dbg_repr_callbacks())
+
+    def _dbg_repr_callbacks(self):
+        """
+        Return a debug representation of the callbacks registered
+        by the parser.
+
+        :return: str
+        """
+        pairs = map(
+            lambda c: "%s -> %s" % (
+                c[0],list(map(lambda m: m.__qualname__, c[1]))),
+            self._callbacks.items())
+        return reduce(lambda p,a: "%s\n%s" % (a, p), pairs, "")
+
+    def get_callbacks(self, inst):
+        """
+        Return a list of callback methods that should be called to
+        parse this instruction
+
+        :param inst: instruction object for the current instruction
+        :type inst: :class:`Instruction`
+        :return: list of methods to be called
+        :rtype: list of callables
+        """
+        # the <all> callback should be the last one executed
+        if inst.has_exception:
+            return chain(self._callbacks[inst.opcode],
+                         self._callbacks["exception"],
+                         self._callbacks["all"])
+        else:
+            return chain(self._callbacks[inst.opcode], self._callbacks["all"])
+
+
+class CheriMipsCallbacksManager(CallbacksManager):
+    """
+    A concrete CallbacksManager that handles callbacks for
+    CHERI-mips traces.
+    """
+
+    iclass_map = {
+        IClass.I_CAP_LOAD: list(chain(
+            exrex.generate("cl[dc][ri]?|cl[bhw][u]?[ri]?"),
+            exrex.generate("cll[cd]|cll[bhw][u]?"))),
+        IClass.I_CAP_STORE: list(chain(
+            exrex.generate("cs[bhwdc][ri]?"),
+            exrex.generate("csc[cbhwd]"))),
+        IClass.I_CAP_CAST: [
+            "ctoptr", "cfromptr"],
+        IClass.I_CAP_ARITH: [
+            "cincoffset", "csetoffset", "csub",
+            "cincbase"],
+        IClass.I_CAP_BOUND: [
+            "csetbounds", "csetboundsexact"],
+        IClass.I_CAP_FLOW: [
+            "cbtu", "cbts", "cjr", "cjalr",
+            "ccall", "creturn"],
+        IClass.I_CAP_CPREG: [
+            "csetdefault", "cgetdefault", "cgetepcc", "csetepcc",
+            "cgetkcc", "csetkcc", "cgetkdc", "csetkdc", "cgetpcc",
+            "cgetpccsetoffset"],
+        IClass.I_CAP_CMP: [
+            "ceq", "cne", "clt", "cle", "cltu", "cleu", "cexeq"],
+        IClass.I_CAP_OTHER: [
+            "cgetperm", "cgettype", "cgetbase", "cgetlen",
+            "cgettag", "cgetsealed", "cgetoffset",
+            "cseal", "cunseal", "candperm",
+            "ccleartag", "cclearregs",
+            "cgetcause", "csetcause", "ccheckperm", "cchecktype",
+            "clearlo", "clearhi", "cclearlo", "cclearhi",
+            "fpclearlo", "fpclearhi", "cmove"]
+        }
+    iclass_map[IClass.I_CAP] = list(chain(*iclass_map.values()))
 
 
 class CallbackTraceParser(TraceParser):
@@ -358,6 +471,7 @@ class CallbackTraceParser(TraceParser):
     Valid instruction class names are:
 
     * all: all instructions
+    * exception: all instruction with an exception
     * cap: all capability instructions
     * cap_load: all capability load
     * cap_store: all capability store
@@ -382,67 +496,13 @@ class CallbackTraceParser(TraceParser):
         self._dis = pct.disassembler()
         """Disassembler"""
 
-        # Enumerate the callbacks at creation time to save
-        # time during scanning
-        self._callbacks = {}
+        self._cbk_manager = CheriMipsCallbacksManager()
+        self._cbk_manager.gather_callbacks(self)
+        self._subparsers = []
 
-        # for each opcode we may be interested in, check if there is
-        # one or more callbacks to call, if so these will be stored
-        # in _callbacks[<opcode>] so that the _get_callbacks function
-        # can retrieve them in ~O(1)
-        for attr in dir(self):
-            method = getattr(self, attr)
-            if (not attr.startswith("scan_") or not callable(method)):
-                continue
-            instr_name = attr[5:]
-            for iclass in Instruction.IClass:
-                if instr_name == iclass.value:
-                    # add the iclass callback for all the
-                    # instructions in such class
-                    opcodes = Instruction.iclass_map.get(iclass, [])
-                    for opcode in opcodes:
-                        if opcode in self._callbacks:
-                            self._callbacks[opcode].append(method)
-                        else:
-                            self._callbacks[opcode] = [method]
-                    break
-            else:
-                if instr_name in self._callbacks:
-                    self._callbacks[instr_name] += [method]
-                else:
-                    self._callbacks[instr_name] = [method]
-
-        logger.debug("Loaded callbacks for CallbackTraceParser:\n%s",
-                     self._dbg_repr_callbacks())
-
-    def _dbg_repr_callbacks(self):
-        """
-        Return a debug representation of the callbacks registered
-        by the parser.
-
-        :return: str
-        """
-        pairs = map(
-            lambda c: "%s -> %s" % (
-                c[0],list(map(lambda m: m.__qualname__, c[1]))),
-            self._callbacks.items())
-        return reduce(lambda p,a: "%s\n%s" % (a, p), pairs, "")
-
-    def _get_callbacks(self, inst):
-        """
-        Return a list of callback methods that should be called to
-        parse this instruction
-
-        :param inst: instruction object for the current instruction
-        :type inst: :class:`.Instruction`
-        :return: list of methods to be called
-        :rtype: list of callables
-        """
-        # try to get the callback for all instructions, if any
-        callbacks = list(self._callbacks.get("all", []))
-        # the <all> callback should be the last one executed
-        callbacks = self._callbacks.get(inst.opcode, []) + callbacks
-        return callbacks
+    def _add_subparser(self, sub):
+        self._subparsers.append(sub)
+        self._cbk_manager.gather_callbacks(sub)
 
     def _parse_exception(self, entry, regs, disasm, idx):
         """
@@ -505,7 +565,7 @@ class CallbackTraceParser(TraceParser):
             ret = False
 
             try:
-                for cbk in self._get_callbacks(inst):
+                for cbk in self._cbk_manager.get_callbacks(inst):
                     ret |= cbk(inst, entry, regs, self._last_regs, idx)
                     if ret:
                         break
