@@ -33,7 +33,8 @@ from enum import IntEnum
 from functools import reduce
 from graph_tool.all import Graph, load_graph
 
-from cheriplot.core import CallbackTraceParser, ProgressTimer, threaded_parser
+from cheriplot.core import (
+    CallbackTraceParser, ProgressTimer, MultiprocessCallbackParser)
 from cheriplot.provenance.model import *
 from cheriplot.provenance.transforms import bfs_transform, BFSTransform
 
@@ -743,13 +744,12 @@ class MergePartialSubgraph(BFSTransform):
             self._merge_subgraph_vertex(u)
 
 
-class ExceptionPccFixupSubparser:
+class CapabilityBranchSubparser:
     """
+    Handle capability branch instructions.
     Subparser that fixes the content of pcc/epcc
     when a capability branch with an exception is
     found.
-
-    XXX add a better description for the problem?
     """
 
     def __init__(self, dataset, regset):
@@ -853,9 +853,7 @@ class ExceptionEpccFixupSubparser:
     """
     pass
 
-
-@threaded_parser()
-class PointerProvenanceParser(CallbackTraceParser):
+class PointerProvenanceParser(MultiprocessCallbackParser):
     """
     Parsing logic that builds the provenance graph used in
     all the provenance-based plots.
@@ -901,7 +899,7 @@ class PointerProvenanceParser(CallbackTraceParser):
         self.syscall_context = SyscallContext()
         """Keep state related to system calls entry end return"""
 
-        pcc_fixup = ExceptionPccFixupSubparser(self.dataset, self.regset)
+        pcc_fixup = CapabilityBranchSubparser(self.dataset, self.regset)
         self._add_subparser(pcc_fixup)
 
     def _init_graph(self):

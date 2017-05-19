@@ -160,6 +160,8 @@ trace_mem_2st_ld = (
 #
 # ROOT(v4)
 trace_mem_st_ld_root = (
+    # split worker set here
+    ("nop", {}),
     ("clc $c2, $zero, 0x700($c1)", { # vertex 4
         "c2": pct_cap(0x2000, 0x0, 0x1000, perm),
         "vertex": mk_vertex(pct_cap(0x2000, 0x0, 0x1000, perm)),
@@ -181,6 +183,8 @@ trace_mem_st_ld_root = (
 # invalid cap ld/st do not propagate nodes nor creates roots
 #
 trace_mem_st_ld_invalid = (
+    # split worker set here
+    ("nop", {}),
     ("clc $c2, $zero, 0x800($c1)", {
         "c2": pct_cap(0xbadadd12, 0xbad, 0x1000, 0xbaad, valid=False),
         "load": True,

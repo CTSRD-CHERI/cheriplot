@@ -49,7 +49,7 @@ from cheriplot.core.utils import ProgressPrinter
 logger = logging.getLogger(__name__)
 
 __all__ = ("TraceParser", "CallbackTraceParser", "Operand", "Instruction",
-           "threaded_parser", "CallbackSubParser")
+           "MultiprocessCallbackParser")
 
 class TraceParser:
     """
@@ -581,55 +581,20 @@ class CallbackTraceParser(TraceParser):
         self.progress.finish()
 
 
-class threaded_parser:
+class MultiprocessCallbackParser(CallbackTraceParser):
     """
-    Decorator for trace parsers that runs the
-    parser in different processes.
-
-    The scanning processes are forked from the current parser
-    and each one is allocated a range of the trace. The parsed
-    dataset is then processed to merge the parts toghether if
-    required.
-
-    The decorated class should define the methods `mp_result()`
-    and `mp_merge(entries)`. These are called to extract the
-    partial results from workers and merge them in the
-    main process pareser.
+    Callback trace parser with multiprocessing support
     """
 
-    class _ParserBuilder:
-        """
-        Wrapper that builds the parser in the worker processes.
-        This is required since Swig objects are not pickle-able.
-        """
-        def __init__(self, klass, kwargs):
-            self.klass = klass
-            self.kwargs = kwargs
-            # signal the parser that this is a worker process
-            kwargs["worker_process"] = True
-
-        def __call__(self):
-            return self.klass(**self.kwargs)
-
-
-    class _MultiprocessState:
+    class MultiprocessState:
         """
         This holds the state for multiprocessing for a parser
         instance.
         """
 
-        def __init__(self, threads, result_cbk=None, merge_cbk=None):
-            self.result_cbk = result_cbk
-            """
-            Callable used to fetch the result of the parser to send it
-            to the master process.
-            """
-
+        def __init__(self, threads):
             self.pid = os.getpid()
             """Current process PID"""
-
-            self.merge_cbk = merge_cbk
-            """Callback used to merge the results from the workers."""
 
             self.threads = threads
             """Number of workers to use."""
@@ -641,8 +606,20 @@ class threaded_parser:
             """Async results."""
 
 
+    class ParserBuilder:
+        """
+        Wrapper that builds the parser in the worker processes.
+        This is required since Swig objects are not pickle-able.
+        """
+        def __init__(self, klass, kwargs):
+            self.klass = klass
+            self.kwargs = kwargs
+
+        def __call__(self):
+            return self.klass(is_worker=True, **self.kwargs)
+
     @staticmethod
-    def _worker_parse(result_cbk, parser_builder, parse_args):
+    def _run_worker(parser_builder, parse_args):
         """
         Multiprocessing parser worker body.
 
@@ -651,121 +628,89 @@ class threaded_parser:
         """
         parser = parser_builder()
         logger.debug("Trace created %d", os.getpid())
-        parser._worker_parse(*parse_args)
-        if callable(result_cbk):
-            return result_cbk(parser)
-        elif hasattr(parser, "mp_result"):
-            return parser.mp_result()
-        else:
-            logger.warning("Worker finished, provide a result_cbk "
-                           "to extract the result from the parser")
-        return None
+        parser._do_parse(*parse_args)
+        return parser.mp_result()
 
-    def __init__(self, threads=os.cpu_count(), result_cbk=None,
-                 merge_cbk=None):
+    def __init__(self, is_worker=False, threads=os.cpu_count(), **kwargs):
         """
         Decorator constructor
 
         :param threads: number of worker processes to use.
-        :param result_cbk: callback used to extract the partial
-        result from a worker.
-        This defaults to the decorated-class mp_result.
-        :param merge_cbk: callback used to merge partial results
-        when parsing has completed.
-        This defaults to the decorated-class mp_merge.
         """
+        super().__init__(**kwargs)
         assert threads > 0, "At least a worker process must be used!"
 
-        self.result_cbk = result_cbk
+        self.is_worker = is_worker
+        """Flag set if this is running in a worker process"""
+
+        if not self.is_worker:
+            self.mp = self.MultiprocessState(threads)
+            self.kwargs = kwargs
+
+    def mp_result(self):
         """
-        Callable used to fetch the result of the parser to send it
-        to the master process.
+        Extract the partial result from the current worker.
         """
+        return None
 
-        self.merge_cbk = merge_cbk
-        """Callback used to merge the results from the workers."""
-
-        self.threads = threads
-        """Number of workers to use."""
-
-    def __call__(self, klass):
+    def mp_merge(self, results):
         """
-        Wrap the parser _do_parse() method to use
-        the process pool.
+        Merge partial results from workers.
         """
-        klass_init = klass.__init__
+        return
 
-        def _wrap_init(self_, **kwargs):
-            self_.is_worker = kwargs.pop("worker_process", False)
-            self_.captured_kwargs = kwargs
-            klass_init(self_, **kwargs)
-            self_.mp = threaded_parser._MultiprocessState(
-                self.threads, self.result_cbk, self.merge_cbk)
+    def parse(self, start=None, end=None, direction=0):
+        """
+        Parse the trace with multiple subprocesses.
+        This is run only by the master process
+        """
+        assert self.mp.threads > 0, "Number of workers must be > 0"
+        logger.debug("Begin multiprocessing parse (master pid:%d)", self.mp.pid)
 
-        def _wrap_parse(self_, start, end, direction):
-            """
-            Parse the trace with multiple subprocesses.
-            This hooks the trace parser _do_parse method
-            """
-            assert self_.mp.threads > 0, "Number of workers must be > 0"
-            logger.debug("Begin multiprocessing parse (master pid:%d)",
-                         os.getpid())
-            if self_.mp.threads == 1:
-                # no need to start the pool and split the work, do everything
-                # in the current process
-                logger.debug("Running %s with 1 worker", klass.__name__)
-                return self_._worker_parse(start, end, direction)
+        start = start if start != None else  0
+        end = end + 1 if end != None else len(self)
+        if self.mp.threads == 1:
+            # no need to start the pool and split the work, do everything
+            # in the current process
+            logger.debug("Running %s with 1 worker", self.__class__.__name__)
+            return self._do_parse(start, end, direction)
 
-            # split the start-end interval in sub-invervals for the workers
-            start = start if start != None else  0
-            end = end + 1 if end != None else len(self_)
-            block_size = math.floor((end - start) / self_.mp.threads)
-            rest = (end - start) % self_.mp.threads
-            start_indexes = np.arange(start, end - rest, block_size)
-            end_indexes = np.arange(start + block_size - 1, end - rest,
-                                    block_size)
-            # add the remaining to the last block
-            end_indexes[-1] += rest
+        # split the start-end interval in sub-invervals for the workers
+        block_size = math.floor((end - start) / self.mp.threads)
+        rest = (end - start) % self.mp.threads
+        start_indexes = np.arange(start, end - rest, block_size)
+        end_indexes = np.arange(start + block_size - 1, end - rest,
+                                block_size)
+        # add the remaining to the last block
+        end_indexes[-1] += rest
 
-            # delay pool creation because the decorated calss must be available
-            # in subprocesses as well.
-            # Also avoid spawning processes for nothing if parse()
-            # is never called.
-            self_.mp.pool = Pool(processes=self_.mp.threads)
-            # run the workers
-            for start_idx, end_idx in zip(start_indexes, end_indexes):
-                builder = threaded_parser._ParserBuilder(
-                    klass, dict(self_.captured_kwargs))
-                # make sure that start and end are python integers otherwise
-                # cheritrace bindings will complain about numpy.int
-                parse_args = (int(start_idx), int(end_idx), int(direction))
-                # prepare the worker main arguments
-                args = (self_.mp.result_cbk, builder, parse_args)
-                result = self_.mp.pool.apply_async(
-                    threaded_parser._worker_parse, args)
-                self_.mp.results.append(result)
+        # delay pool creation because the decorated calss must be available
+        # in subprocesses as well.
+        # Also avoid spawning processes for nothing if parse()
+        # is never called.
+        self.mp.pool = Pool(processes=self.mp.threads)
+        # run the workers
+        for start_idx, end_idx in zip(start_indexes, end_indexes):
+            builder = self.ParserBuilder(self.__class__, dict(self.kwargs))
+            # make sure that start and end are python integers otherwise
+            # cheritrace bindings will complain about numpy.int
+            parse_args = (int(start_idx), int(end_idx), int(direction))
+            # prepare the worker main arguments
+            args = (builder, parse_args)
+            result = self.mp.pool.apply_async(
+                    MultiprocessCallbackParser._run_worker, args)
+            self.mp.results.append(result)
             # wait for all workers to finish
-            self_.mp.pool.close()
-            self_.mp.pool.join()
-            # propagate exceptions and fetch results
-            results = []
-            for r in self_.mp.results:
-                results.append(r.get())
+        self.mp.pool.close()
+        self.mp.pool.join()
+        # propagate exceptions and fetch results
+        results = []
+        for r in self.mp.results:
+            results.append(r.get())
 
-            # we don't need the pool anymore, kill anything that may
-            # be still there
-            self_.mp.pool.terminate()
-            del self_.mp.pool
-            # merge partial results
-            if callable(self_.mp.merge_cbk):
-                self_.mp.merge_cbk(self_, results)
-            elif hasattr(self_, "mp_merge"):
-                self_.mp_merge(results)
-            else:
-                logger.warning("Multiprocessing parser finished, provide a "
-                               "merge_cbk to merge partial results")
-
-        klass.__init__ = _wrap_init
-        klass._worker_parse = klass._do_parse
-        klass._do_parse = _wrap_parse
-        return klass
+        # we don't need the pool anymore, kill anything that may
+        # be still there
+        self.mp.pool.terminate()
+        del self.mp.pool
+        # merge partial results
+        self.mp_merge(results)

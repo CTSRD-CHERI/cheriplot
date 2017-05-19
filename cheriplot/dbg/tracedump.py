@@ -33,7 +33,7 @@ import shutil
 from functools import reduce
 from collections import deque
 from cheriplot.core import (
-    CallbackTraceParser, threaded_parser, BaseTraceTaskDriver, ConfigurableComponent,
+    MultiprocessCallbackParser, BaseTraceTaskDriver, ConfigurableComponent,
     Option, NestedConfig, interactive_tool, option_range_validator,
     any_int_validator)
 from cheriplot.vmmap import VMMapFileParser
@@ -42,8 +42,7 @@ from cheriplot.dbg.symbols import SymReader
 
 logger = logging.getLogger(__name__)
 
-@threaded_parser()
-class TraceDumpParser(CallbackTraceParser, ConfigurableComponent):
+class TraceDumpParser(MultiprocessCallbackParser, ConfigurableComponent):
     """Parser that performs filtering and search operations on a trace"""
 
     range_format_help = "Accept a range in the form <start>-<end>, -<end>, "\
