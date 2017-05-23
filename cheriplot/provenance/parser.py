@@ -82,123 +82,6 @@ class UnexpectedOperationError(RuntimeError):
     pass
 
 
-class SyscallContext:
-    """
-    Keeps the current syscall context information so that
-    the correct return point can be detected.
-
-    This class contains all the methods that manipulate
-    registers and values that depend on the ABI and constants
-    in CheriBSD.
-    """
-    class SyscallCode(IntEnum):
-        """
-        Enumerate system call numbers that are recognised by the
-        parser and are used to add information to the provenance
-        graph.
-        """
-        SYS_MMAP = 477
-        SYS_MUNMAP = 73
-        # also interesting mprotect and shm* stuff
-
-
-    def __init__(self, *args, **kwargs):
-        self.in_syscall = False
-        """Flag indicates whether we are tracking a systemcall."""
-
-        self.pc_syscall = None
-        """Syscall instruction PC."""
-
-        self.t_syscall = None
-        """Syscall instruction cycle number."""
-
-        self.pc_eret = None
-        """Expected eret instruction PC."""
-
-        self.code = None
-        """Current syscall code."""
-
-    def _get_syscall_code(self, regs):
-        """Get the syscall code for direct and indirect syscalls."""
-        # syscall code in $v0
-        # syscall arguments in $a0-$a7/$c3-$c10
-        code = regs.gpr[1] # $v0
-        indirect_code = regs.gpr[3] # $a0
-        is_indirect = (code == 0 or code == 198)
-        return indirect_code if is_indirect else code
-
-    def scan_syscall_start(self, inst, entry, regs, dataset, regset):
-        """
-        Scan a syscall instruction and detect the syscall type
-        and arguments.
-        """
-        code = self._get_syscall_code(regs)
-        try:
-            self.code = self.SyscallCode(code)
-        except ValueError:
-            # we are not interested in this syscall
-            return
-        self.in_syscall = True
-        self.pc_syscall = entry.pc
-        self.t_syscall = entry.cycles
-        self.pc_eret = entry.pc + 4
-
-        # create a node at syscall start for those system calls for
-        # which we care about the arguments
-        if self.code.value == self.SyscallCode.SYS_MUNMAP:
-            src_reg = 3 # argument in $c3
-            origin = CheriNodeOrigin.SYS_MUNMAP
-        else:
-            # we do not do anything for other syscalls
-            return None
-
-        data = NodeData()
-        data.cap = CheriCap(regs.cap_reg[src_reg])
-        data.cap.t_alloc = entry.cycles
-        # XXX may want a way to store call pc and return pc
-        data.pc = entry.pc
-        data.origin = origin
-        data.is_kernel = False
-        node = dataset.add_vertex()
-        dataset.vp.data[node] = data
-        # attach the new node to the capability node in src_reg
-        # and replace it in the register set
-        parent = regset[src_reg]
-        dataset.add_edge(parent, node)
-        regset[src_reg] = node
-        return node
-
-    def scan_syscall_end(self, inst, entry, regs, dataset, regset):
-        """
-        Scan registers to produce a syscall end node.
-        """
-        self.in_syscall = False
-
-        # create a node for the syscall start
-        if self.code.value == self.SyscallCode.SYS_MMAP:
-            ret_reg = 3 # return in $c3
-            origin = CheriNodeOrigin.SYS_MMAP
-        else:
-            # we do not do anything for other syscalls
-            return None
-
-        data = NodeData()
-        data.cap = CheriCap(regs.cap_reg[ret_reg])
-        data.cap.t_alloc = entry.cycles
-        # XXX may want a way to store call pc and return pc
-        data.pc = entry.pc
-        data.origin = origin
-        data.is_kernel = False
-        node = dataset.add_vertex()
-        dataset.vp.data[node] = data
-        # attach the new node to the capability node in ret_reg
-        # and replace it in the register set
-        parent = regset[ret_reg]
-        dataset.add_edge(parent, node)
-        regset[ret_reg] = node
-        return node
-
-
 class VertexMemoryMap:
     """
     Helper object that keeps track of the graph vertex associated
@@ -937,6 +820,14 @@ class CapabilityBranchSubparser:
         return state
 
     def scan_dmfc0(self, inst, entry, regs, last_regs, idx):
+        """
+        When badvaddr is loaded, capture its value and make
+        a decision about what has been stored in epcc
+        if before there was an exception involving
+        a capability branch.
+        """
+        if not self.parser.regs_valid:
+            return False
         if self._saved_addr != None:
             self._save_first_mfc = False
             # badvaddr
@@ -978,6 +869,8 @@ class CapabilityBranchSubparser:
         so that if the instruction did not commit, epcc can
         be set to the correct pcc.
         """
+        if not self.parser.regs_valid:
+            return False
         # discard current pcc and replace it
         if self.regset.has_reg(inst.op0.cap_index):
             # we already have a node for the new PCC
@@ -1001,6 +894,8 @@ class CapabilityBranchSubparser:
         return False
 
     def scan_cjalr(self, inst, entry, regs, last_regs, idx):
+        if not self.parser.regs_valid:
+            return False
         # save current pcc
         cd_idx = inst.op0.cap_index
         if not self.regset.has_pcc(allow_root=True):
@@ -1046,11 +941,113 @@ class CapabilityBranchSubparser:
         raise NotImplementedError("creturn pcc fixup not yet implemented")
 
 
-class ExceptionEpccFixupSubparser:
+class SyscallSubparser:
     """
-    Update pcc and epcc on exception
+    Handle the system call vertex generation.
+
+    This subparser groups the callbacks that keep the
+    exception state
+    This class contains all the methods that manipulate
+    registers and values that depend on the ABI and constants
+    in CheriBSD.
     """
-    pass
+
+    # syscall codes
+    SYS_MMAP = 477
+    SYS_MUNMAP = 73
+    # also interesting mprotect and shm* stuff
+
+
+    def __init__(self, parser):
+        self.parser = parser
+
+        self.in_syscall = False
+        """Flag indicates whether we are tracking a systemcall."""
+
+        # self.pc_syscall = None
+        # """Syscall instruction PC."""
+
+        self.c3_vertex = None
+        """
+        Vertex associated with c3 at the time of syscall.
+        if this changes, the syscall is returning a capability?
+        """
+
+        self.t_syscall = None
+        """Syscall instruction cycle number."""
+
+        self.pc_eret = None
+        """Expected eret instruction PC."""
+
+        self.code = None
+        """Current syscall code."""
+
+    @property
+    def dataset(self):
+        return self.parser.dataset
+
+    @property
+    def regset(self):
+        return self.parser.regset
+
+    def _get_syscall_code(self, regs):
+        """Get the syscall code for direct and indirect syscalls."""
+        # syscall code in $v0
+        # syscall arguments in $a0-$a7/$c3-$c10
+        code = regs.gpr[1] # $v0
+        indirect_code = regs.gpr[3] # $a0
+        is_indirect = (code == 0 or code == 198)
+        return indirect_code if is_indirect else code
+
+    def scan_exception(self, inst, entry, regs, last_regs, idx):
+        """
+        When an exception occurs, adjust the epcc vertex from pcc.
+        """
+        if not self.parser.regs_valid:
+            return False
+
+        logger.debug("except {%d}: update epcc %s, update pcc %s",
+                     entry.cycles,
+                     self.dataset.vp.data[self.regset.pcc],
+                     self.dataset.vp.data[self.regset[29]])
+        self.regset[31] = self.regset.pcc # saved pcc
+        self.regset.pcc = self.regset[29] # pcc <- kcc
+        return False
+
+    def scan_syscall(self, inst, entry, regs, last_regs, idx):
+        """
+        Scan a syscall instruction and detect the syscall type
+        and arguments.
+        """
+        if not self.parser.regs_valid:
+            return False
+        code = self._get_syscall_code(regs)
+        self.in_syscall = True
+        # self.pc_syscall = entry.pc # don't care for now
+        self.t_syscall = entry.cycles
+        self.pc_eret = entry.pc + 4
+        self.c3_vertex = self.regset[3]
+        return False
+
+    def scan_eret(self, inst, entry, regs, last_regs, idx):
+        if not self.parser.regs_valid:
+            return False
+
+        if self.in_syscall:
+            self.in_syscall = False
+            if self.c3_vertex != self.regset[3]:
+                # c3 register changed, probably returning something
+                c3_data = self.dataset.vp.data[self.regset[3]]
+                logger.debug("detected syscall %d capability return: %s",
+                             self.code, c3_data)
+                c3_data.call_info["time"].append(entry.cycles)
+                c3_data.call_info["symbol"].append(self.code)
+                c3_data.call_info["is_syscall"].append(True)
+        logger.debug("eret {%d}: update pcc %s", entry.cycles,
+                     self.dataset.vp.data[self.regset[31]])
+        self.regset.pcc = self.regset[31] # restore saved pcc
+        return False
+
 
 class PointerProvenanceParser(MultiprocessCallbackParser):
     """
@@ -1095,10 +1092,9 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         subgraphs.
         """
 
-        self.syscall_context = SyscallContext()
-        """Keep state related to system calls entry end return"""
-
         self._pcc_fixup = CapabilityBranchSubparser(self)
+        self._syscall_subparser = SyscallSubparser(self)
+        self._add_subparser(self._syscall_subparser)
         self._add_subparser(self._pcc_fixup)
 
     def _init_graph(self):
@@ -1271,33 +1267,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             return True
         return False
 
-    def scan_all(self, inst, entry, regs, last_regs, idx):
-        """
-        Detect end of syscalls by checking the expected return PC
-        after an eret
-        """
-        if not self.regs_valid:
-            return False
-
-        if self._has_exception(entry):
-            # If an exception occurred adjust EPCC node from PCC,
-            # this also handles syscall exceptions.
-            # if the instruction is an eret that is causing an exception
-            # EPCC and PCC do not change and we end up in an handler again.
-            logger.debug("except {%d}: update epcc %s, update pcc %s",
-                         entry.cycles,
-                         self.dataset.vp.data[self.regset.pcc],
-                         self.dataset.vp.data[self.regset[29]])
-            self.regset[31] = self.regset.pcc # saved pcc
-            self.regset.pcc = self.regset[29] # pcc <- kcc
-
-        if (self.syscall_context.in_syscall and
-            entry.pc == self.syscall_context.pc_eret):
-            node = self.syscall_context.scan_syscall_end(
-                    inst, entry, regs, self.dataset, self.regset)
-            logger.debug("Built syscall node %s", node)
-        return False
-
     def scan_eret(self, inst, entry, regs, last_regs, idx):
         """
         Detect the first eret that enters the process code
@@ -1305,25 +1274,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         """
         if not self.regs_valid:
             self._set_initial_regset(inst, entry, regs)
-
-        # eret may throw an exception, in which case the nodes
-        # are handled again in scan_all (which is always executed
-        # after per-opcode scan_* methods)
-        logger.debug("eret {%d}: update pcc %s", entry.cycles,
-                     self.dataset.vp.data[self.regset[31]])
-        self.regset.pcc = self.regset[31] # restore saved pcc
-        return False
-
-    def scan_syscall(self, inst, entry, regs, last_regs, idx):
-        """
-        Record entering mmap system calls so that we can grab the return
-        value at the end
-        """
-        if not self.regs_valid:
-            return False
-
-        self.syscall_context.scan_syscall_start(inst, entry, regs,
-                                                self.dataset, self.regset)
         return False
 
     def scan_cclearregs(self, inst, entry, regs, last_regs, idx):

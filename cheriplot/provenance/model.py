@@ -29,7 +29,7 @@
 Provenance graph implementation and helper classes.
 """
 
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 from cached_property import cached_property
 from functools import partialmethod
 from collections import OrderedDict
@@ -38,7 +38,7 @@ from graph_tool.all import *
 __all__ = ("CheriCapPerm", "CheriNodeOrigin", "CheriCap", "NodeData",
            "ProvenanceGraphManager")
 
-class CheriCapPerm(IntEnum):
+class CheriCapPerm(IntFlag):
     """
     Enumeration of bitmask for the capability permission bits.
     """
@@ -61,27 +61,22 @@ class CheriCapPerm(IntEnum):
                 cls.SEAL | cls.SYSTEM_REGISTERS)
 
 
-class CheriNodeOrigin(IntEnum):
+class CheriNodeOrigin(IntFlag):
     """
     Enumeration of the possible originators of
     nodes in the provenance graph.
     """
-
-    UNKNOWN = -1
+    UNKNOWN = 0
     # partial result used in mutiprocessing parser
-    PARTIAL = -2
+    PARTIAL = 1
     # root node
-    ROOT = 0
+    ROOT = 2
     # instructions
-    SETBOUNDS = 1
-    FROMPTR = 2
-    ANDPERM = 3
+    SETBOUNDS = 3
+    FROMPTR = 4
+    ANDPERM = 5
     # aggregate nodes
-    PTR_SETBOUNDS = 4
-    # system calls
-    # the start and end are flags
-    SYS_MMAP = 5
-    SYS_MUNMAP = 6
+    PTR_SETBOUNDS = 6
 
 
 class ProvenanceGraphManager:
@@ -282,6 +277,9 @@ class NodeData:
         the type is defined in :class:`NodeData.DerefType`
         """
 
+        self.call_info = {"time": [], "symbol": [], "is_syscall": []}
+        """This vertex was returned by these functions/syscalls"""
+
         self.cap = None
         """Cheri capability data, see :class:`.CheriCap`."""
 
@@ -292,7 +290,11 @@ class NodeData:
         """The PC of the instruction that produced this node."""
 
         self.is_kernel = False
-        """Is this node coming from a trace entry executed in kernel space?"""
+        """
+        XXX isn't this redundant? can we infer it from pc except maybe
+        for the initial root registers.
+        Is this node coming from a trace entry executed in kernel space?
+        """
 
     def add_deref(self, time, addr, cap, type_):
         """Append a dereference to the dereference table."""
