@@ -101,13 +101,21 @@ class TraceDumpParser(MultiprocessCallbackParser, ConfigurableComponent):
         help="Return a trace entry when matches any of the conditions "
         "instead of all")
 
-    def __init__(self, sym_reader, **kwargs):
+    def __init__(self, **kwargs):
         """
         This parser filters the trace according to a set of match
         conditions. Multiple match conditions can be used at the same time
         to refine or widen the filter.
+
+        :param sym_reader: symbol reader helper, used to extract
+        symbol information
         """
+        sym_reader = kwargs.pop("sym_reader")
         super().__init__(**kwargs)
+
+        if not self.is_worker:
+            # update kwargs used to create workers
+            self.kwargs["sym_reader"] = sym_reader
 
         self._entry_history = deque([], self.config.before)
         """FIFO instructions that may be shown if a match is found"""

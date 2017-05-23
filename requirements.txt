@@ -3,6 +3,7 @@ appdirs==1.4.1
 Babel==2.3.4
 Brlapi==0.6.5
 cycler==0.10.0
+coverage==4.3.4
 docutils==0.13.1
 imagesize==0.7.1
 isc==2.0
@@ -18,6 +19,8 @@ pyelftools==0.24
 Pygments==2.2.0
 pyparsing==2.1.10
 pytest==3.0.6
+pytest-cov==2.4.0
+pytest-benchmark==3.0.0
 python-dateutil==2.6.0
 pytz==2016.10
 requests==2.13.0

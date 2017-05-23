@@ -440,6 +440,65 @@ class RegisterSet:
         self.reg_nodes[idx] = val
 
 
+class MergePartialSubgraphContext:
+    """
+    Hold the context information for the merge subgraph transform
+    steps.
+    """
+
+    def __init__(self):
+
+        self.graph = None
+        """Merged graph."""
+
+        self.subgraph = None
+        """Current subgraph being merged."""
+
+        self.prev_regset = None
+        """Previous step final regset."""
+
+        self.prev_vmap = None
+        """Previous step vinal vertex-memory map."""
+
+        self.prev_pcc_fixup = None
+        """Previous step PccFixup subparser result."""
+
+        self.curr_regset = None
+        """Current step final regset."""
+
+        self.curr_initial_regset = None
+        """Current step initial regset."""
+
+        self.curr_vmap = None
+        """Current step vertex-memory map."""
+
+        self.curr_pcc_fixup = None
+        """Current step PccFixup subparser result"""
+
+    def step(self, result):
+        """
+        Process a merge step
+        """
+        if self.graph == None:
+            # first step
+            self.graph = result["graph"]
+            self.prev_regset = result["final_regset"]
+            self.prev_vmap = result["mem_vertex_map"]
+            self.prev_pcc_fixup = result["sub_pcc_fixup"]
+        else:
+            # copy the graph into the merged dataset and
+            # merge the root nodes from the initial register set
+            # with the previous register set
+            self.subgraph = result["graph"]
+            self.curr_initial_regset = result["initial_regset"]
+            self.curr_regset = result["final_regset"]
+            self.curr_vmap = result["mem_vertex_map"]
+            self.curr_pcc_fixup = result["sub_pcc_fixup"]
+            transform = MergePartialSubgraph(self)
+            bfs_transform(result["graph"], [transform])
+            transform.finalize()
+
+
 class MergePartialSubgraph(BFSTransform):
     """
     Merge a partial subgraph into the main graph.
@@ -452,66 +511,90 @@ class MergePartialSubgraph(BFSTransform):
     should be merged.
     """
 
-    def __init__(self, graph, subgraph, initial_regset, final_regset,
-                 previous_regset, vertex_map, previous_vmap):
+    def __init__(self, context):
+        self.context = context
 
-        self.graph = graph
-        """Merged graph that we are building"""
+        if self.subgraph:
+            self.copy_vertex_map = self.subgraph.new_vertex_property(
+                "long", val=-1)
+            """
+            Map vertex index in the subgraph to a vertex index in the
+            merged graph.
+            """
 
-        self.subgraph = subgraph
-        """Subgraph to be merged"""
+            self.omit_vertex_map = self.subgraph.new_vertex_property(
+                "bool", val=False)
+            """
+            Mark vertices in the subgraph that should be ignored when moving
+            to the merged graph.
+            """
 
-        self.initial_regset = initial_regset
+    @property
+    def graph(self):
+        """Merged graph that we are building."""
+        return self.context.graph
+
+    @property
+    def subgraph(self):
+        """Subgraph to be merged."""
+        return self.context.subgraph
+
+    @property
+    def initial_regset(self):
         """
         Regset mapping initial register state to vertices in the
         subgraph.
 
         Note: the register set contains vertex handles for the subgraph.
         """
+        return self.context.curr_initial_regset
 
-        self.final_regset = final_regset
+    @property
+    def final_regset(self):
         """
         Regset mapping the final register state of the worker to the
         vertices in the merged graph. This is generated from the final
         regset given to the transform, which contains vertex handles for
         the subgraph.
         """
+        return self.context.curr_regset
 
-        self.previous_regset = previous_regset
+    @property
+    def previous_regset(self):
         """
         Regset mapping the final state of the registers of the last merged
         subgraph to vertices in the merged graph.
 
         Note: the register set contains vertex handles for the merged graph.
         """
+        return self.context.prev_regset
 
-        self.vertex_map = vertex_map
+    @property
+    def vertex_map(self):
         """
         VertexMemoryMap with the initial and final state of graph
         vertices in memory after the subgraph has been parsed.
 
         Note: the map contains vertex handles from the subgraph.
         """
+        return self.context.curr_vmap
 
-        self.previous_vmap = previous_vmap
+    @property
+    def previous_vmap(self):
         """
         VertexMemoryMap with the final state of graph vertices in memory
         from the previous subgraph merge step.
 
         Note: the map contains vertex handles from the merged graph.
         """
+        return self.context.prev_vmap
 
-        self.copy_vertex_map = subgraph.new_vertex_property("long", val=-1)
+    def finalize(self):
         """
-        Map vertex index in the subgraph to a vertex index in the
-        merged graph.
+        Finalize the context for this merge step
         """
-
-        self.omit_vertex_map = subgraph.new_vertex_property("bool", val=False)
-        """
-        Mark vertices in the subgraph that should be ignored when moving
-        to the merged graph.
-        """
+        self.context.prev_regset = self.get_final_regset()
+        self.context.prev_vmap = self.get_final_vmap()
 
     def get_final_regset(self):
         """
@@ -696,6 +779,42 @@ class MergePartialSubgraph(BFSTransform):
                 logger.debug("valid in-neighbour subgraph:%s", u_in)
                 self.graph.add_edge(v_in, v)
 
+    def _merge_pcc_fixup(self, u):
+        """
+        Merge a vertex that has been marked as initial epcc
+        by the PccFixup subparser. This happens when the trace was
+        split in the middle of an exception caused by a capability
+        branch.
+        """
+        curr_result = self.context.curr_pcc_fixup
+        prev_result = self.context.prev_pcc_fixup
+
+        badvaddr = curr_result["badvaddr"]
+        jmp_instr_addr = prev_result["saved_addr"]
+        if badvaddr is None and jmp_instr_addr is None:
+            # nothing to do
+            return
+
+        if badvaddr == jmp_instr_addr or badvaddr == jmp_instr_addr + 4:
+            # the PccFixup assumes that the branch instruction
+            # always commit, if this is not the case, the badvaddr
+            # is the one of the branch instruction and we should
+            # restore epcc to its previous value.
+            # u == epcc node
+            u_data = self.subgraph.vp.data[u]
+            if u_data.origin == CheriNodeOrigin.PARTIAL:
+                # u is a dummy vertex that will be merged
+                # need to replace the corresponding parent with the
+                # saved pcc and the merge will be handled by the
+                # initial vertex merge.
+                index = self.initial_regset.reg_nodes.index(u)
+                self.previous_regset.reg_nodes[index] = prev_result["saved_pcc"]
+            else:
+                # normal vertex, there is no such thing as an initial
+                # epcc that is not a dummy vertex?
+                raise SubgraphMergeError(
+                    "PccFixup initial epcc is not a dummy vertex")
+
     def examine_vertex(self, u):
         """
         Merge each vertex of the subgraph in the main merged graph.
@@ -733,6 +852,9 @@ class MergePartialSubgraph(BFSTransform):
             # nothing to do for this vertex, it is marked to be omitted
             return
 
+        if u == self.context.curr_pcc_fixup["epcc"]:
+            self._merge_pcc_fixup(u)
+
         if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
             logger.debug("Merge initial vertex subgraph:%s", u)
             self._merge_initial_vertex(u)
@@ -752,25 +874,102 @@ class CapabilityBranchSubparser:
     found.
     """
 
-    def __init__(self, dataset, regset):
-        self.dataset = dataset
-        self.regset = regset
-        """The main parser register set"""
+    def __init__(self, parser):
+        self.parser = parser
 
-        self._exc_pcc = None
-        self._exc_addr = None
+        self._saved_pcc = None
+        """Saved PCC vertex handle before a cj[al]r with an exception."""
+        self._saved_addr = None
+        """Address of the last cj[al]r with exception seen."""
 
-    def scan_mfc0(self, inst, entry, regs, last_regs, idx):
-        if self._exc_addr != None:
+        self._save_first_mfc = True
+        """
+        Flag used to determine whether the initial state
+        should be saved.
+        """
+
+        self._initial_epcc = None
+        """Epcc found at the initial mfc0."""
+
+        self._initial_badvaddr = None
+        """First badvaddr fetched for which we did not see the exception."""
+
+        self._saved_epcc_out_neighbours = None
+        """
+        Saved out neighbours of the jmp target so that we can
+        detect anything appended to it.
+        """
+
+    @property
+    def dataset(self):
+        return self.parser.dataset
+
+    @property
+    def regset(self):
+        return self.parser.regset
+
+    def mp_result(self):
+        """
+        Return partial result from worker subparser
+        """
+        # serialize vertex index, not object
+        try:
+            saved_pcc = int(self._saved_pcc)
+        except TypeError:
+            saved_pcc = None
+        try:
+            epcc_neighbours = [int(u) for u in self._saved_epcc_out_neighbours]
+        except TypeError:
+            epcc_neighbours = None
+
+        try:
+            epcc = int(self._initial_epcc)
+        except TypeError:
+            epcc = None
+
+        state = {
+            "saved_addr": self._saved_addr,
+            "saved_pcc": saved_pcc,
+            "epcc_out_neighbours": epcc_neighbours,
+            "epcc": epcc,
+            "badvaddr": self._initial_badvaddr,
+        }
+        return state
+
+    def scan_dmfc0(self, inst, entry, regs, last_regs, idx):
+        if self._saved_addr != None:
+            self._save_first_mfc = False
             # badvaddr
             if inst.op1.gpr_index == 8:
                 badvaddr = inst.op0.value
-                if badvaddr == self._exc_addr + 4:
-                    # not committed
-                    # epcc = pcc_before_jmp
-                    self.regset[31] = self._exc_pcc
-            self._exc_addr = None
+                if (badvaddr == self._saved_addr or
+                    badvaddr == self._saved_addr + 4):
+                    # not committed, epcc = pcc_before_jmp
+                    # XXX this assumes that nothing as been done with epcc
+                    # between the exception and the mfc0 instruction
+                    assert (self.regset[31].out_degree() ==
+                            len(self._saved_epcc_out_neighbours))
+                    self.regset[31] = self._saved_pcc
+            self._saved_addr = None
+        elif self._save_first_mfc and inst.op1.gpr_index == 8:
+            self._save_first_mfc = False
+            self._initial_badvaddr = inst.op0.value
+            self._initial_epcc = self.regset[31]
         return False
+
+    def scan_eret(self, inst, entry, regs, last_regs, idx):
+        self._save_first_mfc = False
+        return False
+
+    def _save_branch_state(self, entry, branch_target):
+        """
+        Save the state when a capability branch with
+        an exception is found.
+        """
+        self._save_first_mfc = False
+        self._saved_pcc = self.regset.pcc
+        self._saved_addr = entry.pc
+        self._saved_epcc_out_neighbours = list(branch_target.out_neighbours())
 
     def scan_cjr(self, inst, entry, regs, last_regs, idx):
         """
@@ -779,13 +978,13 @@ class CapabilityBranchSubparser:
         so that if the instruction did not commit, epcc can
         be set to the correct pcc.
         """
-        if inst.has_exception:
-            self._exc_pcc = self.regset.pcc
-            self._exc_addr = entry.pc
         # discard current pcc and replace it
         if self.regset.has_reg(inst.op0.cap_index):
             # we already have a node for the new PCC
-            self.regset.pcc = self.regset[inst.op0.cap_index]
+            new_pcc = self.regset[inst.op0.cap_index]
+            if inst.has_exception:
+                self._save_branch_state(entry, new_pcc)
+            self.regset.pcc = new_pcc
             pcc_data = self.dataset.vp.data[self.regset.pcc]
             if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
                 logger.error("Loading PCC without exec permissions? %s %s",
@@ -802,15 +1001,12 @@ class CapabilityBranchSubparser:
         return False
 
     def scan_cjalr(self, inst, entry, regs, last_regs, idx):
-        if inst.has_exception:
-            self._exc_pcc = self.regset.pcc
-            self._exc_addr = entry.pc
         # save current pcc
         cd_idx = inst.op0.cap_index
         if not self.regset.has_pcc(allow_root=True):
             # create a root node for PCC that is in cd
-            old_pcc_node = self.make_root_node(entry, inst.op0.value,
-                                                   time=entry.cycles)
+            old_pcc_node = self.parser.make_root_node(entry, inst.op0.value,
+                                                      time=entry.cycles)
         else:
             old_pcc_node = self.regset.pcc
         self.regset[cd_idx] = old_pcc_node
@@ -818,7 +1014,10 @@ class CapabilityBranchSubparser:
         # discard current pcc and replace it
         if self.regset.has_reg(inst.op1.cap_index):
             # we already have a node for the new PCC
-            self.regset.pcc = self.regset[inst.op1.cap_index]
+            new_pcc = self.regset[inst.op1.cap_index]
+            if inst.has_exception:
+                self._save_branch_state(entry, new_pcc)
+            self.regset.pcc = new_pcc
             pcc_data = self.dataset.vp.data[self.regset.pcc]
             if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
                 logger.error("Loading PCC without exec permissions? %s %s",
@@ -899,8 +1098,8 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         self.syscall_context = SyscallContext()
         """Keep state related to system calls entry end return"""
 
-        pcc_fixup = CapabilityBranchSubparser(self.dataset, self.regset)
-        self._add_subparser(pcc_fixup)
+        self._pcc_fixup = CapabilityBranchSubparser(self)
+        self._add_subparser(self._pcc_fixup)
 
     def _init_graph(self):
         cache_file = self.path + "_provenance_plot.gt"
@@ -939,11 +1138,17 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         - the initial and final vertex memory maps,
         holding the live vertices in memory
 
-        :return: (partial_graph, initial_regset, final_regset,
+        :return: dict(partial_graph, initial_regset, final_regset,
         vertex_map)
         """
-        return (self.get_model(), self.initial_regset,
-                self.regset, self.vertex_map)
+        state = {
+            "graph": self.get_model(),
+            "initial_regset": self.initial_regset,
+            "final_regset": self.regset,
+            "mem_vertex_map": self.vertex_map,
+            "sub_pcc_fixup": self._pcc_fixup.mp_result()
+        }
+        return state
 
     def mp_merge(self, results):
         """
@@ -953,29 +1158,12 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         assuming that the results are in-order w.r.t.
         the trace entries indexes that were used.
         """
-        # regset and vertex-map carried from the previous subgraph
-        # merge step
-        prev_regset = None
-        prev_vmap = None
+        merge_ctx = MergePartialSubgraphContext()
         for idx, result in enumerate(results):
-            (graph, initial_regset, final_regset, vertex_map) = result
             with ProgressTimer("Merge partial worker result [%d/%d]" % (
                     idx + 1, len(results)), logger):
-                if initial_regset == None:
-                    self.dataset = graph
-                    prev_regset = final_regset
-                    prev_vmap = vertex_map
-                else:
-                    # copy the graph into the merged dataset and
-                    # merge the root nodes from the initial register set
-                    # with the previous register set
-                    transform = MergePartialSubgraph(
-                        self.dataset, graph,
-                        initial_regset, final_regset, prev_regset,
-                        vertex_map, prev_vmap)
-                    bfs_transform(graph, [transform])
-                    prev_regset = transform.get_final_regset()
-                    prev_vmap = transform.get_final_vmap()
+                merge_ctx.step(result)
+        self.dataset = merge_ctx.graph
 
     def _do_parse(self, start, end, direction):
         """

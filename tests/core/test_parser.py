@@ -8,7 +8,7 @@ from unittest import mock
 from tempfile import NamedTemporaryFile
 from itertools import chain
 
-from cheriplot.core import CallbackTraceParser, threaded_parser
+from cheriplot.core import CallbackTraceParser, MultiprocessCallbackParser
 from cheriplot.core.test import MockTraceWriter
 
 logging.basicConfig(level=logging.DEBUG)
@@ -216,8 +216,7 @@ def test_callbacks(parser_setup, opcode):
         assert cbk in expect[opcode], "Callback method not expected %s" % cbk
 
 
-@threaded_parser(threads=2)
-class ThreadedParserTest(CallbackTraceParser):
+class ThreadedParserTest(MultiprocessCallbackParser):
     """
     test the threaded parser to check that the entries it
     reads are sensible
@@ -265,5 +264,6 @@ def test_threaded_parser():
 
         # parse the trace and check that it did run
         p = ThreadedParserTest(trace_path=tmp.name)
+        p.mp.threads = 2
         p.parse()
         assert len(p.entries) == 5

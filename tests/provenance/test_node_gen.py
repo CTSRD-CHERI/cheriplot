@@ -17,7 +17,8 @@ logging.basicConfig(level=logging.DEBUG)
 
 # some capabilities that are used in the test
 perm = CheriCapPerm.LOAD | CheriCapPerm.STORE
-pcc = pct_cap(0x1000, 0x0c, 0x1000, CheriCapPerm.LOAD | CheriCapPerm.EXEC)
+exec_perm = CheriCapPerm.LOAD | CheriCapPerm.EXEC
+pcc = pct_cap(0x1000, 0x0c, 0x1000, exec_perm)
 kcc_default = pct_cap(0x00, 0x00, 0xffffffffffffffff, CheriCapPerm.all())
 kdc_default = pct_cap(0x00, 0x00, 0xffffffffffffffff, CheriCapPerm.all())
 kcc = pct_cap(0x00, 0xcc, 0xffffffff, CheriCapPerm.all())
@@ -27,6 +28,26 @@ start_cap = pct_cap(0x1000, 0x0, 0x1000, perm)
 ptr_cap = pct_cap(0x1000, 0x100, 0x1000, perm)
 bound_cap = pct_cap(0x1100, 0x0, 0x100, perm)
 perm_cap = pct_cap(0x1100, 0x0, 0x100, CheriCapPerm.STORE)
+
+# common part of the trace used for tests that do not
+# require special initialization of the registers
+trace_init = (
+    ("cmove $c1, $c1", { # vertex 0
+        "c1": start_cap,
+        "vertex": mk_vertex(start_cap, pc=0, t_alloc=0)
+    }),
+    (None, { # inferred kcc vertex 1
+        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
+    }),
+    (None, { # inferred kdc vertex 2
+        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
+    }),
+    ("cmove $c31, $c31", { # vertex 3
+        "c31": pcc,
+        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
+    }),
+    ("eret", {}), # mark initialization end
+)
 
 # generate the following expected tree
 # ROOT -> P -> A
@@ -167,14 +188,13 @@ trace_pcc_epcc_tracking = (
     ("cgetpcc $c1", {"c1": pcc}),
     ("lui $at, 0x300", {"1": 0x300}),
     ("csetoffset $c1, $c1, $at", {
-        "c1": pct_cap(0x1000, 0x300, 0x1000,
-                      CheriCapPerm.LOAD | CheriCapPerm.EXEC)
+        "c1": pct_cap(0x1000, 0x300, 0x1000, exec_perm)
     }),
     ("lui $at, 0x100", {"1": 0x100}),
     ("csetbounds $c2, $c1, $at", { # vertex 3 (pcc) -> (v3)
-        "c2": pct_cap(0x300, 0x0, 0x100, CheriCapPerm.LOAD | CheriCapPerm.EXEC),
+        "c2": pct_cap(0x300, 0x0, 0x100, exec_perm),
         "vertex": mk_vertex(
-            pct_cap(0x300, 0x0, 0x100, CheriCapPerm.LOAD | CheriCapPerm.EXEC),
+            pct_cap(0x300, 0x0, 0x100, exec_perm),
             parent=2, origin=CheriNodeOrigin.SETBOUNDS)        
     }),
     # trigger exception, check that pcc-derived capabilities
@@ -188,7 +208,7 @@ trace_pcc_epcc_tracking = (
     ("nop", {}),
     # $at is set to the cjr address
     # required to correctly set epcc
-    ("mfc0 $at, $8", {"1": 0x1024}),
+    ("dmfc0 $at, $8", {"1": 0x1024}), # badvaddr = pc of cjr
     ("cgetpcc $c1", {"c1": kcc}),
     ("lui $at, 0x400", {"1": 0x400}),
     ("csetoffset $c1, $c1, $at", {
@@ -207,9 +227,9 @@ trace_pcc_epcc_tracking = (
     # TLB load on the first instruction -> pcc already updated
     # TLB load on the delay slot instruction fetch -> pcc not updated
     ("csetbounds $c2, $c31, $at", { # vertex 5 (pcc) -> (v5)
-        "c2": pct_cap(0x0c, 0x0, 0x100, CheriCapPerm.LOAD | CheriCapPerm.EXEC),
+        "c2": pct_cap(0x0c, 0x0, 0x100, exec_perm),
         "vertex": mk_vertex(
-            pct_cap(0x0c, 0x0, 0x100, CheriCapPerm.LOAD | CheriCapPerm.EXEC),
+            pct_cap(0x0c, 0x0, 0x100, exec_perm),
             parent=2, origin=CheriNodeOrigin.SETBOUNDS)
     }),
     # nested interrupt
@@ -254,14 +274,13 @@ trace_ddc = (
     ("cgetdefault $c1", {"c1": ddc}),
     ("lui $at, 0x300", {"1": 0x300}),
     ("csetoffset $c1, $c1, $at", {
-        "c1": pct_cap(0x0, 0x300, 0x10000,
-                      CheriCapPerm.LOAD | CheriCapPerm.EXEC)
+        "c1": pct_cap(0x0, 0x300, 0x10000, exec_perm)
     }),
     ("lui $at, 0x100", {"1": 0x100}),
     ("csetbounds $c2, $c1, $at", { # vertex 4
-        "c2": pct_cap(0x300, 0x0, 0x100, CheriCapPerm.LOAD | CheriCapPerm.EXEC),
+        "c2": pct_cap(0x300, 0x0, 0x100, exec_perm),
         "vertex": mk_vertex(
-            pct_cap(0x300, 0x0, 0x100, CheriCapPerm.LOAD | CheriCapPerm.EXEC),
+            pct_cap(0x300, 0x0, 0x100, exec_perm),
             parent=0, origin=CheriNodeOrigin.SETBOUNDS)        
     }),
 )
@@ -283,21 +302,6 @@ trace_ddc = (
 # ROOT(ddc) -> B
 #          `-> B
 trace_mp_move_and_setbounds = (
-    ("cmove $c1, $c1", { # vertex 0
-        "c1": ddc,
-        "vertex": mk_vertex(ddc, pc=0, t_alloc=0)
-    }),
-    (None, { # kcc vertex 1
-        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
-    }),
-    (None, { # kdc vertex 2
-        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
-    }),
-    ("cmove $c31, $c31", { # pcc vertex 3
-        "c31": pcc,
-        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
-    }),
-    ("eret", {}),
     # split worker's set here
     ("cmove $c2, $c1", {
         "c2": ddc,
@@ -315,14 +319,90 @@ trace_mp_move_and_setbounds = (
     }),
 )
 
+# Test capability branch with exception at worker set boundary.
+# This checks that the state of the CapabilityBranchSubparser
+# is correctly preserved when merging.
+#
+# expect:
+# ROOT(pcc) -> v4 -> v5
+#
+# the possible error condition if the feature tested does not work
+# would be:
+# ROOT(pcc) -> v4
+#          `-> v5
+trace_mp_cjr_exception_pcc_update = (
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("cgetpccsetoffset $c2, $at", {
+        "c2": pct_cap(0x1000, 0x100, 0x1000, exec_perm)
+    }),
+    ("csetbounds $c2, $c2, $at", { # vertex 4
+        "c2": pct_cap(0x100, 0x0, 0x100, exec_perm),
+        "vertex": mk_vertex(pct_cap(0x100, 0x0, 0x100, exec_perm),
+                            parent=3, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+    ("cjr $c2", {"exc": 1}),
+    ("nop", {}),
+    # worker set split here
+    ("dmfc0 $at, $8", {"1": 0x100}), # badvaddr = target of cjr
+    # c31 here should be the pcc, updated with the content of c2
+    # after cjr
+    ("lui $at, 0x0c", {"1": 0x0c}),
+    ("csetbounds $c2, $c31, $at", { # vertex 5 (v4) -> (v5)
+        "c2": pct_cap(0x100, 0x0, 0x0c, exec_perm),
+        "vertex": mk_vertex(
+            pct_cap(0x100, 0x0, 0x0c, exec_perm),
+            parent=4, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+    # pad so that the worker set is split at the marked point
+    ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),
+    ("nop", {}),
+)
+
+# Test capability branch with exception at worker set boundary.
+# This checks that the state of the CapabilityBranchSubparser
+# is correctly preserved when merging.
+#
+# expect:
+# ROOT(pcc) -> v4
+#          `-> v5
+trace_mp_cjr_exception_pcc_unchanged = (
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("cgetpccsetoffset $c2, $at", {
+        "c2": pct_cap(0x1000, 0x100, 0x1000, exec_perm)
+    }),
+    ("csetbounds $c2, $c2, $at", { # vertex 4
+        "c2": pct_cap(0x100, 0x0, 0x100, exec_perm),
+        "vertex": mk_vertex(pct_cap(0x100, 0x0, 0x100, exec_perm),
+                            parent=3, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+    ("cjr $c2", {"exc": 1}),
+    ("nop", {}),
+    # worker set split here
+    ("dmfc0 $at, $8", {"1": 0x101c}), # badvaddr = address of cjr
+    # c31 here should be the pcc, NOT updated with the content of c2
+    # after cjr
+    ("lui $at, 0x0c", {"1": 0x0c}),
+    ("csetbounds $c2, $c31, $at", { # vertex 5 (v3) -> (v5)
+        "c2": pct_cap(0x100, 0x0, 0x0c, exec_perm),
+        "vertex": mk_vertex(
+            pct_cap(0x100, 0x0, 0x0c, exec_perm),
+            parent=3, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+    # pad so that the worker set is split at the marked point
+    ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),
+    ("nop", {}),
+)
+
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
-    trace_mp_move_and_setbounds,
-    trace_infer_kcc_kdc,
-    trace_explicit_kcc_kdc,
-    trace_pcc_epcc_tracking,
-    trace_ddc,
+    (trace_init, trace_mp_move_and_setbounds),
+    (trace_init, trace_mp_cjr_exception_pcc_update),
+    (trace_init, trace_mp_cjr_exception_pcc_unchanged),
+    (trace_infer_kcc_kdc,),
+    (trace_explicit_kcc_kdc,),
+    (trace_pcc_epcc_tracking,),
+    (trace_ddc,),
 ])
 def test_nodegen_simple(trace, threads):
     """Test provenance parser with the simplest trace possible."""
@@ -330,7 +410,11 @@ def test_nodegen_simple(trace, threads):
     with tempfile.NamedTemporaryFile() as tmp:
         # setup the mock trace
         w = ProvenanceTraceWriter(tmp.name)
-        w.write_trace(trace, pc=0x1000)
+        # multipart traces can be given so that common initialization
+        # parts are not repeated
+        w.write_trace(trace[0], pc=0x1000)
+        for t in trace[1:]:
+            w.write_trace(t)
 
         # get parsed graph
         parser = PointerProvenanceParser(trace_path=tmp.name)
