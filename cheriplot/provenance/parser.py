@@ -41,7 +41,8 @@ from cheriplot.provenance.transforms import bfs_transform, BFSTransform
 logger = logging.getLogger(__name__)
 
 __all__ = ("PointerProvenanceParser", "MissingParentError",
-           "DereferenceUnknownCapabilityError")
+           "DereferenceUnknownCapabilityError", "SubgraphMergeError",
+           "UnexpectedOperationError")
 
 class SubgraphMergeError(RuntimeError):
     """
@@ -952,29 +953,27 @@ class SyscallSubparser:
     in CheriBSD.
     """
 
-    # syscall codes
-    SYS_MMAP = 477
-    SYS_MUNMAP = 73
-    # also interesting mprotect and shm* stuff
+    SYS_RET = -1
 
+    syscalls_codes = {
+        447: ("mmap", SYS_RET),
+        228: ("shmat", SYS_RET),
+        73: ("munmap", 3), # arg in c3
+        230: ("shmdt", 3), # arg in c3
+    }
+    """
+    Syscall fetching configuration. This defines the
+    syscall codes we care about and which arguments/return values
+    we should record.
+    The format of the map is the following:
+    syscall_code =>  (syscall_name, register_number)
+    """
 
     def __init__(self, parser):
         self.parser = parser
 
         self.in_syscall = False
         """Flag indicates whether we are tracking a systemcall."""
-
-        # self.pc_syscall = None
-        # """Syscall instruction PC."""
-
-        self.c3_vertex = None
-        """
-        Vertex associated with c3 at the time of syscall.
-        if this changes, the syscall is returning a capability?
-        """
-
-        self.t_syscall = None
-        """Syscall instruction cycle number."""
 
         self.pc_eret = None
         """Expected eret instruction PC."""
@@ -1021,30 +1020,43 @@ class SyscallSubparser:
         """
         if not self.parser.regs_valid:
             return False
-        code = self._get_syscall_code(regs)
-        self.in_syscall = True
-        # self.pc_syscall = entry.pc # don't care for now
-        self.t_syscall = entry.cycles
-        self.pc_eret = entry.pc + 4
-        self.c3_vertex = self.regset[3]
+        self.code = self._get_syscall_code(regs)
+        try:
+            record = SyscallSubparser.syscall_codes[self.code]
+            if record[1] != SyscallSubparser.SYS_RET:
+                # record the use of a vertex as system call argument
+                vertex = self.regset[record[1]]
+                data = self.dataset.vp.data[vertex]
+                logger.debug("detected syscall %d capability argument: %s",
+                             self.code, data)
+                data.call["time"].append(entry.cycles)
+                data.call["symbol"].append(self.code)
+                data.call["type"].append(NodeData.CallType.SYSCALL |
+                                         NodeData.CallType.ARG)
+            else:
+                self.in_syscall = True
+                self.pc_eret = entry.pc + 4
+        except KeyError:
+            # not interested in the syscall
+            pass
         return False
 
     def scan_eret(self, inst, entry, regs, last_regs, idx):
         if not self.parser.regs_valid:
             return False
 
-        if self.in_syscall:
+        epcc_valid = regs.valid_caps[31]
+        epcc = regs.cap_reg[31]
+        if (self.in_syscall and epcc_valid and
+            epcc.base + epcc.offset == self.pc_eret):
             self.in_syscall = False
-            if self.c3_vertex != self.regset[3]:
-                # c3 register changed, probably returning something
-                c3_data = self.dataset.vp.data[self.regset[3]]
-                logger.debug("detected syscall %d capability return: %s",
-                             self.code, c3_data)
-                c3_data.call_info["time"].append(entry.cycles)
-                c3_data.call_info["symbol"].append(self.code)
-                c3_data.call_info["is_syscall"].append(True)
-        logger.debug("eret {%d}: update pcc %s", entry.cycles,
-                     self.dataset.vp.data[self.regset[31]])
+            vertex = self.regset[3]
+            data = self.dataset.vp.data[vertex]
+            logger.debug("detected syscall %d capability return: %s",
+                         self.code, data)
+            data.call["time"].append(entry.cycles)
+            data.call["symbol"].append(self.code)
+            data.call["type"].append(NodeData.CallType.SYSCALL)
         self.regset.pcc = self.regset[31] # restore saved pcc
         return False
 
@@ -1203,35 +1215,27 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                 self.regset[idx] = node
             else:
                 logger.warning("c%d not in initial set", idx)
-                if idx == 29:
+                if idx == 31:
+                    raise UnexpectedOperationError("Missing initial epcc")
+                if idx == 29 or idx == 30:
                     node = self.make_root_node(entry, None, pc=0)
                     cap = CheriCap()
                     cap.base = 0
                     cap.offset = 0
                     cap.length = 0xffffffffffffffff
-                    # all XXX should we only have EXEC and few other?
+                    # should KCC only have EXEC and few other?
                     cap.permissions = CheriCapPerm.all()
                     cap.objtype = 0
                     cap.valid = True
                     cap.t_alloc = 0
                     self.dataset.vp.data[node].cap = cap
                     self.regset[idx] = node
-                    logger.warning("Guessing KCC %s", self.dataset.vp.data[node])
-                if idx == 30:
-                    # guess the value of KDC and use this in the initial register set
-                    node = self.make_root_node(entry, None, pc=0)
-                    self.regset[idx] = node
-                    cap = CheriCap()
-                    cap.base = 0
-                    cap.offset = 0
-                    cap.length = 0xffffffffffffffff
-                    cap.objtype = 0
-                    cap.permissions = CheriCapPerm.all()
-                    cap.valid = True
-                    cap.t_alloc = 0
-                    self.dataset.vp.data[node].cap = cap
-                    self.regset[idx] = node
-                    logger.warning("Guessing KDC %s", self.dataset.vp.data[node])
+                    if idx == 29:
+                        logger.warning("Guessing KCC %s",
+                                       self.dataset.vp.data[node])
+                    else:
+                        logger.warning("Guessing KDC %s",
+                                       self.dataset.vp.data[node])
 
     def _has_exception(self, entry, code=None):
         """

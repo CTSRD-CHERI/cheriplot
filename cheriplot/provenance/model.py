@@ -248,6 +248,22 @@ class NodeData:
         DEREF_STORE = 2
         DEREF_CALL = 3
 
+
+    class CallType(IntFlag):
+        """Types of uses of the capability vertex"""
+        SYSCALL = 1
+        """Vertex used in a syscall."""
+
+        CALL = 2
+        """Vertex used in a capability branch to a function."""
+
+        CCALL = 4
+        """Vertex used in a capability call domain transition."""
+
+        ARG = 8
+        """Vertex is argument (set) or return value (unset)"""
+
+
     @classmethod
     def from_operand(cls, op):
         """
@@ -277,8 +293,12 @@ class NodeData:
         the type is defined in :class:`NodeData.DerefType`
         """
 
-        self.call_info = {"time": [], "symbol": [], "is_syscall": []}
-        """This vertex was returned by these functions/syscalls"""
+        self.call = {"time": [], "symbol": [], "type": []}
+        """
+        This vertex was returned by these functions/syscalls.
+        XXX Maybe it can be merged in the deref data structure since
+        the fields are basically the same
+        """
 
         self.cap = None
         """Cheri capability data, see :class:`.CheriCap`."""

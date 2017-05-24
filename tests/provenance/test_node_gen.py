@@ -6,8 +6,7 @@ import pytest
 import logging
 import tempfile
 
-from cheriplot.provenance import (
-    PointerProvenanceParser, CheriNodeOrigin, CheriCapPerm, MissingParentError)
+from cheriplot.provenance import *
 
 from cheriplot.core.test import pct_cap
 from tests.provenance.helper import (
@@ -429,7 +428,7 @@ def test_nodegen_simple(trace, threads):
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace,exc_type", [
     (trace_invalid_derive_from_unknown, MissingParentError),
-    (trace_invalid_missing_initial_epcc, ValueError)
+    (trace_invalid_missing_initial_epcc, UnexpectedOperationError)
 ])
 def test_nodegen_errors(trace, exc_type, threads):
     """
