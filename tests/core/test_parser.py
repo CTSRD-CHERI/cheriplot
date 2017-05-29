@@ -4,6 +4,8 @@ Test the core parser callback handling
 
 import pytest
 import logging
+import pycheritrace as pct
+
 from unittest import mock
 from tempfile import NamedTemporaryFile
 from itertools import chain
@@ -12,6 +14,9 @@ from cheriplot.core import CallbackTraceParser, MultiprocessCallbackParser
 from cheriplot.core.test import MockTraceWriter
 
 logging.basicConfig(level=logging.DEBUG)
+
+benchmark = pytest.mark.skipif(not pytest.config.getoption("--run-benchmark"),
+                               reason="Requires --run-benchmark option")
 
 logger = logging.getLogger(__name__)
 
@@ -267,3 +272,51 @@ def test_threaded_parser():
         p.mp.threads = 2
         p.parse()
         assert len(p.entries) == 5
+
+
+@benchmark
+@pytest.mark.parametrize("start, end", [(0, 0.2), (0.5, 0.7), (0.8, 1)])
+def test_raw_cheritrace_benchmark(benchmark, start, end):
+    trace_path = "traces/helloworld/helloworld.cvtrace.xz"
+    def run():
+        trace = pct.trace.open(trace_path)
+        assert trace
+        def scan(entry, regs, index):
+            return False
+        idx_start = int(start * trace.size())
+        idx_end = int(end * trace.size())
+        trace.scan(scan, idx_start, idx_end, 0)
+    benchmark.pedantic(run, iterations=1, rounds=5)
+
+
+class NopBenchmarkTraceParser(CallbackTraceParser):
+
+    def scan_all(self, instr, entry, regs, last, idx):
+        return False
+
+@benchmark
+@pytest.mark.parametrize("start, end", [(0, 0.2), (0.5, 0.7), (0.8, 1)])
+def test_cbk_parser_benchmark(benchmark, start, end):
+    trace_path = "traces/helloworld/helloworld.cvtrace.xz"
+    def run():
+        parser = NopBenchmarkTraceParser(trace_path=trace_path)
+        idx_start = int(start * trace.size())
+        idx_end = int(end * trace.size())
+        parser.parse(idx_start, idx_end)
+    benchmark.pedantic(run, iterations=1, rounds=5)
+
+class InstrBenchmarkTraceParser(CallbackTraceParser):
+
+    def scan_all(self, instr, entry, regs, last, idx):
+        return False
+
+@benchmark
+@pytest.mark.parametrize("start, end", [(0, 0.2), (0.5, 0.7), (0.8, 1)])
+def test_cbk_parser_benchmark(benchmark, start, end):
+    trace_path = "traces/helloworld/helloworld.cvtrace.xz"
+    def run():
+        parser = NopBenchmarkTraceParser(trace_path=trace_path)
+        idx_start = int(start * trace.size())
+        idx_end = int(end * trace.size())
+        parser.parse(idx_start, idx_end)
+    benchmark.pedantic(run, iterations=1, rounds=5)

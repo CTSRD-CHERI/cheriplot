@@ -525,6 +525,8 @@ class MergePartialSubgraph(BFSTransform):
         v_data.address.update(u_data.address)
         for key, val in u_data.deref.items():
             v_data.deref[key].extend(val)
+        for key, val in u_data.call.items():
+            v_data.call[key].extend(val)
 
     def _merge_initial_vertex(self, u):
         """
@@ -920,13 +922,13 @@ class CapabilityBranchSubparser:
                              inst, pcc_data)
                 raise UnexpectedOperationError(
                     "Loading PCC without exec permissions")
-            else:
-                # we should create a node here but this should really
-                # not be happening, the node is None only when the
-                # register content has never been seen before.
-                logger.error("Found cjalr with unexpected "
-                             "target capability %s", inst)
-                raise UnexpectedOperationError("cjalr to unknown capability")
+        else:
+            # we should create a node here but this should really
+            # not be happening, the node is None only when the
+            # register content has never been seen before.
+            logger.error("Found cjalr with unexpected "
+                         "target capability %s", inst)
+            raise UnexpectedOperationError("cjalr to unknown capability")
         return False
 
     def scan_ccall(self, inst, entry, regs, last_regs, idx):
@@ -951,11 +953,17 @@ class SyscallSubparser:
     This class contains all the methods that manipulate
     registers and values that depend on the ABI and constants
     in CheriBSD.
+
+    XXX: multiprocessing not yet supported.
+    Merging the syscall state is not straightforward: we do not
+    know the correct eret, so we may look for the first eret that
+    returns to userspace, although if we do not generate vertices it
+    may be easier to merge.
     """
 
     SYS_RET = -1
 
-    syscalls_codes = {
+    syscall_codes = {
         447: ("mmap", SYS_RET),
         228: ("shmat", SYS_RET),
         73: ("munmap", 3), # arg in c3
@@ -1029,10 +1037,8 @@ class SyscallSubparser:
                 data = self.dataset.vp.data[vertex]
                 logger.debug("detected syscall %d capability argument: %s",
                              self.code, data)
-                data.call["time"].append(entry.cycles)
-                data.call["symbol"].append(self.code)
-                data.call["type"].append(NodeData.CallType.SYSCALL |
-                                         NodeData.CallType.ARG)
+                data.add_call_evt(entry.cycles, self.code,
+                              NodeData.CallType.SYSCALL | NodeData.CallType.ARG)
             else:
                 self.in_syscall = True
                 self.pc_eret = entry.pc + 4
@@ -1054,9 +1060,8 @@ class SyscallSubparser:
             data = self.dataset.vp.data[vertex]
             logger.debug("detected syscall %d capability return: %s",
                          self.code, data)
-            data.call["time"].append(entry.cycles)
-            data.call["symbol"].append(self.code)
-            data.call["type"].append(NodeData.CallType.SYSCALL)
+            data.add_call_evt(entry.cycles, self.code,
+                              NodeData.CallType.SYSCALL)
         self.regset.pcc = self.regset[31] # restore saved pcc
         return False
 

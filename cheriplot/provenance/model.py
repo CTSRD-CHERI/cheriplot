@@ -323,6 +323,11 @@ class NodeData:
         self.deref["is_cap"].append(cap)
         self.deref["type"].append(type_)
 
+    def add_call_evt(self, time, symbol, type_):
+        self.call["time"].append(time)
+        self.call["symbol"].append(symbol)
+        self.call["type"].append(type_)
+
     # shortcuts for add_deref
     add_load = partialmethod(add_deref, type_=DerefType.DEREF_LOAD)
     add_store = partialmethod(add_deref, type_=DerefType.DEREF_STORE)

@@ -195,7 +195,6 @@ class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
             load_exec: colorConverter.to_rgb("b"),
             store_exec: colorConverter.to_rgb("g"),
             load_store_exec: colorConverter.to_rgb("r"),
-            "call": colorConverter.to_rgb("#31c648"),
         }
 
     def inspect(self, vertex):
@@ -206,14 +205,11 @@ class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
 
         coords = ((data.cap.base, data.cap.t_alloc),
                   (data.cap.bound, data.cap.t_alloc))
-        if data.origin == CheriNodeOrigin.SYS_MMAP:
-            self._collection_map["call"].append(coords)
-        else:
-            perms = data.cap.permissions or 0
-            rwx_perm = perms & (CheriCapPerm.LOAD |
-                                CheriCapPerm.STORE |
-                                CheriCapPerm.EXEC)
-            self._collection_map[rwx_perm].append(coords)
+        perms = data.cap.permissions or 0
+        rwx_perm = perms & (CheriCapPerm.LOAD |
+                            CheriCapPerm.STORE |
+                            CheriCapPerm.EXEC)
+        self._collection_map[rwx_perm].append(coords)
         # mark this address range as interesting
         self._add_range(data.cap.base, data.cap.bound)
         self._clickable_element(vertex, data.cap.t_alloc)
@@ -227,14 +223,11 @@ class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
 
             coords = ((data.cap.base, data.cap.t_alloc),
                       (data.cap.bound, data.cap.t_alloc))
-            if data.origin == CheriNodeOrigin.SYS_MMAP:
-                self._collection_map["call"].append(coords)
-            else:
-                perms = data.cap.permissions or 0
-                rwx_perm = perms & (CheriCapPerm.LOAD |
-                                    CheriCapPerm.STORE |
-                                    CheriCapPerm.EXEC)
-                self._collection_map[rwx_perm].append(coords)
+            perms = data.cap.permissions or 0
+            rwx_perm = perms & (CheriCapPerm.LOAD |
+                                CheriCapPerm.STORE |
+                                CheriCapPerm.EXEC)
+            self._collection_map[rwx_perm].append(coords)
             # mark this address range as interesting
             self._add_range(data.cap.base, data.cap.bound)
             self._clickable_element(vertex, data.cap.t_alloc)
@@ -242,18 +235,15 @@ class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
     def get_legend(self):
         legend = super().get_legend()
         for key in self._collection_map.keys():
-            if key == "call":
-                label = "mmap"
-            else:
-                label = ""
-                if key & CheriCapPerm.LOAD:
-                    label += "R"
-                if key & CheriCapPerm.STORE:
-                    label += "W"
-                if key & CheriCapPerm.EXEC:
-                    label += "X"
-                if label == "":
-                    label = "None"
+            label = ""
+            if key & CheriCapPerm.LOAD:
+                label += "R"
+            if key & CheriCapPerm.STORE:
+                label += "W"
+            if key & CheriCapPerm.EXEC:
+                label += "X"
+            if label == "":
+                label = "None"
             legend.append(Patch(color=self._colors[key], label=label))
         return legend
 

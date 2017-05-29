@@ -43,6 +43,8 @@ def assert_vertex_equal(u_data, v_data):
         "addr differ %s %s" % (u_data.address, v_data.address)
     assert u_data.deref == v_data.deref,\
         "deref differ %s %s" % (u_data.deref, v_data.deref)
+    assert u_data.call == v_data.call,\
+        "call differ %s %s" % (u_data.call, v_data.call)
     
 
 def assert_graph_equal(expect, other):
@@ -107,7 +109,9 @@ def mk_vertex(cap, parent=-1, origin=CheriNodeOrigin.ROOT, pc=None,
 
 def mk_vertex_deref(vertex_idx, addr, is_cap, type_):
     """
-    Register an expected vertex dereference
+    Generate the side-effect data for an expected vertex
+    dereference, this should be used with the vertex_deref
+    side-effect key in the trace writer.
     """
     if type_ == "load":
         type_ = NodeData.DerefType.DEREF_LOAD
@@ -117,9 +121,27 @@ def mk_vertex_deref(vertex_idx, addr, is_cap, type_):
         type_ = NodeData.DerefType.DEREF_CALL
     return (vertex_idx, addr, is_cap, type_)
 
+def mk_vertex_call(vertex_idx, symbol, type_):
+    """
+    Generate the side-effect data for an expected vertex
+    used as call argument or return, this should be used with the vertex_call
+    side-effect key in the trace writer.
+    """
+    if type_ == "syscall_arg":
+        type_ = NodeData.CallType.SYSCALL | NodeData.CallType.ARG
+    elif type_ == "syscall_ret":
+        type_ = NodeData.CallType.SYSCALL
+    elif type_ == "call":
+        type_ = NodeData.CallType.CALL
+    elif type_ == "ccall":
+        type_ = NodeData.CallType.CCALL
+    return (vertex_idx, symbol, type_)
+
 def mk_vertex_store(vertex_idx, addr):
     """
-    Register an expected vertex store at the given memory address
+    Generate the side-effect data for an expected vertex store,
+    this should be used with the vertex_store side-effect 
+    key in the trace writer.
     """
     return (vertex_idx, addr)
 
@@ -170,6 +192,10 @@ class ProvenanceTraceWriter(MockTraceWriter):
             # a vertex dereference is expected
             idx, addr, is_cap, type_ = val
             self.pgm.data[idx].add_deref(entry.cycles, addr, is_cap, type_)
+        elif key == "vertex_call":
+            # a vertex is expected to be used as a call/return argument
+            idx, sym, type_ = val
+            self.pgm.data[idx].add_call_evt(entry.cycles, sym, type_)
         else:
             super()._side_effect(entry, key, val)
         

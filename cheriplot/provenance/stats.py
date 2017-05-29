@@ -38,23 +38,44 @@ logger = logging.getLogger(__name__)
 
 
 class MmapStatsVisitor(BFSTransform):
+    """
+    Visitor that gather informations about the vertices in the graph
+    """
 
     def __init__(self, graph):
         self.graph = graph
-        self.stats = {"derived": 0, "deref_store": 0,
-                      "deref_load": 0, "stored": 0}
-        self.mmap_derived = graph.new_vertex_property("bool", val=False)
-    
+        self.stats = {
+            # number of successors of syscall-returned capabilities
+            "syscall_derived": 0,
+            # number of times a capability is dereferenced for store
+            "deref_store": 0,
+            # number of times a capability is dereferenced for load
+            "deref_load": 0,
+            # number of times a capability is stored in memory
+            # note this is not the unique number of locations
+            "stored": 0,
+            # number of unique memory addresses to which a capability
+            # is stored
+            "stored_unique": 0,
+        }
+
+        self.syscall_derived = graph.new_vertex_property("bool", val=False)
+        """
+        Mark vertices that are successors of a syscall-returned
+        capability.
+        """
+
     def examine_vertex(self, u):
         data = self.graph.vp.data[u]
-        if (data.origin == CheriNodeOrigin.SYS_MMAP or
-            self.mmap_derived[u]):
-            self._get_stats(data)
+        syscall_ret = len(data.call["type"]) > 0
+        if syscall_ret or self.syscall_derived[u]:
+            logger.debug("Data call %s", data.call)
+            self.stats["syscall_derived"] += 1
             for v in u.out_neighbours():
-                self.mmap_derived[v] = True
+                self.syscall_derived[v] = True
+        self._get_stats(data)
 
     def _get_stats(self, data):
-        self.stats["derived"] += 1
         n_load = reduce(lambda t,a: a + 1 if
                         t == NodeData.DerefType.DEREF_LOAD else a,
                         data.deref["type"], 0)
@@ -64,6 +85,7 @@ class MmapStatsVisitor(BFSTransform):
         self.stats["deref_load"] += n_load
         self.stats["deref_store"] += n_store
         self.stats["stored"] += len(data.address)
+        self.stats["stored_unique"] += len(set(data.address.values()))
 
 
 class ProvenanceStatsDriver(TaskDriver):
@@ -77,7 +99,7 @@ class ProvenanceStatsDriver(TaskDriver):
 
         self.pgm = pgm
         """Provenance graph model"""
-    
+
     def run(self):
         mmap_stats = MmapStatsVisitor(self.pgm)
         with ProgressTimer("Gather mmap stats", logger):
