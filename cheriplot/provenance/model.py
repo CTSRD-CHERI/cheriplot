@@ -92,7 +92,8 @@ class ProvenanceGraphManager:
         """
         self.cache_file = cache_file
         if cache_file and os.path.exists(cache_file):
-            self.graph = load_graph(cache_file)
+            with ProgressTimer("Load cached graph", logger):
+                self.graph = load_graph(cache_file)
         else:
             self.graph = Graph()
             # CHERI capability properties
@@ -109,12 +110,25 @@ class ProvenanceGraphManager:
             self.graph.vp["data"] = prop_data
         self._init_props()
 
+    def set_graph(self, graph):
+        self.graph = graph
+        self._init_props()
+
+    @property
+    def is_cached(self):
+        return self.cache_file != None
+
+    @property
+    def cache_exists(self):
+        return os.path.exists(cache_file)
+
     def _init_props(self):
         # graph data
         self.data = self.graph.vp.data
     
     def load(self, cache_file):
-        self.graph = load_graph(cache_file)
+        with ProgressTimer("Load cached graph", logger):
+            self.graph = load_graph(cache_file)
         self.cache_file = cache_file
         self._init_props()
 

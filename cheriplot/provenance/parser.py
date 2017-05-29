@@ -89,9 +89,9 @@ class VertexMemoryMap:
     with each memory location used in the trace.
     """
 
-    def __init__(self, graph):
+    def __init__(self, pgm):
         self.vertex_map = {}
-        self.graph = graph
+        self.pgm = pgm
 
     def __getstate__(self):
         """
@@ -149,8 +149,8 @@ class MPVertexMemoryMap(VertexMemoryMap):
     be merged with the results from other workers.
     """
 
-    def __init__(self, graph):
-        super().__init__(graph)
+    def __init__(self, pgm):
+        super().__init__(pgm)
 
         self.initial_map = {}
 
@@ -185,15 +185,15 @@ class RegisterSet:
     results from worker processes.
     """
 
-    def __init__(self, graph):
+    def __init__(self, pgm):
         self.reg_nodes = [None] * 32
         """Graph node associated with each register."""
 
         self._pcc = None
         """Current pcc node"""
 
-        self.graph = graph
-        """The provenance graph"""
+        self.pgm = pgm
+        """The provenance graph manager"""
 
     def __getstate__(self):
         """
@@ -202,9 +202,9 @@ class RegisterSet:
         """
         logger.debug("Pickling partial result register set %d", os.getpid())
         state = {
-            "reg_nodes": [self.graph.vertex_index[u] if u != None else None
+            "reg_nodes": [self.pgm.graph.vertex_index[u] if u != None else None
                           for u in self.reg_nodes],
-            "_pcc": (self.graph.vertex_index[self._pcc]
+            "_pcc": (self.pgm.graph.vertex_index[self._pcc]
                      if self._pcc != None else None),
             }
         return state
@@ -240,14 +240,14 @@ class RegisterSet:
         if input_vertex == None or regset_vertex == None:
             return
 
-        in_data = self.graph.vp.data[input_vertex]
+        in_data = self.pgm.data[input_vertex]
         if in_data.origin == CheriNodeOrigin.ROOT:
             for n in input_vertex.in_neighbours():
-                if self.graph.vp.data[n].origin == CheriNodeOrigin.PARTIAL:
+                if self.pgm.data[n].origin == CheriNodeOrigin.PARTIAL:
                     return
-            curr_data = self.graph.vp.data[regset_vertex]
+            curr_data = self.pgm.data[regset_vertex]
             if curr_data.origin == CheriNodeOrigin.PARTIAL:
-                self.graph.add_edge(regset_vertex, input_vertex)
+                self.pgm.graph.add_edge(regset_vertex, input_vertex)
 
     @property
     def pcc(self):
@@ -269,7 +269,7 @@ class RegisterSet:
         if self.pcc == None:
             return False
         if allow_root:
-            data = self.graph.vp.data[self.pcc]
+            data = self.pgm.data[self.pcc]
             if data.origin == CheriNodeOrigin.PARTIAL:
                 return False
         return True
@@ -287,7 +287,7 @@ class RegisterSet:
         if self[idx] == None:
             return False
         if allow_root:
-            data = self.graph.vp.data[self[idx]]
+            data = self.pgm.data[self[idx]]
             if data.origin == CheriNodeOrigin.PARTIAL:
                 return False
         return True
@@ -313,7 +313,7 @@ class RegisterSet:
         # then it is effectively lost and "deallocated"
         # if self.reg_nodes[idx] is not None:
         #     n_refs = np.count_nonzero(self.reg_nodes == self.reg_nodes[idx])
-        #     node_data = self.graph.vp.data[self.reg_nodes[idx]]
+        #     node_data = self.pgm.data[self.reg_nodes[idx]]
         #     # XXX may refine this by checking the memory_map to see if the
         #     # node is still there
         #     n_refs += len(node_data.address)
@@ -332,11 +332,11 @@ class MergePartialSubgraphContext:
 
     def __init__(self):
 
-        self.graph = None
-        """Merged graph."""
+        self.pgm = None
+        """Merged graph manger."""
 
-        self.subgraph = None
-        """Current subgraph being merged."""
+        self.pgm_subgraph = None
+        """Current subgraph pgm being merged."""
 
         self.prev_regset = None
         """Previous step final regset."""
@@ -363,9 +363,9 @@ class MergePartialSubgraphContext:
         """
         Process a merge step
         """
-        if self.graph == None:
+        if self.pgm == None:
             # first step
-            self.graph = result["graph"]
+            self.pgm = result["pgm"]
             self.prev_regset = result["final_regset"]
             self.prev_vmap = result["mem_vertex_map"]
             self.prev_pcc_fixup = result["sub_pcc_fixup"]
@@ -373,13 +373,13 @@ class MergePartialSubgraphContext:
             # copy the graph into the merged dataset and
             # merge the root nodes from the initial register set
             # with the previous register set
-            self.subgraph = result["graph"]
+            self.pgm_subgraph = result["pgm"]
             self.curr_initial_regset = result["initial_regset"]
             self.curr_regset = result["final_regset"]
             self.curr_vmap = result["mem_vertex_map"]
             self.curr_pcc_fixup = result["sub_pcc_fixup"]
             transform = MergePartialSubgraph(self)
-            bfs_transform(result["graph"], [transform])
+            bfs_transform(result["pgm"].graph, [transform])
             transform.finalize()
 
 
@@ -416,12 +416,12 @@ class MergePartialSubgraph(BFSTransform):
     @property
     def graph(self):
         """Merged graph that we are building."""
-        return self.context.graph
+        return self.context.pgm.graph
 
     @property
     def subgraph(self):
         """Subgraph to be merged."""
-        return self.context.subgraph
+        return self.context.pgm_subgraph.graph
 
     @property
     def initial_regset(self):
@@ -787,8 +787,8 @@ class CapabilityBranchSubparser:
         """
 
     @property
-    def dataset(self):
-        return self.parser.dataset
+    def pgm(self):
+        return self.parser.pgm
 
     @property
     def regset(self):
@@ -881,7 +881,7 @@ class CapabilityBranchSubparser:
             if inst.has_exception:
                 self._save_branch_state(entry, new_pcc)
             self.regset.pcc = new_pcc
-            pcc_data = self.dataset.vp.data[self.regset.pcc]
+            pcc_data = self.pgm.data[self.regset.pcc]
             if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
                 logger.error("Loading PCC without exec permissions? %s %s",
                              inst, pcc_data)
@@ -916,7 +916,7 @@ class CapabilityBranchSubparser:
             if inst.has_exception:
                 self._save_branch_state(entry, new_pcc)
             self.regset.pcc = new_pcc
-            pcc_data = self.dataset.vp.data[self.regset.pcc]
+            pcc_data = self.pgm.data[self.regset.pcc]
             if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
                 logger.error("Loading PCC without exec permissions? %s %s",
                              inst, pcc_data)
@@ -990,8 +990,8 @@ class SyscallSubparser:
         """Current syscall code."""
 
     @property
-    def dataset(self):
-        return self.parser.dataset
+    def pgm(self):
+        return self.parser.pgm
 
     @property
     def regset(self):
@@ -1015,8 +1015,8 @@ class SyscallSubparser:
 
         logger.debug("except {%d}: update epcc %s, update pcc %s",
                      entry.cycles,
-                     self.dataset.vp.data[self.regset.pcc],
-                     self.dataset.vp.data[self.regset[29]])
+                     self.pgm.data[self.regset.pcc],
+                     self.pgm.data[self.regset[29]])
         self.regset[31] = self.regset.pcc # saved pcc
         self.regset.pcc = self.regset[29] # pcc <- kcc
         return False
@@ -1034,7 +1034,7 @@ class SyscallSubparser:
             if record[1] != SyscallSubparser.SYS_RET:
                 # record the use of a vertex as system call argument
                 vertex = self.regset[record[1]]
-                data = self.dataset.vp.data[vertex]
+                data = self.pgm.data[vertex]
                 logger.debug("detected syscall %d capability argument: %s",
                              self.code, data)
                 data.add_call_evt(entry.cycles, self.code,
@@ -1057,7 +1057,7 @@ class SyscallSubparser:
             epcc.base + epcc.offset == self.pc_eret):
             self.in_syscall = False
             vertex = self.regset[3]
-            data = self.dataset.vp.data[vertex]
+            data = self.pgm.data[vertex]
             logger.debug("detected syscall %d capability return: %s",
                          self.code, data)
             data.add_call_evt(entry.cycles, self.code,
@@ -1076,7 +1076,10 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         super().__init__(**kwargs)
 
         self.cache = cache
-        """Are we using a cached dataset"""
+        """Are we using a cached dataset."""
+
+        self.pgm = None
+        """Provenance graph manager, proxy access to the provenance graph."""
 
         self._init_graph()
         self.regs_valid = False
@@ -1085,13 +1088,13 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         is completely initialised.
         """
 
-        self.regset = RegisterSet(self.dataset)
+        self.regset = RegisterSet(self.pgm)
         """
         Register set that maps capability registers
         to nodes in the provenance tree.
         """
 
-        self.vertex_map = VertexMemoryMap(self.dataset)
+        self.vertex_map = VertexMemoryMap(self.pgm)
         """
         Helper that tracks the graph vertex stored at
         a given memory location.
@@ -1115,29 +1118,22 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         self._add_subparser(self._pcc_fixup)
 
     def _init_graph(self):
-        cache_file = self.path + "_provenance_plot.gt"
-        if self.cache and os.path.exists(cache_file):
-            with ProgressTimer("Load cached graph", logger):
-                self.dataset = load_graph(cache_file)
+        if self.cache:
+            cache_file = self.path + "_provenance.gt"
+            self.pgm = ProvenanceGraphManager(cache_file)
         else:
-            self.dataset = Graph(directed=True)
-            vdata = self.dataset.new_vertex_property("object")
-            gpath = self.dataset.new_graph_property("string", self.path)
-            self.dataset.vp["data"] = vdata
-            self.dataset.gp["path"] = gpath
+            self.pgm = ProvenanceGraphManager()
 
     def parse(self, *args, **kwargs):
-        cache_file = self.path + "_provenance_plot.gt"
         with ProgressTimer("Parse provenance graph", logger):
-            if self.cache:
-                if not os.path.exists(cache_file):
-                    super().parse(*args, **kwargs)
-                    self.dataset.save(cache_file)
+            if self.cache and not self.pgm.cache_exists:
+                super().parse(*args, **kwargs)
+                self.pgm.save()
             else:
                 super().parse(*args, **kwargs)
 
     def get_model(self):
-        return self.dataset
+        return self.pgm
 
     def mp_result(self):
         """
@@ -1155,7 +1151,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         vertex_map)
         """
         state = {
-            "graph": self.get_model(),
+            "pgm": self.get_model(),
             "initial_regset": self.initial_regset,
             "final_regset": self.regset,
             "mem_vertex_map": self.vertex_map,
@@ -1176,7 +1172,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             with ProgressTimer("Merge partial worker result [%d/%d]" % (
                     idx + 1, len(results)), logger):
                 merge_ctx.step(result)
-        self.dataset = merge_ctx.graph
+        self.pgm.set_graph(merge_ctx.pgm.graph)
 
     def _do_parse(self, start, end, direction):
         """
@@ -1189,21 +1185,21 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         that will be used during the merge.
         """
         if start != 0: # check that we are in a worker process instead
-            self.initial_regset = RegisterSet(self.dataset)
+            self.initial_regset = RegisterSet(self.pgm)
             # create dummy initial nodes
-            reg_nodes = list(self.dataset.add_vertex(32))
-            pcc_node = self.dataset.add_vertex()
+            reg_nodes = list(self.pgm.graph.add_vertex(32))
+            pcc_node = self.pgm.graph.add_vertex()
             for n in reg_nodes + [pcc_node]:
                 data = NodeData()
                 data.origin = CheriNodeOrigin.PARTIAL
-                self.dataset.vp.data[n] = data
+                self.pgm.data[n] = data
             self.initial_regset.reg_nodes = reg_nodes
             self.initial_regset.pcc = pcc_node
             self.regset.reg_nodes = list(reg_nodes)
             self.regset.pcc = pcc_node
             self.regs_valid = True
             # use the MP vertex map
-            self.vertex_map = MPVertexMemoryMap(self.dataset)
+            self.vertex_map = MPVertexMemoryMap(self.pgm)
         super()._do_parse(start, end, direction)
 
     def _set_initial_regset(self, inst, entry, regs):
@@ -1233,14 +1229,14 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                     cap.objtype = 0
                     cap.valid = True
                     cap.t_alloc = 0
-                    self.dataset.vp.data[node].cap = cap
+                    self.pgm.data[node].cap = cap
                     self.regset[idx] = node
                     if idx == 29:
                         logger.warning("Guessing KCC %s",
-                                       self.dataset.vp.data[node])
+                                       self.pgm.data[node])
                     else:
                         logger.warning("Guessing KDC %s",
-                                       self.dataset.vp.data[node])
+                                       self.pgm.data[node])
 
     def _has_exception(self, entry, code=None):
         """
@@ -1318,7 +1314,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                                        time=entry.cycles)
             self.regset[regnum] = node
             logger.debug("cpreg_get: new node from $c%d %s",
-                         regnum, self.dataset.vp.data[node])
+                         regnum, self.pgm.data[node])
         self.regset[inst.op0.cap_index] = self.regset[regnum]
 
     def _handle_cpreg_set(self, regnum, inst, entry):
@@ -1342,7 +1338,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                                        time=entry.cycles)
             self.regset[inst.op0.cap_index] = node
             logger.debug("cpreg_set: new node from c<%d> %s",
-                         regnum, self.dataset.vp.data[node])
+                         regnum, self.pgm.data[node])
         self.regset[regnum] = self.regset[inst.op0.cap_index]
 
     def scan_cgetepcc(self, inst, entry, regs, last_regs, idx):
@@ -1386,7 +1382,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                                        time=entry.cycles)
             self.regset.pcc = node
             logger.debug("cgetpcc: new node from pcc %s",
-                         self.dataset.vp.data[node])
+                         self.pgm.data[node])
         self.regset[inst.op0.cap_index] = self.regset.pcc
         return False
 
@@ -1477,7 +1473,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                          entry.cycles, inst)
             raise DereferenceUnknownCapabilityError(
                 "Dereference unknown capability")
-        node_data = self.dataset.vp.data[node]
+        node_data = self.pgm.data[node]
         # instead of the capability register offset we use the
         # entry memory_address so we capture any extra offset in
         # the instruction as well
@@ -1577,7 +1573,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                     # seen the content of this register yet.
                     node = self.make_root_node(entry, inst.op0.value,
                                                time=entry.cycles)
-                    node_data = self.dataset.vp.data[node]
+                    node_data = self.pgm.data[node]
                     node_data.address[entry.cycles] = entry.memory_address
                     logger.debug("Found %s value %s from memory load",
                                  inst.op0.name, node_data)
@@ -1627,7 +1623,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             # written by csc
             self.vertex_map.mem_store(entry.memory_address, node)
             # set the address attribute of the node vertex data property
-            node_data = self.dataset.vp.data[node]
+            node_data = self.pgm.data[node]
             node_data.address[entry.cycles] = entry.memory_address
 
         return False
@@ -1660,8 +1656,8 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         data.is_kernel = entry.is_kernel()
 
         # create graph vertex and assign the data to it
-        vertex = self.dataset.add_vertex()
-        self.dataset.vp.data[vertex] = data
+        vertex = self.pgm.graph.add_vertex()
+        self.pgm.data[vertex] = data
         return vertex
 
     def make_node(self, entry, inst, origin=None, src_op_index=1, dst_op_index=0):
@@ -1707,9 +1703,9 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             raise MissingParentError("Missing parent for %s" % data)
 
         # create the vertex in the graph and assign the data to it
-        vertex = self.dataset.add_vertex()
-        self.dataset.add_edge(parent, vertex)
-        self.dataset.vp.data[vertex] = data
+        vertex = self.pgm.graph.add_vertex()
+        self.pgm.graph.add_edge(parent, vertex)
+        self.pgm.data[vertex] = data
         return vertex
 
     def update_regs(self, inst, entry, regs, last_regs):

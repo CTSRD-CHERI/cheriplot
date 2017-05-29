@@ -339,7 +339,7 @@ def test_mem_tracking(trace, threads):
         parser.parse()
         # check the provenance graph model
         pgm = parser.get_model()
-        assert_graph_equal(w.pgm.graph, pgm)
+        assert_graph_equal(w.pgm.graph, pgm.graph)
 
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("threads", [1])

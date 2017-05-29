@@ -127,4 +127,4 @@ def test_syscall_simple(trace, threads):
         parser.parse()
         # check the provenance graph model
         pgm = parser.get_model()
-        assert_graph_equal(w.pgm.graph, pgm)
+        assert_graph_equal(w.pgm.graph, pgm.graph)
