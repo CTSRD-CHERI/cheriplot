@@ -26,6 +26,7 @@
 #
 
 import logging
+import numpy as np
 import pandas as pd
 
 from cheriplot.core import ConfigurableComponent, Argument
@@ -90,7 +91,14 @@ class VMMapFileParser(ConfigurableComponent):
             logger.info("Try to load procstat memory map file")
             procstat_cols = ["pid", "start", "end", "perm", "res", "pres",
                              "ref", "shd", "flag", "tp", "path"]
-            vmmap = pd.read_table(self.map_file, names=procstat_cols, sep="\s+")
+            col_types = {"pid": np.int_, "start": np.uint64, "end": np.uint64,
+                         "perm": str, "res": np.int_, "pres": np.int_,
+                         "ref": np.int_, "shd": np.int_, "flag": str,
+                         "tp": str, "path": str}
+            from_b16_int = lambda x: int(x, 16)
+            col_converters = {"start": from_b16_int, "end": from_b16_int}
+            vmmap = pd.read_table(self.map_file, names=procstat_cols, sep="\s+",
+                                  dtype=col_types, converters=col_converters)
         vmmap = vmmap.fillna("")
         logger.debug("Parsed vmmap")
         self.vmmap.vmmap = vmmap.ix[:, ["start", "end", "perm", "flag", "path"]]

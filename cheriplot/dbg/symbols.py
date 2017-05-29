@@ -27,6 +27,7 @@
 
 import logging
 import os
+import io
 
 from sortedcontainers import SortedDict
 from elftools.elf.elffile import ELFFile
@@ -72,6 +73,7 @@ class SymReader:
                     logger.debug("Found symbols for %s (%s)", fname, bin_file)
                     break
             else:
+                logger.debug("No ELF found for %s", bin_file)
                 continue
             # is the file already been opened?
             for found in self.files.values():
@@ -84,9 +86,19 @@ class SymReader:
                 symtab = elf_file.get_section_by_name(".symtab")
                 if symtab is None:
                     logger.debug("No symbol table for file %s, skipping",
-                                 elffile.stream.name)
+                                 elf_file.stream.name)
                     continue
                 self.files[vme.start] = (vme.end, vme.start, elf_file, symtab)
+
+    def __repr__(self):
+        data = io.StringIO()
+        data.write("SymReader loaded symbols:\n")
+        for entry in self.files.values():
+            end, base, elf, symtab = entry
+            for sym in symtab.iter_symbols():
+                data.write("%s: 0x%x %s\n" % (
+                    elf.stream.name, base + sym["st_value"], sym.name))
+        return data.getvalue()
 
     def find_file(self, addr):
         """
@@ -111,7 +123,7 @@ class SymReader:
         if match is None:
             return None
         base, elf_file, symtab = match
-        for sym in symtab:
+        for sym in symtab.iter_symbols():
             if sym["st_value"] + base == addr:
                 return sym.name
         return None
@@ -128,7 +140,7 @@ class SymReader:
             return None
         base, elf_file, symtab = match
         fn_sym = None
-        for sym in symtab:
+        for sym in symtab.iter_symbols():
             if sym["st_value"] + base <= addr:
                 if not fn_sym or fn_sym["st_value"] < sym["st_value"]:
                     fn_sym = sym
