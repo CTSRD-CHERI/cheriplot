@@ -34,7 +34,7 @@ from functools import reduce
 from graph_tool.all import Graph, load_graph
 
 from cheriplot.core import (
-    CallbackTraceParser, ProgressTimer, MultiprocessCallbackParser)
+    CallbackTraceParser, ProgressTimer, MultiprocessCallbackParser, IClass)
 from cheriplot.provenance.model import *
 from cheriplot.provenance.transforms import bfs_transform, BFSTransform
 
@@ -330,9 +330,9 @@ class MergePartialSubgraphContext:
     steps.
     """
 
-    def __init__(self):
+    def __init__(self, main_pgm):
 
-        self.pgm = None
+        self.pgm = main_pgm
         """Merged graph manger."""
 
         self.pgm_subgraph = None
@@ -347,6 +347,9 @@ class MergePartialSubgraphContext:
         self.prev_pcc_fixup = None
         """Previous step PccFixup subparser result."""
 
+        self.prev_syscall = None
+        """Previous step syscall subparser result."""
+
         self.curr_regset = None
         """Current step final regset."""
 
@@ -357,30 +360,31 @@ class MergePartialSubgraphContext:
         """Current step vertex-memory map."""
 
         self.curr_pcc_fixup = None
-        """Current step PccFixup subparser result"""
+        """Current step PccFixup subparser result."""
+
+        self.curr_syscall = None
+        """Current step syscall subparser result."""
+
+        self.step_idx = 0
+        """Merge step index."""
 
     def step(self, result):
         """
         Process a merge step
         """
-        if self.pgm == None:
-            # first step
-            self.pgm = result["pgm"]
-            self.prev_regset = result["final_regset"]
-            self.prev_vmap = result["mem_vertex_map"]
-            self.prev_pcc_fixup = result["sub_pcc_fixup"]
-        else:
-            # copy the graph into the merged dataset and
-            # merge the root nodes from the initial register set
-            # with the previous register set
-            self.pgm_subgraph = result["pgm"]
-            self.curr_initial_regset = result["initial_regset"]
-            self.curr_regset = result["final_regset"]
-            self.curr_vmap = result["mem_vertex_map"]
-            self.curr_pcc_fixup = result["sub_pcc_fixup"]
-            transform = MergePartialSubgraph(self)
-            bfs_transform(result["pgm"].graph, [transform])
-            transform.finalize()
+        # copy the graph into the merged dataset and
+        # merge the root nodes from the initial register set
+        # with the previous register set
+        self.pgm_subgraph = result["pgm"]
+        self.curr_initial_regset = result["initial_regset"]
+        self.curr_regset = result["final_regset"]
+        self.curr_vmap = result["mem_vertex_map"]
+        self.curr_pcc_fixup = result["sub_pcc_fixup"]
+        self.curr_syscall = result["sub_syscall"]
+        transform = MergePartialSubgraph(self)
+        bfs_transform(result["pgm"].graph, [transform])
+        transform.finalize()
+        self.step_idx += 1
 
 
 class MergePartialSubgraph(BFSTransform):
@@ -479,6 +483,44 @@ class MergePartialSubgraph(BFSTransform):
         """
         self.context.prev_regset = self.get_final_regset()
         self.context.prev_vmap = self.get_final_vmap()
+        self.context.prev_pcc_fixup = self.get_final_pcc_fixup()
+        self.context.prev_syscall = self.get_final_syscall()
+
+    def get_final_syscall(self):
+        """
+        Return the syscall subparser state to be used in the next merge step
+        """
+        sys_result = dict(self.context.curr_syscall)
+        if sys_result["eret_cap"] != None and self.context.step_idx > 0:
+            # translate the saved vertex to an index in the merged graph
+            v = self.copy_vertex_map[sys_result["eret_cap"]]
+            if v < 0:
+                msg = "syscall return capability is not copied"\
+                      " to merged graph, it must be a PARTIAL"
+                # we may search for a candidate ROOT vertex but for
+                # now fail, this should never be happening?
+                logger.error(msg)
+                raise SubgraphMergeError(msg)
+            sys_result["eret_cap"] = v
+        return sys_result
+
+    def get_final_pcc_fixup(self):
+        """
+        Return the pcc fixup state to be used by the next merge step
+        """
+        pcc_fixup = dict(self.context.curr_pcc_fixup)
+        if pcc_fixup["saved_pcc"] != None:
+            # translate the saved vertex to an index in the merged graph
+            v_pcc = self.copy_vertex_map[pcc_fixup["saved_pcc"]]
+            if v_pcc < 0:
+                msg = "final pcc fixup saved_pcc is not copied"\
+                      " to merged graph, it must be a PARTIAL"
+                # we may search for a candidate ROOT vertex but for
+                # now fail, it is not clear how often this should be happening
+                logger.error(msg)
+                raise SubgraphMergeError(msg)
+            pcc_fixup["saved_pcc"] = v_pcc
+        return pcc_fixup
 
     def get_final_regset(self):
         """
@@ -497,7 +539,8 @@ class MergePartialSubgraph(BFSTransform):
 
         v_pcc = self.final_regset.pcc
         regset.pcc = self.copy_vertex_map[v_pcc] if v_pcc != None else None
-        # regset.memory_map = self.final_regset.memory_map
+        logger.debug(regset.reg_nodes)
+        logger.debug(regset.pcc)
         return regset
 
     def get_final_vmap(self):
@@ -528,6 +571,19 @@ class MergePartialSubgraph(BFSTransform):
         for key, val in u_data.call.items():
             v_data.call[key].extend(val)
 
+    def _check_cap_compatible(self, u_data, v_data):
+        """
+        Check if two capability vertex data are compatible for
+        merging/suppression.
+        If they are similar enough there are some cases in which they
+        actually represent the same thing.
+        Used in merge decisions for ROOT vertices.
+        """
+        return not (u_data.cap.base != v_data.cap.base or
+                    u_data.cap.length != v_data.cap.length or
+                    u_data.cap.permissions != v_data.cap.permissions or
+                    u_data.cap.objtype != v_data.cap.objtype)
+
     def _merge_initial_vertex(self, u):
         """
         Merge a vertex that is contained in the initial register set.
@@ -538,18 +594,24 @@ class MergePartialSubgraph(BFSTransform):
         # so the edges PARTIAL -> ROOT are not moved and
         # only ROOT vertices are moved normally when they are
         # found in case (3) of examine_vertex.
-        if u in self.initial_regset.reg_nodes:
-            index = self.initial_regset.reg_nodes.index(u)
-            v = self.previous_regset[index]
-        else:
-            index = "pcc"
-            v = self.previous_regset.pcc
-        logger.debug("Merge initial vertex (register %s)", index)
 
-        if v is None:
-            self._merge_initial_vertex_to_none(u)
+        if self.context.step_idx == 0:
+            # there is no previous regset
+            logger.debug("Merge trace beginning initial vertex subgraph:%d", u)
+            self._merge_trace_beginning(u)
         else:
-            self._merge_initial_vertex_to_prev(u, v)
+            if u in self.initial_regset.reg_nodes:
+                index = self.initial_regset.reg_nodes.index(u)
+                v = self.previous_regset[index]
+            else:
+                index = "pcc"
+                v = self.previous_regset.pcc
+            logger.debug("Merge initial vertex (register %s)", index)
+
+            if v is None:
+                self._merge_initial_vertex_to_none(u)
+            else:
+                self._merge_initial_vertex_to_prev(u, v)
 
     def _merge_initial_mem_vertex(self, u):
         """
@@ -589,20 +651,86 @@ class MergePartialSubgraph(BFSTransform):
             logger.debug("Root vertex found in merged vertex map: %s", u)
             self._merge_subgraph_vertex(u)
 
+    def _merge_trace_beginning(self, u):
+        """
+        Merge an initial vertex in the first subgraph. In this
+        case there is no previous subparser because this comes from
+        the first chunk of the trace.
+        Case (4) in examine_vertex:
+        The dummy register is attached to something unknown, the only
+        way to know the value of the register is by looking at ROOT
+        vertices that have been attached to the dummy.
+
+        If there are ROOT vertices, then they must be from the *same*
+        previous vertex, because ROOT vertices are attached to the
+        PARTIAL vertex only as long as they would not replace it.
+
+        The multiple ROOT vertices are merged and all the successors
+        of the PARTIAL vertex are attached to the merged vertex.
+        """
+        u_data = self.subgraph.vp.data[u]
+        merged_root = None
+        roots = []
+        other = []
+        for u_out in u.out_neighbours():
+            u_out_data = self.subgraph.vp.data[u_out]
+            if u_out_data.origin == CheriNodeOrigin.ROOT:
+                roots.append(u_out)
+            else:
+                other.append(u_out)
+        if len(roots):
+            # merge all the roots in a single one
+            merged_root = self.graph.add_vertex()
+            for idx,v in enumerate(roots):
+                if idx == 0:
+                    # first step, use the first root data
+                    root_data = self.subgraph.vp.data[v]
+                    self.graph.vp.data[merged_root] = root_data
+                else:
+                    # if the root is compatible (have same bounds & perms)
+                    # merge the data into the main vertex
+                    v_data = self.subgraph.vp.data[v]
+                    if not self._check_cap_compatible(root_data, v_data):
+                        msg = "Can not merge ROOTs at trace beginning:"\
+                              " incompatible roots %s %s" % (root_data, v_data)
+                        logger.error(msg)
+                        raise SubgraphMergeError(msg)
+                    self._merge_partial_vertex_data(v_data, root_data)
+                # ensure that the children of the children will be
+                # attached to the merged root and the root vertices
+                # are ignored
+                self.copy_vertex_map[v] = merged_root
+                self.omit_vertex_map[v] = True
+        if len(other):
+            if len(roots) == 0:
+                # XXX we may promote the vertices to roots in
+                # this case?
+                msg = "Can not resolve parent for children of "\
+                      "PARTIAL vertex at trace beginning, "\
+                      "the PARTIAL vertex have no associated roots"
+                logger.error(msg)
+                raise MissingParentError(msg)
+            # all the other (non-root) children are attached to the
+            # merged root
+            self.copy_vertex_map[u] = merged_root
+
     def _merge_initial_vertex_to_none(self, u):
         """
         Merge an initial vertex that have no parent in
         the previous regset.
+        Case (1) in examine_vertex:
+        The dummy vertex must not have been dereferenced,
+        because this counts as an empty register now.
+        it can have been stored, it is just storing None.
         """
-        # case (1) in examine_vertex
-        # The dummy vertex must not have been dereferenced,
-        # because this counts as an empty register now.
-        # it can have been stored, it is just storing None.
         u_data = self.subgraph.vp.data[u]
         if len(u_data.deref["time"]):
             raise SubgraphMergeError("PARTIAL vertex was dereferenced "
                                      "but is merged to None")
         logger.debug("initial vertex prev graph:None")
+        # XXX why we are not merging the roots if they have
+        # matching bounds? also if multiple roots are attached
+        # this may be a problem?
         for u_out in u.out_neighbours():
             u_out_data = self.subgraph.vp.data[u_out]
             if u_out_data.origin != CheriNodeOrigin.ROOT:
@@ -613,11 +741,11 @@ class MergePartialSubgraph(BFSTransform):
         """
         Merge an initial vertex that have an existing parent
         in the previous regset.
+        Case (2) of examine_vertex:
+        Propagate PARTIAL metadata to the parent.
+        Remove ROOT children since the ROOT should not
+        have been created.
         """
-        # case (2) of examine_vertex
-        # propagate PARTIAL metadata to the parent.
-        # remove ROOT children since the ROOT should not
-        # have been created.
         u_data = self.subgraph.vp.data[u]
         logger.debug("initial vertex prev graph:%s", v)
         self.copy_vertex_map[u] = v
@@ -638,8 +766,9 @@ class MergePartialSubgraph(BFSTransform):
                     raise SubgraphMergeError(
                         "ROOT attached to multiple partial nodes")
                 self._merge_partial_vertex_data(u_out_data, v_data)
-                if (u_out_data.cap.base != v_data.cap.base or
-                    u_out_data.cap.length != v_data.cap.length):
+                # if (u_out_data.cap.base != v_data.cap.base or
+                #     u_out_data.cap.length != v_data.cap.length):
+                if not self._check_cap_compatible(u_out_data, v_data):
                     logger.debug("do not suppress ROOT %s, previous "
                                  "regset does not have matching "
                                  "bounds %s", u_out_data, v_data)
@@ -651,8 +780,8 @@ class MergePartialSubgraph(BFSTransform):
     def _merge_subgraph_vertex(self, u):
         """
         Merge a generic vertex from the subgraph to the main merged graph.
+        Case (3) of examine_vertex
         """
-        # case (3) of examine_vertex
         v = self.graph.add_vertex()
         self.graph.vp.data[v] = self.subgraph.vp.data[u]
         self.copy_vertex_map[u] = v
@@ -701,6 +830,24 @@ class MergePartialSubgraph(BFSTransform):
                 raise SubgraphMergeError(
                     "PccFixup initial epcc is not a dummy vertex")
 
+    def _merge_syscall(self, u):
+        """
+        Merge a vertex that has been marked as eret capability return
+        by the Syscall subparser. This happens when the trace is split
+        in the middle of a system call or exception.
+        If the previous subparser marked the beginning of an exception,
+        the the return value is recorded.
+        """
+        prev_syscall = self.context.prev_syscall
+        curr_syscall = self.context.curr_syscall
+        if not prev_syscall or not prev_syscall["active"]:
+            return
+        if prev_syscall["pc_eret"] == curr_syscall["eret_addr"]:
+            u_data = self.subgraph.vp.data[u]
+            u_data.add_call_evt(curr_syscall["eret_time"],
+                                prev_syscall["code"],
+                                NodeData.CallType.SYSCALL)
+
     def examine_vertex(self, u):
         """
         Merge each vertex of the subgraph in the main merged graph.
@@ -738,18 +885,28 @@ class MergePartialSubgraph(BFSTransform):
             # nothing to do for this vertex, it is marked to be omitted
             return
 
-        if u == self.context.curr_pcc_fixup["epcc"]:
-            self._merge_pcc_fixup(u)
-
-        if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
-            logger.debug("Merge initial vertex subgraph:%s", u)
-            self._merge_initial_vertex(u)
-        elif u in self.vertex_map.initial_map.values():
-            logger.debug("Merge initial mem vertex subgraph:%s", u)
-            self._merge_initial_mem_vertex(u)
+        if self.context.step_idx == 0:
+            if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
+                logger.debug("Merge initial vertex subgraph:%s", u)
+                self._merge_initial_vertex(u)
+            else:
+                logger.debug("Merge normal vertex subgraph:%s", u)
+                self._merge_subgraph_vertex(u)
         else:
-            logger.debug("Merge normal vertex subgraph:%s", u)
-            self._merge_subgraph_vertex(u)
+            if u == self.context.curr_pcc_fixup["epcc"]:
+                self._merge_pcc_fixup(u)
+            if u == self.context.curr_syscall["eret_cap"]:
+                self._merge_syscall(u)
+
+            if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
+                logger.debug("Merge initial vertex subgraph:%s", u)
+                self._merge_initial_vertex(u)
+            elif u in self.vertex_map.initial_map.values():
+                logger.debug("Merge initial mem vertex subgraph:%s", u)
+                self._merge_initial_mem_vertex(u)
+            else:
+                logger.debug("Merge normal vertex subgraph:%s", u)
+                self._merge_subgraph_vertex(u)
 
 
 class CapabilityBranchSubparser:
@@ -829,8 +986,6 @@ class CapabilityBranchSubparser:
         if before there was an exception involving
         a capability branch.
         """
-        if not self.parser.regs_valid:
-            return False
         if self._saved_addr != None:
             self._save_first_mfc = False
             # badvaddr
@@ -872,8 +1027,6 @@ class CapabilityBranchSubparser:
         so that if the instruction did not commit, epcc can
         be set to the correct pcc.
         """
-        if not self.parser.regs_valid:
-            return False
         # discard current pcc and replace it
         if self.regset.has_reg(inst.op0.cap_index):
             # we already have a node for the new PCC
@@ -897,8 +1050,6 @@ class CapabilityBranchSubparser:
         return False
 
     def scan_cjalr(self, inst, entry, regs, last_regs, idx):
-        if not self.parser.regs_valid:
-            return False
         # save current pcc
         cd_idx = inst.op0.cap_index
         if not self.regset.has_pcc(allow_root=True):
@@ -989,6 +1140,27 @@ class SyscallSubparser:
         self.code = None
         """Current syscall code."""
 
+        self.exception_depth = 0
+        """Number of nested exceptions"""
+
+        self.initial_eret_cap = None
+        """
+        Capability returned by first eret not matched by any preceding
+        syscall/exception.
+        """
+
+        self.initial_eret_addr = None
+        """
+        Return address of the first eret not matched by any preceding
+        syscall/exception.
+        """
+
+        self.initial_eret_time = None
+        """
+        Time of the first eret not matched by any preceding
+        syscall/exception.
+        """
+
     @property
     def pgm(self):
         return self.parser.pgm
@@ -996,6 +1168,21 @@ class SyscallSubparser:
     @property
     def regset(self):
         return self.parser.regset
+
+    def mp_result(self):
+        try:
+            eret_cap_idx = int(self.initial_eret_cap)
+        except TypeError:
+            eret_cap_idx = None
+        result = {
+            "code": self.code,
+            "active": self.in_syscall,
+            "pc_eret": self.pc_eret,
+            "eret_time": self.initial_eret_time,
+            "eret_cap": eret_cap_idx,
+            "eret_addr": self.initial_eret_addr,
+        }
+        return result
 
     def _get_syscall_code(self, regs):
         """Get the syscall code for direct and indirect syscalls."""
@@ -1010,9 +1197,7 @@ class SyscallSubparser:
         """
         When an exception occurs, adjust the epcc vertex from pcc.
         """
-        if not self.parser.regs_valid:
-            return False
-
+        self.exception_depth += 1
         logger.debug("except {%d}: update epcc %s, update pcc %s",
                      entry.cycles,
                      self.pgm.data[self.regset.pcc],
@@ -1026,8 +1211,6 @@ class SyscallSubparser:
         Scan a syscall instruction and detect the syscall type
         and arguments.
         """
-        if not self.parser.regs_valid:
-            return False
         self.code = self._get_syscall_code(regs)
         try:
             record = SyscallSubparser.syscall_codes[self.code]
@@ -1035,7 +1218,7 @@ class SyscallSubparser:
                 # record the use of a vertex as system call argument
                 vertex = self.regset[record[1]]
                 data = self.pgm.data[vertex]
-                logger.debug("detected syscall %d capability argument: %s",
+                logger.debug("Detected syscall %d capability argument: %s",
                              self.code, data)
                 data.add_call_evt(entry.cycles, self.code,
                               NodeData.CallType.SYSCALL | NodeData.CallType.ARG)
@@ -1048,21 +1231,73 @@ class SyscallSubparser:
         return False
 
     def scan_eret(self, inst, entry, regs, last_regs, idx):
-        if not self.parser.regs_valid:
-            return False
-
+        """
+        Scan eret instructions to properly restore pcc from epcc
+        and capture syscall return values.
+        """
+        self.exception_depth -= 1
         epcc_valid = regs.valid_caps[31]
+        if not epcc_valid:
+            msg = "eret without valid epcc register"
+            logger.error(msg)
+            raise UnexpectedOperationError(msg)
         epcc = regs.cap_reg[31]
-        if (self.in_syscall and epcc_valid and
+        if self.exception_depth < 0:
+            # the trace begins within a syscall/exception
+            self.initial_eret_cap = self.regset[3]
+            self.initial_eret_addr = epcc.base + epcc.offset
+            self.initial_eret_time = entry.cycles
+            # restore a 0 exception depth
+            self.exception_depth = 0
+
+        if (self.in_syscall and
             epcc.base + epcc.offset == self.pc_eret):
             self.in_syscall = False
             vertex = self.regset[3]
             data = self.pgm.data[vertex]
-            logger.debug("detected syscall %d capability return: %s",
+            logger.debug("Detected syscall %d capability return: %s",
                          self.code, data)
             data.add_call_evt(entry.cycles, self.code,
                               NodeData.CallType.SYSCALL)
         self.regset.pcc = self.regset[31] # restore saved pcc
+        return False
+
+
+class InitialStackAccessSubparser:
+    """
+    Detect vertices in the initial user stack.
+    """
+
+    def __init__(self, parser):
+        self.parser = parser
+
+        self.first_eret = False
+        """First eret seen, userspace started."""
+
+        self.stack_base = None
+        """Initial stack base."""
+
+        self.stack_bound = None
+        """Initial stack bound."""
+
+    def scan_eret(self, inst, entry, regs, last_regs, idx):
+        """
+        XXX check that we going to userspace
+        """
+        if self.first_eret:
+            return False
+        return False # XXX disable
+        self.first_eret = True
+        stack_valid = regs.valid_caps[11]
+        if not stack_valid:
+            logger.error("Invalid stack capability register")
+            raise UnexpectedOperationError(
+                "Invalid stack capability at return to userspace")
+        # scan the vertex-memory map to see what have been stored above
+        # the stack base
+        stack_cap = regs.cap_reg[11]
+        self.stack_base = stack_cap.base + stack_cap.offset
+        self.stack_bound = stack_cap.base + stack_cap.length
         return False
 
 
@@ -1082,11 +1317,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         """Provenance graph manager, proxy access to the provenance graph."""
 
         self._init_graph()
-        self.regs_valid = False
-        """
-        Flag used to disable parsing until the registerset
-        is completely initialised.
-        """
 
         self.regset = RegisterSet(self.pgm)
         """
@@ -1112,10 +1342,26 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         subgraphs.
         """
 
+        self._cbk_names = (["cjr", "cjalr", "ccall", "creturn", "cfromptr",
+                            "csetbounds", "csetboundsexact", "candperm"] +
+                           self._cbk_manager.iclass_map[IClass.I_CAP_CPREG])
+        """
+        Names of callbacks for capability instructions that have custom
+        register-set handling (the set also includdes IClass.I_CAP_STORE
+        and IClass.I_CAP_LOAD but it is easier to check for trace_entry
+        is_load and is_store). This is required to properly update the
+        register set when other capability instructions are found and
+        is placed here to avoid rebuilding the list at every callback
+        invocation.
+        """
+
+        self._initial_stack = InitialStackAccessSubparser(self)
         self._pcc_fixup = CapabilityBranchSubparser(self)
         self._syscall_subparser = SyscallSubparser(self)
+        # self._add_subparser(self._initial_stack)
         self._add_subparser(self._syscall_subparser)
         self._add_subparser(self._pcc_fixup)
+
 
     def _init_graph(self):
         if self.cache:
@@ -1155,7 +1401,8 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             "initial_regset": self.initial_regset,
             "final_regset": self.regset,
             "mem_vertex_map": self.vertex_map,
-            "sub_pcc_fixup": self._pcc_fixup.mp_result()
+            "sub_pcc_fixup": self._pcc_fixup.mp_result(),
+            "sub_syscall": self._syscall_subparser.mp_result(),
         }
         return state
 
@@ -1167,12 +1414,17 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         assuming that the results are in-order w.r.t.
         the trace entries indexes that were used.
         """
-        merge_ctx = MergePartialSubgraphContext()
+        if self.mp.threads == 1:
+            # need to merge partial vertices from the beginning of
+            # the trace anyway, reinit the graph manager with an
+            # empty one, the previous is in the results list
+            self._init_graph()
+        merge_ctx = MergePartialSubgraphContext(self.pgm)
         for idx, result in enumerate(results):
             with ProgressTimer("Merge partial worker result [%d/%d]" % (
                     idx + 1, len(results)), logger):
                 merge_ctx.step(result)
-        self.pgm.set_graph(merge_ctx.pgm.graph)
+        # self.pgm.set_graph(merge_ctx.pgm.graph)
 
     def _do_parse(self, start, end, direction):
         """
@@ -1184,59 +1436,22 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         Otherwise we create dummy graph roots for each register
         that will be used during the merge.
         """
-        if start != 0: # check that we are in a worker process instead
-            self.initial_regset = RegisterSet(self.pgm)
-            # create dummy initial nodes
-            reg_nodes = list(self.pgm.graph.add_vertex(32))
-            pcc_node = self.pgm.graph.add_vertex()
-            for n in reg_nodes + [pcc_node]:
-                data = NodeData()
-                data.origin = CheriNodeOrigin.PARTIAL
-                self.pgm.data[n] = data
-            self.initial_regset.reg_nodes = reg_nodes
-            self.initial_regset.pcc = pcc_node
-            self.regset.reg_nodes = list(reg_nodes)
-            self.regset.pcc = pcc_node
-            self.regs_valid = True
-            # use the MP vertex map
-            self.vertex_map = MPVertexMemoryMap(self.pgm)
+        self.initial_regset = RegisterSet(self.pgm)
+        # create dummy initial nodes
+        reg_nodes = list(self.pgm.graph.add_vertex(32))
+        pcc_node = self.pgm.graph.add_vertex()
+        for n in reg_nodes + [pcc_node]:
+            data = NodeData()
+            data.origin = CheriNodeOrigin.PARTIAL
+            self.pgm.data[n] = data
+        self.initial_regset.reg_nodes = reg_nodes
+        self.initial_regset.pcc = pcc_node
+        self.regset.reg_nodes = list(reg_nodes)
+        self.regset.pcc = pcc_node
+        # use the MP vertex map
+        self.vertex_map = MPVertexMemoryMap(self.pgm)
         super()._do_parse(start, end, direction)
-
-    def _set_initial_regset(self, inst, entry, regs):
-        """
-        Setup the registers after the first eret
-        """
-        self.regs_valid = True
-        logger.debug("Scan initial register set cycle: %d", entry.cycles)
-        for idx in range(0, 32):
-            cap = regs.cap_reg[idx]
-            valid = regs.valid_caps[idx]
-            if valid:
-                node = self.make_root_node(entry, cap, pc=0)
-                self.regset[idx] = node
-            else:
-                logger.warning("c%d not in initial set", idx)
-                if idx == 31:
-                    raise UnexpectedOperationError("Missing initial epcc")
-                if idx == 29 or idx == 30:
-                    node = self.make_root_node(entry, None, pc=0)
-                    cap = CheriCap()
-                    cap.base = 0
-                    cap.offset = 0
-                    cap.length = 0xffffffffffffffff
-                    # should KCC only have EXEC and few other?
-                    cap.permissions = CheriCapPerm.all()
-                    cap.objtype = 0
-                    cap.valid = True
-                    cap.t_alloc = 0
-                    self.pgm.data[node].cap = cap
-                    self.regset[idx] = node
-                    if idx == 29:
-                        logger.warning("Guessing KCC %s",
-                                       self.pgm.data[node])
-                    else:
-                        logger.warning("Guessing KDC %s",
-                                       self.pgm.data[node])
+        self.pgm.save("initial_stack_test.gt")
 
     def _has_exception(self, entry, code=None):
         """
@@ -1246,40 +1461,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             return entry.exception == code
         else:
             return entry.exception != 31
-
-    def _instr_committed(self, inst, entry, regs, last_regs):
-        """
-        Check if an instruction has been committed and will
-        not be replayed.
-
-        """
-        # XXX disable it because things break when the exception does
-        # not roll-back the instruction, there is no way of detecting
-        # this so we just assume that it can happen.
-        # if self._has_exception(entry) and entry.exception != 0:
-        #     return False
-        return True
-
-    def _do_scan(self, entry):
-        """
-        Check if the scan of an instruction can proceed.
-        This disables scanning until the regiser set is initialized
-        after the first eret and do not scan instructions that did
-        not commit due to exceptions being raised.
-        """
-        # if self.regs_valid and self._instr_committed(entry):
-        if self.regs_valid:
-            return True
-        return False
-
-    def scan_eret(self, inst, entry, regs, last_regs, idx):
-        """
-        Detect the first eret that enters the process code
-        and initialise the register set and the roots of the tree.
-        """
-        if not self.regs_valid:
-            self._set_initial_regset(inst, entry, regs)
-        return False
 
     def scan_cclearregs(self, inst, entry, regs, last_regs, idx):
         """
@@ -1305,8 +1486,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         :parm entry: trace entry
         :type entry: :class:`pycheritrace.trace_entry`
         """
-        if not self._do_scan(entry):
-            return False
         if not self.regset.has_reg(regnum, allow_root=True):
             # no node was ever created for the register, it contained something
             # invalid
@@ -1331,8 +1510,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         :parm entry: trace entry
         :type entry: :class:`pycheritrace.trace_entry`
         """
-        if not self._do_scan(entry):
-            return False
         if not self.regset.has_reg(inst.op0.cap_index, allow_root=True):
             node = self.make_root_node(entry, inst.op0.value,
                                        time=entry.cycles)
@@ -1374,8 +1551,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         return False
 
     def scan_cgetpcc(self, inst, entry, regs, last_regs, idx):
-        if not self._do_scan(entry):
-            return False
         if not self.regset.has_pcc(allow_root=True):
             # never seen anything in pcc so we create a new node
             node = self.make_root_node(entry, inst.op0.value,
@@ -1400,8 +1575,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
-        if not self._do_scan(entry):
-            return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.SETBOUNDS)
         self.regset[inst.op0.cap_index] = node
         return False
@@ -1417,8 +1590,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
-        if not self._do_scan(entry):
-            return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.FROMPTR)
         self.regset[inst.op0.cap_index] = node
         return False
@@ -1432,8 +1603,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
-        if not self._do_scan(entry):
-            return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.ANDPERM)
         self.regset[inst.op0.cap_index] = node
         return False
@@ -1444,17 +1613,10 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         the mapping from capability register to the provenance
         tree node associated to the capability in it.
         """
-        if not self._do_scan(entry):
-            return False
-        if (inst.opcode == "ccall" or inst.opcode == "creturn" or
-              inst.opcode == "cjr" or inst.opcode == "cjalr"):
-            # these are handled by software so all register assignments
-            # are already parsed there
-            return False
-        elif entry.is_store or entry.is_load:
+        if entry.is_store or entry.is_load or inst.opcode in self._cbk_names:
             return False
         else:
-            self.update_regs(inst, entry, regs, last_regs)
+            self.update_regs(inst, entry, regs, last_regs, idx)
         return False
 
     def _handle_dereference(self, inst, entry, ptr_reg):
@@ -1495,9 +1657,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         clXr and clXi have pointer argument in op2
         cllX have pointer argument in op1
         """
-        if not self._do_scan(entry):
-            return False
-
         # get the register with the address capability
         # this may be a normal capability load or a linked-load
         if inst.opcode.startswith("cll"):
@@ -1518,8 +1677,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         csXr and csXi have pointer argument in op2
         cscX conditionals use op2
         """
-        if not self._do_scan(entry):
-            return False
         # get the register with the address capability
         # this may be a normal capability store or an atomic-store
         if inst.opcode != "csc" and inst.opcode.startswith("csc"):
@@ -1539,9 +1696,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         Operand 0 is the register with the new node
         The parent is looked up in memory or a root node is created
         """
-        if not self._do_scan(entry):
-            return False
-        logger.debug("scan clc")
         cd = inst.op0.cap_index
         node = self.vertex_map.mem_load(entry.memory_address)
         if node is None:
@@ -1598,16 +1752,12 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         csc:
         Operand 0 is the capability being stored, the node already exists
         """
-        if not self._do_scan(entry):
-            return False
-
         cd = inst.op0.cap_index
 
         if inst.op0.value.valid:
             # if this is not a data access
 
             if not self.regset.has_reg(cd, allow_root=True):
-            # if self.regset[cd] == None: XXX
                 # XXX may decide to disable and have an exception here
                 # need to create one
                 node = self.make_root_node(entry, inst.op0.value,
@@ -1708,15 +1858,35 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         self.pgm.data[vertex] = data
         return vertex
 
-    def update_regs(self, inst, entry, regs, last_regs):
+    def update_regs(self, inst, entry, regs, last_regs, idx):
         """
         Try to update the registers-node mapping when a capability
         instruction is executed so that nodes are propagated in
         the registers when their bounds do not change.
         """
-        cd = inst.op0
-        cb = inst.op1
-        if not cd or not cb:
-            return
-        if (cb.is_capability and cd.is_capability):
-            self.regset[cd.cap_index] = self.regset[cb.cap_index]
+        dst = inst.op0
+        src = inst.op1
+
+        logger.debug("update regs %s", inst.opcode)
+        if dst and dst.is_capability:
+            if src and src.is_capability:
+                src_vertex = self.regset.has_reg(src.cap_index, allow_root=True)
+            else:
+                src_vertex = False
+
+            if src_vertex:
+                self.regset[dst.cap_index] = self.regset[src.cap_index]
+            else:
+                last_valid = last_regs.valid_caps[dst.cap_index]
+                curr_valid = regs.valid_caps[dst.cap_index]
+                if (not last_valid and curr_valid) or idx == 0:
+                    # a register that was invalid has become valid, create a
+                    # root for it.
+                    dst_vertex = self.make_root_node(
+                        entry, dst.value, pc=entry.pc, time=entry.cycles)
+                    self.regset[src.cap_index] = dst_vertex
+                    self.regset[dst.cap_index] = dst_vertex
+        # if not dst or not src:
+        #     return
+        # if (src and src.is_capability):
+        #     self.regset[dst.cap_index] = self.regset[src.cap_index]

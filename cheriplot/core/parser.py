@@ -49,7 +49,7 @@ from cheriplot.core.utils import ProgressPrinter
 logger = logging.getLogger(__name__)
 
 __all__ = ("TraceParser", "CallbackTraceParser", "Operand", "Instruction",
-           "MultiprocessCallbackParser")
+           "MultiprocessCallbackParser", "IClass")
 
 class TraceParser:
     """
@@ -431,7 +431,7 @@ class CheriMipsCallbacksManager(CallbacksManager):
             "cincoffset", "csetoffset", "csub",
             "cincbase"],
         IClass.I_CAP_BOUND: [
-            "csetbounds", "csetboundsexact"],
+            "csetbounds", "csetboundsexact", "candperm"],
         IClass.I_CAP_FLOW: [
             "cbtu", "cbts", "cjr", "cjalr",
             "ccall", "creturn"],
@@ -444,7 +444,7 @@ class CheriMipsCallbacksManager(CallbacksManager):
         IClass.I_CAP_OTHER: [
             "cgetperm", "cgettype", "cgetbase", "cgetlen",
             "cgettag", "cgetsealed", "cgetoffset",
-            "cseal", "cunseal", "candperm",
+            "cseal", "cunseal",
             "ccleartag", "cclearregs",
             "cgetcause", "csetcause", "ccheckperm", "cchecktype",
             "clearlo", "clearhi", "cclearlo", "cclearhi",
@@ -673,7 +673,9 @@ class MultiprocessCallbackParser(CallbackTraceParser):
             # no need to start the pool and split the work, do everything
             # in the current process
             logger.debug("Running %s with 1 worker", self.__class__.__name__)
-            return self._do_parse(start, end, direction)
+            self._do_parse(start, end, direction)
+            self.mp_merge([self.mp_result()])
+            return
 
         # split the start-end interval in sub-invervals for the workers
         block_size = math.floor((end - start) / self.mp.threads)

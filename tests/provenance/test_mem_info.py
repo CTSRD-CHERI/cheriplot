@@ -41,17 +41,19 @@ start_cap = pct_cap(0x1000, 0x0, 0x1000, perm)
 trace_mem_init = (
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "vertex": mk_vertex(start_cap, pc=0, t_alloc=0)
+        "vertex": mk_vertex(start_cap)
     }),
-    (None, { # inferred kcc vertex 1
-        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
+    ("cmove $c29, $c29", { # inferred kcc vertex 1
+        "c29": kcc_default,
+        "vertex": mk_vertex(kcc_default)
     }),
-    (None, { # inferred kdc vertex 2
-        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
+    ("cmove $c30, $c30", { # inferred kdc vertex 2
+        "c30": kdc_default,
+        "vertex": mk_vertex(kdc_default)
     }),
     ("cmove $c31, $c31", { # vertex 3
         "c31": pcc,
-        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
+        "vertex": mk_vertex(pcc)
     }),
     ("eret", {}), # mark initialization end
 )
@@ -161,7 +163,6 @@ trace_mem_2st_ld = (
 # ROOT(v4)
 trace_mem_st_ld_root = (
     # split worker set here
-    ("nop", {}),
     ("clc $c2, $zero, 0x700($c1)", { # vertex 4
         "c2": pct_cap(0x2000, 0x0, 0x1000, perm),
         "vertex": mk_vertex(pct_cap(0x2000, 0x0, 0x1000, perm)),
@@ -178,13 +179,14 @@ trace_mem_st_ld_root = (
         "vertex_deref": mk_vertex_deref(0, 0x1f00, True, "store"),
         "vertex_store": mk_vertex_store(5, 0x1f00)
     }),
+    # pad to make the working set of workers to split at the marked point
+    ("nop", {}), ("nop", {}), ("nop", {}),
 )
 
 # invalid cap ld/st do not propagate nodes nor creates roots
 #
 trace_mem_st_ld_invalid = (
     # split worker set here
-    ("nop", {}),
     ("clc $c2, $zero, 0x800($c1)", {
         "c2": pct_cap(0xbadadd12, 0xbad, 0x1000, 0xbaad, valid=False),
         "load": True,
@@ -196,7 +198,9 @@ trace_mem_st_ld_invalid = (
         "load": True,
         "mem": 0x1800,
         "vertex_deref": mk_vertex_deref(0, 0x1800, True, "load")
-    })
+    }),
+    # pad to make the working set of workers to split at the marked point
+    ("nop", {}), ("nop", {}), ("nop", {}),
 )
 
 # deref unknown register should give an error
@@ -224,22 +228,6 @@ trace_mem_deref_unknown_reg = (
 # number of instruction to make the workers split the trace
 # at the intended point.
 trace_mem_mp_deref_merge = (
-    ("cmove $c1, $c1", { # vertex 0
-        "c1": start_cap,
-        "vertex": mk_vertex(start_cap, pc=0, t_alloc=0)
-    }),
-    (None, { # inferred kcc vertex 1
-        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
-    }),
-    (None, { # inferred kdc vertex 2
-        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
-    }),
-    ("cmove $c31, $c31", { # vertex 3
-        "c31": pcc,
-        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
-    }),
-    ("eret", {}), # mark initialization end
-    ("nop", {}),
     # split worker set here
     # derive something from c1 (which is a dummy vertex in worker 2)
     ("lui $at, 0x100", {"1": 0x100}),
@@ -261,7 +249,9 @@ trace_mem_mp_deref_merge = (
     ("cgetdefault $c1", { # vertex 5
         "c1": ddc,
         "vertex": mk_vertex(ddc)
-    })
+    }),
+    # pad to make the working set of workers to split at the marked point
+    ("nop", {}),
 )
 
 # Test subgraph merge logic for memory-propagated graph vertices.
@@ -273,21 +263,6 @@ trace_mem_mp_deref_merge = (
 # number of instruction to make the workers split the trace
 # at the intended point.
 trace_mem_mp_vertex_map = (
-    ("cmove $c1, $c1", { # vertex 0
-        "c1": start_cap,
-        "vertex": mk_vertex(start_cap, pc=0, t_alloc=0)
-    }),
-    (None, { # inferred kcc vertex 1
-        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
-    }),
-    (None, { # inferred kdc vertex 2
-        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
-    }),
-    ("cmove $c31, $c31", { # vertex 3
-        "c31": pcc,
-        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
-    }),
-    ("eret", {}), # mark initialization end
     # store c1 in memory
     ("csc $c1, $zero, 0x0($c1)", {
         "c1": start_cap,
@@ -309,6 +284,8 @@ trace_mem_mp_vertex_map = (
         "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x100, perm),
                             parent=0, origin=CheriNodeOrigin.SETBOUNDS),
     }),
+    # pad to make the working set of workers to split at the marked point
+    ("nop", {}), ("nop", {}), ("nop", {}),
 )
 
 @pytest.mark.timeout(4)
@@ -318,8 +295,8 @@ trace_mem_mp_vertex_map = (
     (trace_mem_init, trace_mem_2st_ld),
     (trace_mem_init, trace_mem_st_ld_root),
     (trace_mem_init, trace_mem_st_ld_invalid),
-    (trace_mem_mp_deref_merge,),
-    (trace_mem_mp_vertex_map,),
+    (trace_mem_init, trace_mem_mp_deref_merge,),
+    (trace_mem_init, trace_mem_mp_vertex_map,),
 ])
 def test_mem_tracking(trace, threads):
     """Test provenance parser with the simplest trace possible."""
@@ -341,6 +318,7 @@ def test_mem_tracking(trace, threads):
         pgm = parser.get_model()
         assert_graph_equal(w.pgm.graph, pgm.graph)
 
+@pytest.mark.skip(reason="Need to decide what to do in those cases now")
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("threads", [1])
 @pytest.mark.parametrize("trace,exc_type", [

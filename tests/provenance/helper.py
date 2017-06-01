@@ -16,7 +16,7 @@ def dump_vertices(graph):
     dump = StringIO()
     for v in graph.vertices():
         data = graph.vp.data[v]
-        dump.write("%s\n" % data)
+        dump.write("%d: %s\n" % (v, data))
     return dump.getvalue()
 
 def dump_edges(graph):

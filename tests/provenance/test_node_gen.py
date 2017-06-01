@@ -33,65 +33,21 @@ perm_cap = pct_cap(0x1100, 0x0, 0x100, CheriCapPerm.STORE)
 trace_init = (
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "vertex": mk_vertex(start_cap, pc=0, t_alloc=0)
+        "vertex": mk_vertex(start_cap)
     }),
-    (None, { # inferred kcc vertex 1
-        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
+    ("cmove $c29, $c29", { # kcc vertex 1
+        "c29": kcc_default,
+        "vertex": mk_vertex(kcc_default)
     }),
-    (None, { # inferred kdc vertex 2
-        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
-    }),
-    ("cmove $c31, $c31", { # vertex 3
-        "c31": pcc,
-        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
-    }),
-    ("eret", {}), # mark initialization end
-)
-
-# generate the following expected tree
-# ROOT -> P -> A
-#          \
-#           -> B
-# ROOT(pcc)
-# ROOT(kcc - inferred)
-# ROOT(kdc - inferred)
-#
-# Notable behaviour:
-# Root vertices are expected to have pc = 0 and creation time = 0
-# when they are initialized from the initial register set.
-trace_infer_kcc_kdc = (
-    # NOTE: initialization must be in register-number order if we want to keep
-    # ROOT ordering in the graph.
-    ("cmove $c1, $c1", { # vertex 0
-        "c1": start_cap,
-        "vertex": mk_vertex(start_cap, pc=0, t_alloc=0)
-    }),
-    (None, { # inferred kcc vertex 1
-        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
-    }),
-    (None, { # inferred kdc vertex 2
-        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
+    ("cmove $c30, $c30", { # kdc vertex 2
+        "c30": kdc_default,
+        "vertex": mk_vertex(kdc_default)
     }),
     ("cmove $c31, $c31", { # vertex 3
         "c31": pcc,
-        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
+        "vertex": mk_vertex(pcc)
     }),
     ("eret", {}), # mark initialization end
-    ("lui $at, 0x100", {"1": 0x100}),
-    ("cfromptr $c2, $c1, $at", { # vertex 4
-        "c2": ptr_cap,
-        "vertex": mk_vertex(ptr_cap, 0, CheriNodeOrigin.FROMPTR)
-    }),
-    ("daddiu $at, $at, 0x100", {"1": 0x200}),
-    ("csetbounds $c1, $c2, $at", { # vertex 5
-        "c1": bound_cap,
-        "vertex": mk_vertex(bound_cap, 4, CheriNodeOrigin.SETBOUNDS)
-    }),
-    ("lui $at, 0x0c", {"1": 0x08}),
-    ("candperm $c2, $c2, $at", { # vertex 6
-        "c2": perm_cap,
-        "vertex": mk_vertex(perm_cap, 4, CheriNodeOrigin.ANDPERM)
-    })
 )
 
 # generate the following expected tree
@@ -104,19 +60,19 @@ trace_infer_kcc_kdc = (
 trace_explicit_kcc_kdc = (
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "vertex": mk_vertex(start_cap, pc=0, t_alloc=0)
+        "vertex": mk_vertex(start_cap)
     }),
     ("cmove $c29, $c30", { # kcc vertex 1
         "c29": kcc,
-        "vertex": mk_vertex(kcc, pc=0, t_alloc=0)
+        "vertex": mk_vertex(kcc)
     }),
     ("cmove $c30, $c30", { # kdc vertex 2
         "c30": kdc,
-        "vertex": mk_vertex(kdc, pc=0, t_alloc=0)
+        "vertex": mk_vertex(kdc)
     }),
     ("cmove $c31, $c31", { # vertex 3
         "c31": pcc,
-        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
+        "vertex": mk_vertex(pcc)
     }),
     ("eret", {}),
     ("lui $at, 0x100", {"1": 0x100}),
@@ -134,27 +90,6 @@ trace_explicit_kcc_kdc = (
         "c2": perm_cap,
         "vertex": mk_vertex(perm_cap, 4, CheriNodeOrigin.ANDPERM)
     })
-)
-
-# invalid trace test: try to generate a provenance node from
-# an uninitialized register.
-# UNK -> P
-trace_invalid_derive_from_unknown = (
-    ("cmove $c31, $c31", { # pcc is always loaded after eret
-        "c31": pcc,
-        "vertex": mk_vertex(pcc)
-    }),
-    ("eret", {}),
-    ("lui $at, 0x100", {"1": 0x100}),
-    ("cfromptr $c2, $c1, $at", { # trigger error
-        "c2": ptr_cap})
-)
-
-# invalid trace test: missing pcc in initial register set.
-# EPCC is never set before returning to userspace.
-trace_invalid_missing_initial_epcc = (
-    ("eret", {}), # trigger error when tyring to load epcc in pcc
-    ("nop", {})
 )
 
 # generate trace to check that the parser keeps track of
@@ -171,16 +106,17 @@ trace_invalid_missing_initial_epcc = (
 # ROOT(pcc) -> B (v3)
 #          `-> B (v5)
 trace_pcc_epcc_tracking = (
-    ("cmove $c29, $c30", { # kcc vertex 0
+    ("cmove $c29, $c29", { # kcc vertex 0
         "c29": kcc,
-        "vertex": mk_vertex(kcc, pc=0, t_alloc=0)
+        "vertex": mk_vertex(kcc)
     }),
-    (None, { # kdc vertex 1
-        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
+    ("cmove $c30, $c30", { # kdc vertex 1
+        "c30": kdc_default,
+        "vertex": mk_vertex(kdc_default)
     }),
     ("cmove $c31, $c31", { # vertex 2 (pcc vertex)
         "c31": pcc,
-        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
+        "vertex": mk_vertex(pcc)
     }),
     ("eret", {}),
     # derive capability from pcc vertex
@@ -256,17 +192,19 @@ trace_pcc_epcc_tracking = (
 trace_ddc = (
     ("cmove $c0, $c0", { # ddc vertex 0
         "c0": ddc,
-        "vertex": mk_vertex(ddc, pc=0, t_alloc=0)
+        "vertex": mk_vertex(ddc)
     }),
-    (None, { # kcc vertex 1
-        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
+    ("cmove $c29, $c29", { # kcc vertex 1
+        "c29": kcc_default,
+        "vertex": mk_vertex(kcc_default)
     }),
-    (None, { # kdc vertex 2
-        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
+    ("cmove $c30, $c30", { # kdc vertex 2
+        "c30": kdc_default,
+        "vertex": mk_vertex(kdc_default)
     }),
     ("cmove $c31, $c31", { # vertex 3 (pcc vertex)
         "c31": pcc,
-        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
+        "vertex": mk_vertex(pcc)
     }),
     ("eret", {}),
     # derive capability from ddc vertex
@@ -301,9 +239,10 @@ trace_ddc = (
 # ROOT(ddc) -> B
 #          `-> B
 trace_mp_move_and_setbounds = (
+    ("nop", {}),
     # split worker's set here
     ("cmove $c2, $c1", {
-        "c2": ddc,
+        "c2": start_cap
     }),
     # this makes a DUMMY(c1) -> ROOT(c1) in worker #2
     ("cgetpcc $c1", {
@@ -354,7 +293,7 @@ trace_mp_cjr_exception_pcc_update = (
     }),
     # pad so that the worker set is split at the marked point
     ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),
-    ("nop", {}),
+    ("nop", {}), ("nop", {}), ("nop", {}),
 )
 
 # Test capability branch with exception at worker set boundary.
@@ -377,7 +316,7 @@ trace_mp_cjr_exception_pcc_unchanged = (
     ("cjr $c2", {"exc": 1}),
     ("nop", {}),
     # worker set split here
-    ("dmfc0 $at, $8", {"1": 0x101c}), # badvaddr = address of cjr
+    ("dmfc0 $at, $8", {"1": 0x1024}), # badvaddr = address of cjr (delay slot)
     # c31 here should be the pcc, NOT updated with the content of c2
     # after cjr
     ("lui $at, 0x0c", {"1": 0x0c}),
@@ -389,7 +328,21 @@ trace_mp_cjr_exception_pcc_unchanged = (
     }),
     # pad so that the worker set is split at the marked point
     ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),
-    ("nop", {}),
+    ("nop", {}), ("nop", {}), ("nop", {}),
+)
+
+# invalid trace test: try to generate a provenance node from
+# an uninitialized register.
+# UNK -> P
+trace_invalid_derive_from_unknown = (
+    ("cmove $c31, $c31", { # pcc is always loaded after eret
+        "c31": pcc,
+        "vertex": mk_vertex(pcc)
+    }),
+    ("eret", {}),
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("cfromptr $c2, $c1, $at", { # trigger error
+        "c2": ptr_cap})
 )
 
 @pytest.mark.timeout(4)
@@ -398,7 +351,6 @@ trace_mp_cjr_exception_pcc_unchanged = (
     (trace_init, trace_mp_move_and_setbounds),
     (trace_init, trace_mp_cjr_exception_pcc_update),
     (trace_init, trace_mp_cjr_exception_pcc_unchanged),
-    (trace_infer_kcc_kdc,),
     (trace_explicit_kcc_kdc,),
     (trace_pcc_epcc_tracking,),
     (trace_ddc,),
@@ -428,7 +380,6 @@ def test_nodegen_simple(trace, threads):
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace,exc_type", [
     (trace_invalid_derive_from_unknown, MissingParentError),
-    (trace_invalid_missing_initial_epcc, UnexpectedOperationError)
 ])
 def test_nodegen_errors(trace, exc_type, threads):
     """

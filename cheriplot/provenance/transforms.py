@@ -41,15 +41,6 @@ def bfs_transform(graph, transforms):
     however running multiple transforms at once saves time
     because the root vertices have to be searched only once.
     """
-    # roots = []
-    # # find roots (normally there should be only one)
-    # for v in graph.vertices():
-    #     if v.in_degree() == 0:
-    #         roots.append(v)
-    # for t in transforms:
-    #     for v in roots:
-    #         bfs_search(graph, v, t)
-
     for t in transforms:
         bfs_search(graph, visitor=t)
     # apply the transforms here so that they can not
@@ -59,11 +50,11 @@ def bfs_transform(graph, transforms):
     for t in transforms:
         t.apply_transform()
 
-def flat_transform(graph, transforms):
+def flat_transform(pgm, transforms):
     """
     Run a transformation function for all vertices in the graph
     """
-    for v in graph.vertices():
+    for v in pgm.graph.vertices():
         for t in transforms:
             t.examine_vertex(v)
     for t in transforms:
@@ -103,10 +94,11 @@ class SingleMaskFlatTransform(FlatTransform):
     Transform that masks the graph after scanning the vertices
     """
 
-    def __init__(self, graph):
+    def __init__(self, pgm):
         super().__init__()
-        self.graph = graph
-        self.vertex_mask = graph.new_vertex_property("bool")
+        self.pgm = pgm
+        self.graph = pgm.graph
+        self.vertex_mask = self.graph.new_vertex_property("bool")
 
     def apply_transform(self):
         vf,inverted = self.graph.get_vertex_filter()
@@ -182,3 +174,22 @@ class MaskCFromPtr(SingleMaskFlatTransform):
             #     # remove cfromptr that are never stored or used in
             #     # a dereference
             #     self.vertex_mask[u] = True
+
+
+class RemovePartial(FlatTransform):
+    """
+    Delete vertices with PARTIAL origin. These are unknown vertices
+    from the beginning of the trace and can not be accounted for.
+    """
+
+    def __init__(self, pgm):
+        self.pgm = pgm
+        self.remove_list = []
+
+    def examine_vertex(self, u):
+        data = self.pgm.data[u]
+        if data.origin == CheriNodeOrigin.PARTIAL:
+            self.remove_list.append(u)
+
+    def apply_transform(self):
+        self.pgm.graph.remove_vertex(self.remove_list)

@@ -39,7 +39,12 @@ class VMMapPlotDriver(TaskDriver):
     outfile = Option(help="Output file", default=None)
     vmmap = NestedConfig(VMMapFileParser)
 
-    def __init__(self, provenance_graph, **kwargs):
+    def __init__(self, pgm, **kwargs):
+        """
+        :param pgm: provenance graph manager
+        :param kwargs: TaskDriver arguments
+        """
         super().__init__(**kwargs)
-        self._provenance_graph = provenance_graph
+        self._pgm = pgm
+        self._provenance_graph = pgm.graph
         self._vmmap_parser = VMMapFileParser(config=self.config.vmmap)

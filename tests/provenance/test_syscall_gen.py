@@ -29,28 +29,26 @@ trace_init = (
     # {0x1000}
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "vertex": mk_vertex(start_cap, pc=0, t_alloc=0)
+        "vertex": mk_vertex(start_cap)
     }),
-    (None, { # inferred kcc vertex 1
-        "vertex": mk_vertex(kcc_default, pc=0, t_alloc=0)
+    ("cmove $c30, $c30", { # kdc vertex 1
+        "c30": kdc_default,
+        "vertex": mk_vertex(kdc_default)
     }),
-    (None, { # inferred kdc vertex 2
-        "vertex": mk_vertex(kdc_default, pc=0, t_alloc=0)
-    }),
-    ("cmove $c31, $c31", { # vertex 3
+    ("cmove $c31, $c31", { # vertex 2
         "c31": pcc,
-        "vertex": mk_vertex(pcc, pc=0, t_alloc=0)
+        "vertex": mk_vertex(pcc)
     }),
     ("eret", {}), # mark initialization end
-    # {0x100c}
+    # {0x1010}
 )
 
 trace_sys_mmap = (
-    # {0x100c}
+    # {0x1014}
     ("lui $v0, 447", {"2": 447}), # mmap code
     # we do not care about the syscall args
     ("syscall", {}),
-    # {0x1014}
+    # {0x101c}
     ("cincoffset $c1, $kdc, $zero", {"c1": kdc_default}),
     # worker set split here
     # simulate return of mmap(0x1000, 0x1000, ...)
@@ -58,22 +56,22 @@ trace_sys_mmap = (
     ("csetoffset $c1, $c1, $at", {
         "c1": pct_cap(0x00, 0x1000, 0xffffffffffffffff, CheriCapPerm.all())
     }),
-    ("csetbounds $c2, $c1, $at", { # vertex 4
+    ("csetbounds $c2, $c1, $at", { # vertex 3
         "c2": pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all()),
         "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all()),
-                            parent=2, origin=CheriNodeOrigin.SETBOUNDS),
+                            parent=1, origin=CheriNodeOrigin.SETBOUNDS),
     }),
     ("cmove $c3, $c2", {
         "c3": pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all())
     }),
     # epcc address should match the expected return
-    ("lui $at, 0x14", {"1": 0x14}),
+    ("lui $at, 0x14", {"1": 0x18}),
     ("csetoffset $c31, $c31, $at", {
-        "c31": pct_cap(0x1000, 0x14, 0x1000, exec_perm)
+        "c31": pct_cap(0x1000, 0x18, 0x1000, exec_perm)
     }),
     ("eret", {
         # expect the vertex to be used in a syscall ret
-        "vertex_call": mk_vertex_call(4, 447, "syscall_ret"),
+        "vertex_call": mk_vertex_call(3, 447, "syscall_ret"),
     }),
 )
 
@@ -83,7 +81,7 @@ trace_sys_munmap = (
     # simulate munmap arg0
     ("lui $at, 0x1c", {"1": 0x100}),
     # worker set split here
-    ("csetbounds $c3, $c1, $at", { # vertex 4
+    ("csetbounds $c3, $c1, $at", { # vertex 3
         "c3": pct_cap(0x1000, 0x0, 0x100, perm),
         "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x100, perm),
                             parent=0, origin=CheriNodeOrigin.SETBOUNDS),
@@ -92,7 +90,7 @@ trace_sys_munmap = (
     # we do not care about the syscall args
     ("syscall", {
         # expect the vertex to be used in a syscall ret
-        "vertex_call": mk_vertex_call(4, 73, "syscall_arg"),
+        "vertex_call": mk_vertex_call(3, 73, "syscall_arg"),
     }),
     # epcc address should match the expected return 0x1014
     ("lui $at, 0x14", {"1": 0x14}),

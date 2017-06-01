@@ -51,7 +51,7 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     origin = Option(
         help="Find vertices with specific origin.",
         choices=("root", "csetbounds", "cfromptr", "ptrbounds",
-                 "candperm", "mmap"),
+                 "candperm", "partial"),
         default=None)
     pc = Option(
         type=option_range_validator,
@@ -126,8 +126,8 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             self.match_origin = CheriNodeOrigin.PTR_SETBOUNDS
         elif match_origin == "andperm":
             self.match_origin = CheriNodeOrigin.ANDPERM
-        elif match_origin == "mmap":
-            self.match_origin = CheriNodeOrigin.SYS_MMAP
+        elif match_origin == "partial":
+            self.match_origin = CheriNodeOrigin.PARTIAL
         else:
             raise ValueError("Invalid match_origin parameter")
 
