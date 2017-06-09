@@ -13,10 +13,9 @@ from itertools import chain
 from cheriplot.core import CallbackTraceParser, MultiprocessCallbackParser
 from cheriplot.core.test import MockTraceWriter
 
-logging.basicConfig(level=logging.DEBUG)
+from tests.utils import skipbenchmark
 
-benchmark = pytest.mark.skipif(not pytest.config.getoption("--run-benchmark"),
-                               reason="Requires --run-benchmark option")
+logging.basicConfig(level=logging.DEBUG)
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +273,8 @@ def test_threaded_parser():
         assert len(p.entries) == 5
 
 
-@benchmark
+@skipbenchmark
+@pytest.mark.benchmark(group="cheritrace-scan")
 @pytest.mark.parametrize("start, end", [(0, 0.2), (0.5, 0.7), (0.8, 1)])
 def test_raw_cheritrace_benchmark(benchmark, start, end):
     trace_path = "traces/helloworld/helloworld.cvtrace.xz"
@@ -294,7 +294,8 @@ class NopBenchmarkTraceParser(CallbackTraceParser):
     def scan_all(self, instr, entry, regs, last, idx):
         return False
 
-@benchmark
+@skipbenchmark
+@pytest.mark.benchmark(group="cheritrace-scan")
 @pytest.mark.parametrize("start, end", [(0, 0.2), (0.5, 0.7), (0.8, 1)])
 def test_cbk_parser_benchmark(benchmark, start, end):
     trace_path = "traces/helloworld/helloworld.cvtrace.xz"
@@ -310,7 +311,8 @@ class InstrBenchmarkTraceParser(CallbackTraceParser):
     def scan_all(self, instr, entry, regs, last, idx):
         return False
 
-@benchmark
+@skipbenchmark
+@pytest.mark.benchmark(group="cheritrace-scan")
 @pytest.mark.parametrize("start, end", [(0, 0.2), (0.5, 0.7), (0.8, 1)])
 def test_cbk_parser_benchmark(benchmark, start, end):
     trace_path = "traces/helloworld/helloworld.cvtrace.xz"
