@@ -62,7 +62,7 @@ trace_explicit_kcc_kdc = (
         "c1": start_cap,
         "vertex": mk_vertex(start_cap)
     }),
-    ("cmove $c29, $c30", { # kcc vertex 1
+    ("cmove $c29, $c29", { # kcc vertex 1
         "c29": kcc,
         "vertex": mk_vertex(kcc)
     }),
@@ -75,6 +75,7 @@ trace_explicit_kcc_kdc = (
         "vertex": mk_vertex(pcc)
     }),
     ("eret", {}),
+    # worker set split here
     ("lui $at, 0x100", {"1": 0x100}),
     ("cfromptr $c2, $c1, $at", { # vertex 4
         "c2": ptr_cap,
@@ -331,6 +332,96 @@ trace_mp_cjr_exception_pcc_unchanged = (
     ("nop", {}), ("nop", {}), ("nop", {}),
 )
 
+# Check that root vertices are created for cpreg assignments
+# correctly.
+# when a register is set, both source and destination should be
+# checked for the possibility to assing a valid vertex when none
+# is present.
+trace_cpreg_set = (
+    ("csetdefault $c1", { # vertex 0
+        "c1": pct_cap(0x1000, 0x0, 0x1000, perm),
+        "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x1000, perm))
+    }),
+    ("csetepcc $c2", { # vertex 1
+        "c2": pct_cap(0x2000, 0x0, 0x1000, perm),
+        "vertex": mk_vertex(pct_cap(0x2000, 0x0, 0x1000, perm))
+    }),
+    ("csetkcc $c3", { # vertex 2
+        "c3": pct_cap(0x3000, 0x0, 0x1000, perm),
+        "vertex": mk_vertex(pct_cap(0x3000, 0x0, 0x1000, perm))
+    }),
+    # XXX this crashes the assembler?
+    # ("csetkdc $c4", {
+    #     "c4": pct_cap(0x4000, 0x0, 0x1000, perm),
+    #     "vertex": mk_vertex(pct_cap(0x4000, 0x0, 0x1000, perm))
+    # }),
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("csetbounds $c5, $c1, $at", { # vertex 3
+        "c3": pct_cap(0x1000, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x100, perm),
+                            parent=0, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+    ("csetbounds $c5, $c2, $at", { # vertex 4
+        "c5": pct_cap(0x2000, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x2000, 0x0, 0x100, perm),
+                            parent=1, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+    ("csetbounds $c5, $c3, $at", { # vertex 5
+        "c5": pct_cap(0x3000, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x3000, 0x0, 0x100, perm),
+                            parent=2, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+)
+
+# see trace_cpreg_set
+trace_cpreg_get = (
+    ("cgetdefault $c1", { # vertex 0
+        "c1": pct_cap(0x1000, 0x0, 0x1000, perm),
+        "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x1000, perm))
+    }),
+    ("cgetepcc $c2", { # vertex 1
+        "c2": pct_cap(0x2000, 0x0, 0x1000, perm),
+        "vertex": mk_vertex(pct_cap(0x2000, 0x0, 0x1000, perm))
+    }),
+    ("cgetkcc $c3", { # vertex 2
+        "c3": pct_cap(0x3000, 0x0, 0x1000, perm),
+        "vertex": mk_vertex(pct_cap(0x3000, 0x0, 0x1000, perm))
+    }),
+    # XXX this crashes the assembler?
+    # ("cgetkdc $c4", {
+    #     "c4": pct_cap(0x4000, 0x0, 0x1000, perm),
+    #     "vertex": mk_vertex(pct_cap(0x4000, 0x0, 0x1000, perm))
+    # }),
+    ("cgetpcc $c5", { # vertex 3
+        "c5": pct_cap(0x5000, 0x0, 0x1000, perm),
+        "vertex": mk_vertex(pct_cap(0x5000, 0x0, 0x1000, perm))
+    }),
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("csetbounds $c6, $c0, $at", { # vertex 4
+        "c3": pct_cap(0x1000, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x100, perm),
+                            parent=0, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+    ("csetbounds $c6, $c31, $at", { # vertex 5
+        "c6": pct_cap(0x2000, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x2000, 0x0, 0x100, perm),
+                            parent=1, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+    ("csetbounds $c6, $c29, $at", { # vertex 6
+        "c6": pct_cap(0x3000, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x3000, 0x0, 0x100, perm),
+                            parent=2, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+    ("cgetpcc $c7", {
+        "c7": pct_cap(0x5000, 0x0, 0x100, perm),
+    }),
+    ("csetbounds $c6, $c7, $at", { # vertex 7
+        "c6": pct_cap(0x5000, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x5000, 0x0, 0x100, perm),
+                            parent=3, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+)
+
 # invalid trace test: try to generate a provenance node from
 # an uninitialized register.
 # UNK -> P
@@ -354,6 +445,8 @@ trace_invalid_derive_from_unknown = (
     (trace_explicit_kcc_kdc,),
     (trace_pcc_epcc_tracking,),
     (trace_ddc,),
+    (trace_cpreg_set,),
+    (trace_cpreg_get,),
 ])
 def test_nodegen_simple(trace, threads):
     """Test provenance parser with the simplest trace possible."""

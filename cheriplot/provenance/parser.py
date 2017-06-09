@@ -174,12 +174,6 @@ class RegisterSet:
     Helper object that keeps track of the graph vertex associated
     with each register in the register file.
 
-    We need to know where a register value has been read from
-    and where it is stored to. The first is used to infer
-    the correct CapNode to add as parent for a new node,
-    the latter allows us to set the CapNode.address for
-    a newly allocated capability.
-
     The register set is also used in the subgraph merge
     resolution to produce the full graph from partial
     results from worker processes.
@@ -1510,13 +1504,14 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         :parm entry: trace entry
         :type entry: :class:`pycheritrace.trace_entry`
         """
-        if not self.regset.has_reg(inst.op0.cap_index, allow_root=True):
+        # XXX should write a test case for this
+        if not self.regset.has_reg(inst.op1.cap_index, allow_root=True):
             node = self.make_root_node(entry, inst.op0.value,
                                        time=entry.cycles)
-            self.regset[inst.op0.cap_index] = node
+            self.regset[inst.op1.cap_index] = node
             logger.debug("cpreg_set: new node from c<%d> %s",
                          regnum, self.pgm.data[node])
-        self.regset[regnum] = self.regset[inst.op0.cap_index]
+        self.regset[regnum] = self.regset[inst.op1.cap_index]
 
     def scan_cgetepcc(self, inst, entry, regs, last_regs, idx):
         self._handle_cpreg_get(31, inst, entry)
@@ -1867,7 +1862,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         dst = inst.op0
         src = inst.op1
 
-        logger.debug("update regs %s", inst.opcode)
         if dst and dst.is_capability:
             if src and src.is_capability:
                 src_vertex = self.regset.has_reg(src.cap_index, allow_root=True)
@@ -1886,7 +1880,3 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                         entry, dst.value, pc=entry.pc, time=entry.cycles)
                     self.regset[src.cap_index] = dst_vertex
                     self.regset[dst.cap_index] = dst_vertex
-        # if not dst or not src:
-        #     return
-        # if (src and src.is_capability):
-        #     self.regset[dst.cap_index] = self.regset[src.cap_index]
