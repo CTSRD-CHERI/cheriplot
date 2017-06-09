@@ -1,8 +1,12 @@
 
 import pytest
 import logging
+import operator
 
+from itertools import repeat
+from functools import reduce
 from io import StringIO
+
 from graph_tool.all import subgraph_isomorphism
 
 from cheriplot.provenance import (
@@ -39,19 +43,42 @@ def assert_vertex_equal(u_data, v_data):
         "cap differ %s %s" % (u_data, v_data)
     assert u_data.cap.offset == v_data.cap.offset,\
         "cap offset differ %s %s" % (u_data, v_data)
-    assert u_data.address == v_data.address,\
-        "addr differ %s %s" % (u_data.address, v_data.address)
-    assert u_data.deref == v_data.deref,\
-        "deref differ %s %s" % (u_data.deref, v_data.deref)
-    assert u_data.call == v_data.call,\
-        "call differ %s %s" % (u_data.call, v_data.call)
-    
+    # events should be unordered but for performance reasons
+    # we ensure ordering at the use/deref/memop category level
+    memop_mask = NodeData.EventType.memop_mask()
+    deref_mask = NodeData.EventType.deref_mask()
+    use_mask = NodeData.EventType.use_mask()
+    masks = [memop_mask, deref_mask, use_mask]
+    # compare the table type column with each mask
+    # t = event-table type column (Series)
+    # m = mask pattern
+    fn = lambda t,m: (t & m) != 0
+    u_cond = map(fn, repeat(u_data.event_tbl["type"]), masks)
+    v_cond = map(fn, repeat(v_data.event_tbl["type"]), masks)
+    # compare the event table values for each mask position
+    # t = event-table
+    # cond = condition-based table index
+    fn = lambda t,cond: t[cond].reset_index(drop=True)
+    match = map(operator.eq,
+                map(fn, repeat(u_data.event_tbl), u_cond),
+                map(fn, repeat(v_data.event_tbl), v_cond))
+    # extract the bool final value for each match
+    # df_match = dataframe with boolean values
+    # 2 all() are required
+    # 1) DataFrame -> Series
+    # 2) Series -> bool
+    fn = lambda df_match: df_match.all().all()
+    bool_match = reduce(operator.and_, map(fn, match))
+
+    assert bool_match, "events differ:\n%s\n%s" % (
+        u_data.event_tbl, v_data.event_tbl)
 
 def assert_graph_equal(expect, other):
     """
     Test if the graph is equal to the given one.
     This is intended mostly for testing purposes.
     """
+    __tracebackhide__ = True
     assert expect.num_vertices() == other.num_vertices(),\
         "Number of vertices differ expected %d, found %d\n%s\n\n%s" % (
             expect.num_vertices(), other.num_vertices(),
@@ -114,11 +141,11 @@ def mk_vertex_deref(vertex_idx, addr, is_cap, type_):
     side-effect key in the trace writer.
     """
     if type_ == "load":
-        type_ = NodeData.DerefType.DEREF_LOAD
+        type_ = NodeData.EventType.DEREF_LOAD
     elif type_ == "store":
-        type_ = NodeData.DerefType.DEREF_STORE
+        type_ = NodeData.EventType.DEREF_STORE
     elif type_ == "call":
-        type_ = NodeData.DerefType.DEREF_CALL
+        type_ = NodeData.EventType.DEREF_CALL
     return (vertex_idx, addr, is_cap, type_)
 
 def mk_vertex_call(vertex_idx, symbol, type_):
@@ -128,22 +155,30 @@ def mk_vertex_call(vertex_idx, symbol, type_):
     side-effect key in the trace writer.
     """
     if type_ == "syscall_arg":
-        type_ = NodeData.CallType.SYSCALL | NodeData.CallType.ARG
+        type_ = NodeData.EventType.USE_SYSCALL | NodeData.EventType.USE_IS_ARG
     elif type_ == "syscall_ret":
-        type_ = NodeData.CallType.SYSCALL
+        type_ = NodeData.EventType.USE_SYSCALL
     elif type_ == "call":
-        type_ = NodeData.CallType.CALL
+        type_ = NodeData.EventType.USE_CALL
     elif type_ == "ccall":
-        type_ = NodeData.CallType.CCALL
+        type_ = NodeData.EventType.USE_CCALL
     return (vertex_idx, symbol, type_)
 
-def mk_vertex_store(vertex_idx, addr):
+def mk_vertex_mem(vertex_idx, addr, type_):
     """
     Generate the side-effect data for an expected vertex store,
     this should be used with the vertex_store side-effect 
     key in the trace writer.
+
+    Note: type_ may assume the following values:
+    load: the vertex is loaded from some place
+    store: the vertex is stored somewhere
     """
-    return (vertex_idx, addr)
+    if type_ == "load":
+        type_ = NodeData.EventType.LOAD
+    elif type_ == "store":
+        type_ = NodeData.EventType.STORE
+    return (vertex_idx, addr, type_)
 
 class ProvenanceTraceWriter(MockTraceWriter):
     """
@@ -183,11 +218,11 @@ class ProvenanceTraceWriter(MockTraceWriter):
             if val[0] >= 0:
                 # valid parent
                 self.pgm.graph.add_edge(self.pgm.graph.vertex(parent), v)
-        elif key == "vertex_store":
-            # a vertex memory write is expected
-            # see mk_vertex_store
-            idx, addr = val
-            self.pgm.data[idx].address[entry.cycles] = addr
+        elif key == "vertex_mem":
+            # a vertex memory write or read is expected
+            # see mk_vertex_mem
+            idx, addr, type_ = val
+            self.pgm.data[idx].add_event(entry.cycles, addr, type_)
         elif key == "vertex_deref":
             # a vertex dereference is expected
             idx, addr, is_cap, type_ = val
@@ -195,7 +230,7 @@ class ProvenanceTraceWriter(MockTraceWriter):
         elif key == "vertex_call":
             # a vertex is expected to be used as a call/return argument
             idx, sym, type_ = val
-            self.pgm.data[idx].add_call_evt(entry.cycles, sym, type_)
+            self.pgm.data[idx].add_event(entry.cycles, sym, type_)
         else:
             super()._side_effect(entry, key, val)
         

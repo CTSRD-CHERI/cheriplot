@@ -29,7 +29,11 @@
 Provenance graph implementation and helper classes.
 """
 
-from enum import IntEnum, IntFlag
+import os
+import numpy as np
+import pandas as pd
+
+from enum import IntEnum, IntFlag, auto
 from cached_property import cached_property
 from functools import partialmethod
 from collections import OrderedDict
@@ -106,8 +110,10 @@ class ProvenanceGraphManager:
             # prop_seal = self.graph.new_vertex_property("bool")
             # prop_t_alloc = self.graph.new_vertex_property("object")
             # prop_t_free = self.graph.new_vertex_property("object")
+            prop_initial_stack = self.graph.new_graph_property("object")
             prop_data = self.graph.new_vertex_property("object")
             self.graph.vp["data"] = prop_data
+            self.graph.gp["stack"] = prop_initial_stack
         self._init_props()
 
     def set_graph(self, graph):
@@ -120,12 +126,13 @@ class ProvenanceGraphManager:
 
     @property
     def cache_exists(self):
-        return os.path.exists(cache_file)
+        return os.path.exists(self.cache_file)
 
     def _init_props(self):
         # graph data
         self.data = self.graph.vp.data
-    
+        self.stack = self.graph.gp.stack
+
     def load(self, cache_file):
         with ProgressTimer("Load cached graph", logger):
             self.graph = load_graph(cache_file)
@@ -233,7 +240,7 @@ class CheriCap:
 
     def __eq__(self, other):
         """
-        Override equality test to have a shorthand way to 
+        Override equality test to have a shorthand way to
         compare capability equality.
         """
         return (self.base == other.base and
@@ -256,28 +263,63 @@ class NodeData:
     graph.
     """
 
-    class DerefType(IntEnum):
-        """Types of capability dereference."""
-        DEREF_LOAD = 1
-        DEREF_STORE = 2
-        DEREF_CALL = 3
+    class EventType(IntFlag):
+        LOAD = auto()
+        """Vertex loaded from memory."""
 
+        STORE = auto()
+        """Vertex stored to memory."""
 
-    class CallType(IntFlag):
-        """Types of uses of the capability vertex"""
+        DEREF_LOAD = auto()
+        """Load via this vertex."""
 
-        ARG = 1
-        """Vertex is argument (set) or return value (unset)"""
+        DEREF_STORE = auto()
+        """Store via this vertex."""
 
-        SYSCALL = 0x2
+        DEREF_CALL = auto()
+        """Call via this vertex."""
+
+        DEREF_IS_CAP = auto()
+        """Dereference via this vertex targets a capability."""
+
+        USE_CALL = auto()
+        """Vertex used in a function call."""
+
+        USE_CCALL = auto()
+        """Vertex used in a domain transition."""
+
+        USE_SYSCALL = auto()
         """Vertex used in a syscall."""
 
-        CALL = 0x4
-        """Vertex used in a capability branch to a function."""
+        USE_IS_ARG = auto()
+        """Vertex used as an argument, w/o as a return value."""
 
-        CCALL = 0x8
-        """Vertex used in a capability call domain transition."""
+        @classmethod
+        def memop_mask(cls):
+            """
+            Return a mask of flags used to qualify events that
+            represent a memory operation on this capability.
+            """
+            return (cls.LOAD | cls.STORE)
 
+        @classmethod
+        def deref_mask(cls):
+            """
+            Return a mask of flags used to qualify events that
+            represent a dereference via this capability.
+            """
+            return (cls.DEREF_LOAD | cls.DEREF_STORE |
+                    cls.DEREF_CALL | cls.DEREF_IS_CAP)
+
+        @classmethod
+        def use_mask(cls):
+            """
+            Return a mask of flags used to qualify events that
+            represent an use instance of this capability in some
+            kind of function/operation.
+            """
+            return (cls.USE_CALL | cls.USE_CCALL |
+                    cls.USE_SYSCALL | cls.USE_IS_ARG)
 
     @classmethod
     def from_operand(cls, op):
@@ -296,27 +338,8 @@ class NodeData:
         return data
 
     def __init__(self):
-        self.address = OrderedDict()
-        """
-        Map the time when the capability is stored in memory to
-        the address where it is stored location.
-        """
 
-        self.deref = {"time": [], "addr": [], "is_cap": [], "type": []}
-        """
-        Store dereferences of a capability, in a table-like structure,
-        the type is defined in :class:`NodeData.DerefType`
-        """
-
-        self.call = {"time": [], "symbol": [], "type": []}
-        """
-        This vertex was returned by these functions/syscalls.
-        XXX Maybe it can be merged in the deref data structure since
-        the fields are basically the same
-        """
-
-        self.initial_stack = False
-        """This vertex comes from the initial stack."""
+        self.events = {"time": [], "addr": [], "type": []}
 
         self.cap = None
         """Cheri capability data, see :class:`.CheriCap`."""
@@ -334,23 +357,80 @@ class NodeData:
         Is this node coming from a trace entry executed in kernel space?
         """
 
+    @cached_property
+    def event_tbl(self):
+        """
+        Tabular equivalent of NodeData.events for fast filtering and lookup.
+
+        XXX since when this is used effectively doubles the space occupied by
+        the address table we may want to destroy self.address and replace it
+        with the dataframe. In the event of an address update the dataframe
+        should be converted back to dict. This is assumed to be rare enough
+        that the conversion cost is negligible vs the gain obtained by the
+        fast mutability of the dict representation vs the fast indexing and filtering
+        of dataframes.
+        In general the mutable structure is used during graph construction,
+        the dataframe is used during graph postprocessing.
+        """
+        df = pd.DataFrame(self.events)
+        df = df.astype({"time": "u8", "addr": "u8", "type": "u4"}, copy=False)
+        return df
+
+    def add_event(self, time, addr, type_):
+        """Append an event to the event table."""
+        self.events["time"].append(time)
+        self.events["addr"].append(addr)
+        self.events["type"].append(type_)
+        # invalidate cached property
+        try:
+            del self.__dict__["event_tbl"]
+        except KeyError:
+            pass
+
     def add_deref(self, time, addr, cap, type_):
-        """Append a dereference to the dereference table."""
-        self.deref["time"].append(time)
-        self.deref["addr"].append(addr)
-        self.deref["is_cap"].append(cap)
-        self.deref["type"].append(type_)
+        """
+        Append a dereference event.
 
-    def add_call_evt(self, time, symbol, type_):
-        self.call["time"].append(time)
-        self.call["symbol"].append(symbol)
-        self.call["type"].append(type_)
+        :param time: time of dereference
+        :param addr: target address
+        :param cap: True if the reference targets a capability object
+        :param type_: type of the dereference (load, store...),
+        see :class:`EventType`
+        """
+        if cap:
+            type_ |= NodeData.EventType.DEREF_IS_CAP
+        self.add_event(time, addr, type_)
 
-    # shortcuts for add_deref
-    add_load = partialmethod(add_deref, type_=DerefType.DEREF_LOAD)
-    add_store = partialmethod(add_deref, type_=DerefType.DEREF_STORE)
-    add_call = partialmethod(add_deref, type_=DerefType.DEREF_CALL)
+    def add_use(self, time, addr, arg_or_ret, type_):
+        """
+        Append an use event.
+
+        :param time: time of dereference
+        :param addr: address of symbol that uses this capability.
+        In case of a system call this is the syscall code.
+        :param arg_or_ret: True if the capability is used as an argument,
+        False if it is used as a return value.
+        :param type_: type of the use (call, syscall...),
+        see :class:`EventType`
+        """
+        if arg_or_ret:
+            type_ |= NodeData.EventType.USE_IS_ARG
+        self.add_event(time, addr, type_)
+
+    # shortcuts for use events
+    add_use_call = partialmethod(add_use, type_=EventType.USE_CALL)
+    add_use_ccall = partialmethod(add_use, type_=EventType.USE_CCALL)
+    add_use_syscall = partialmethod(add_use, type_=EventType.USE_SYSCALL)
+
+    # shortcuts for mem-op events
+    add_mem_load = partialmethod(add_event, type_=EventType.LOAD)
+    add_mem_store = partialmethod(add_event, type_=EventType.STORE)
+
+    # shortcuts for dereference events
+    add_deref_load = partialmethod(add_deref, type_=EventType.DEREF_LOAD)
+    add_deref_store = partialmethod(add_deref, type_=EventType.DEREF_STORE)
+    add_deref_call = partialmethod(add_deref, type_=EventType.DEREF_CALL)
 
     def __str__(self):
-        return "%s origin:%s pc:0x%x (kernel %d)" % (
+        return "%s origin:%s pc:0x%x kernel:%d" % (
             self.cap, self.origin.name, self.pc or 0, self.is_kernel)

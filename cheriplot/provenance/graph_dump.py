@@ -27,6 +27,7 @@
 
 import logging
 
+from io import StringIO
 from functools import reduce
 from itertools import repeat
 from graph_tool.all import load_graph, bfs_iterator, dfs_iterator
@@ -89,6 +90,10 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     successors = Option(
         action="store_true",
         help="Show the successors of a matching capability.")
+    full_info = Option(
+        action="store_true",
+        help="Show the full vertex information"
+    )
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -166,7 +171,7 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
         if self.config.mem:
             start, end = self.config.mem
             result = False
-            for addr in vdata.address.values():
+            for addr in vdata.address["addr"]:
                 result |= self._check_limits(start, end, addr)
                 if result:
                     break
@@ -212,14 +217,23 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
         return None
 
     def _dump_vertex(self, vdata):
-        n_load = reduce(lambda t,a: a + 1 if
-                        t == NodeData.DerefType.DEREF_LOAD else a,
-                        vdata.deref["type"], 0)
-        n_store = reduce(lambda t,a: a + 1 if
-                         t == NodeData.DerefType.DEREF_STORE else a,
-                         vdata.deref["type"], 0)
-        return "%s stored: %d, deref-load: %d deref-store: %d" % (
-            vdata, len(vdata.address), n_load, n_store)
+        str_vertex = StringIO()
+        str_vertex.write("%s " % vdata)
+        events = vdata.event_tbl
+        n_load = (events["type"] & NodeData.EventType.DEREF_LOAD).sum()
+        n_store = (events["type"] & NodeData.EventType.DEREF_STORE).sum()
+        str_vertex.write("deref-load: %d deref-store: %d " % (n_load, n_store))
+        n_loaded = (events["type"] & NodeData.EventType.LOAD).sum()
+        n_stored = (events["type"] & NodeData.EventType.STORE).sum()
+        str_vertex.write("load: %d store: %d" % (n_loaded, n_stored))
+        if self.config.full_info:
+            str_vertex.write("\n")
+            frame_str = vdata.event_tbl.to_string(formatters={
+                "addr": "0x{0:x}".format,
+                "type": lambda t: str(NodeData.EventType(t))
+            })
+            str_vertex.write("Event table:\n%s\n" % frame_str)
+        return str_vertex.getvalue()
 
     def run(self):
         for v in self.graph.vertices():
@@ -257,5 +271,8 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
                         vertices = successors
                         space = "  " * depth
                         sdata = self.graph.vp.data[s]
-                        print("%s+- %s" % (space, self._dump_vertex(sdata)))
+                        print("%s+- %s" % (
+                            space,
+                            self._dump_vertex(sdata, indent=space))
+                        )
                 print("######")

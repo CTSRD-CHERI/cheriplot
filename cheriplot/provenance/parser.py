@@ -559,11 +559,8 @@ class MergePartialSubgraph(BFSTransform):
         :param u_data: the source vertex data
         :param v_data: the destination vertex data
         """
-        v_data.address.update(u_data.address)
-        for key, val in u_data.deref.items():
-            v_data.deref[key].extend(val)
-        for key, val in u_data.call.items():
-            v_data.call[key].extend(val)
+        for key, val in u_data.events.items():
+            v_data.events[key].extend(val)
 
     def _check_cap_compatible(self, u_data, v_data):
         """
@@ -602,7 +599,8 @@ class MergePartialSubgraph(BFSTransform):
                 v = self.previous_regset.pcc
             logger.debug("Merge initial vertex (register %s)", index)
 
-            if v is None:
+            if v is None or v < 0:
+                # no corresponding parent
                 self._merge_initial_vertex_to_none(u)
             else:
                 self._merge_initial_vertex_to_prev(u, v)
@@ -611,39 +609,46 @@ class MergePartialSubgraph(BFSTransform):
         """
         Merge a vertex that is contained in the initial vertex
         memory map of a worker.
+
+        There are 2 cases:
+        i) the previous vertex map do not have anything at the given address.
+        Note this is weird but possible store at that location was never seen,
+        so we give a warning but perform the merge.
+        ii) the previous vertex map have something stored at the location.
+        Then the previous vertex and the current ROOT vertex must be compatible,
+        otherwise it is an error. If they are compatible suppress the ROOT.
         """
         u_addr = None
+        # XXX suboptimal way of searching, hopefully it's not too bad
+        # depends on the working set in memory though. The probelm here
+        # is that we want fast lookup on the address key but also on the
+        # mapped value
         for key,val in self.vertex_map.initial_map.items():
             if val == u:
                 u_addr = key
                 break
         try:
             v = self.previous_vmap.vertex_map[u_addr]
+        except KeyError:
+            # merge the root vertex normally
+            logger.warning("Parent memory vertex not found in merged"
+                           "vertex map @ 0x%x, subgraph:%s", u_addr, u)
+            self._merge_subgraph_vertex(u)
+        else:
+            # suppress the root vertex
             u_data = self.subgraph.vp.data[u]
             v_data = self.graph.vp.data[v]
-            if (u_data.cap.base != v_data.cap.base or
-                u_data.cap.length != v_data.cap.length):
+            if not self._check_cap_compatible(u_data, v_data):
+                msg = "Incompatible vertex in prev_vmap at address 0x%x,"\
+                      " curr:%s prev:%s" % (u_addr, u_data, v_data)
                 # this is an error, the worker found something inconsistent
                 # in the trace for this memory address.
-                raise SubgraphMergeError(
-                    "Incompatible vertex in prev_vmap at address 0x%x,"
-                    " curr:%s prev:%s" % (u_addr, u_data, v_data))
+                logger.error(msg)
+                raise SubgraphMergeError(msg)
             else:
                 # the root can be merged with the prev_vmap content
                 self.copy_vertex_map[u] = v
-                if u_data.origin == CheriNodeOrigin.ROOT:
-                    # if the vertex is root, remove the store address
-                    # assigned in the root (it is always the one with lower
-                    # key (i.e. time) value) because it does not really
-                    # express a store but the fact that the root has been
-                    # found there for the first time. (indeed the capability
-                    # was at that address)
-                    u_data.address.popitem()
                 self._merge_partial_vertex_data(u_data, v_data)
-        except KeyError:
-            # otherwise merge the root vertex normally
-            logger.debug("Root vertex found in merged vertex map: %s", u)
-            self._merge_subgraph_vertex(u)
 
     def _merge_trace_beginning(self, u):
         """
@@ -718,11 +723,14 @@ class MergePartialSubgraph(BFSTransform):
         it can have been stored, it is just storing None.
         """
         u_data = self.subgraph.vp.data[u]
-        if len(u_data.deref["time"]):
+        # get the length in constant memory instad of O(n) memory
+        n_deref = sum(1 for etype in u_data.events["type"]
+                      if etype & NodeData.EventType.deref_mask())
+        if n_deref:
             raise SubgraphMergeError("PARTIAL vertex was dereferenced "
                                      "but is merged to None")
         logger.debug("initial vertex prev graph:None")
-        # XXX why we are not merging the roots if they have
+        # XXX why we are not collapsing the roots if they have
         # matching bounds? also if multiple roots are attached
         # this may be a problem?
         for u_out in u.out_neighbours():
@@ -838,9 +846,8 @@ class MergePartialSubgraph(BFSTransform):
             return
         if prev_syscall["pc_eret"] == curr_syscall["eret_addr"]:
             u_data = self.subgraph.vp.data[u]
-            u_data.add_call_evt(curr_syscall["eret_time"],
-                                prev_syscall["code"],
-                                NodeData.CallType.SYSCALL)
+            u_data.add_use_syscall(curr_syscall["eret_time"],
+                                   prev_syscall["code"], False)
 
     def examine_vertex(self, u):
         """
@@ -880,6 +887,9 @@ class MergePartialSubgraph(BFSTransform):
             return
 
         if self.context.step_idx == 0:
+            # copy the stack graph property from the first worker
+            self.context.pgm.stack = self.context.pgm_subgraph.stack
+            # merge initial and normal vertices but ignore the vertex memory map
             if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
                 logger.debug("Merge initial vertex subgraph:%s", u)
                 self._merge_initial_vertex(u)
@@ -887,11 +897,12 @@ class MergePartialSubgraph(BFSTransform):
                 logger.debug("Merge normal vertex subgraph:%s", u)
                 self._merge_subgraph_vertex(u)
         else:
+            # handle syscall merges
             if u == self.context.curr_pcc_fixup["epcc"]:
                 self._merge_pcc_fixup(u)
             if u == self.context.curr_syscall["eret_cap"]:
                 self._merge_syscall(u)
-
+            # merge vertices
             if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
                 logger.debug("Merge initial vertex subgraph:%s", u)
                 self._merge_initial_vertex(u)
@@ -1214,8 +1225,7 @@ class SyscallSubparser:
                 data = self.pgm.data[vertex]
                 logger.debug("Detected syscall %d capability argument: %s",
                              self.code, data)
-                data.add_call_evt(entry.cycles, self.code,
-                              NodeData.CallType.SYSCALL | NodeData.CallType.ARG)
+                data.add_use_syscall(entry.cycles, self.code, True)
             else:
                 self.in_syscall = True
                 self.pc_eret = entry.pc + 4
@@ -1251,15 +1261,24 @@ class SyscallSubparser:
             data = self.pgm.data[vertex]
             logger.debug("Detected syscall %d capability return: %s",
                          self.code, data)
-            data.add_call_evt(entry.cycles, self.code,
-                              NodeData.CallType.SYSCALL)
+            data.add_use_syscall(entry.cycles, self.code, False)
         self.regset.pcc = self.regset[31] # restore saved pcc
         return False
 
 
 class InitialStackAccessSubparser:
     """
-    Detect vertices in the initial user stack.
+    Detect the location and size of the initial user stack.
+    The initial stack location is then set as a graph property
+    on the merged graph. This information can be used later
+    in the processing.
+
+    Note: this subparser is only attached to the first worker
+    because we do not care about it in the rest of the trace.
+
+    XXX we may extend this if we actually have to detect multiple
+    processes being spawned. This requires a different level of
+    abstraction in the graph anyway.
     """
 
     def __init__(self, parser):
@@ -1268,30 +1287,16 @@ class InitialStackAccessSubparser:
         self.first_eret = False
         """First eret seen, userspace started."""
 
-        self.stack_base = None
-        """Initial stack base."""
-
-        self.stack_bound = None
-        """Initial stack bound."""
-
     def scan_eret(self, inst, entry, regs, last_regs, idx):
-        """
-        XXX check that we going to userspace
-        """
         if self.first_eret:
             return False
-        return False # XXX disable
         self.first_eret = True
         stack_valid = regs.valid_caps[11]
         if not stack_valid:
-            logger.error("Invalid stack capability register")
-            raise UnexpectedOperationError(
-                "Invalid stack capability at return to userspace")
-        # scan the vertex-memory map to see what have been stored above
-        # the stack base
+            logger.warning("Invalid stack capability at return to userspace")
+        # remember the stack base and bound to look for accesses in that range
         stack_cap = regs.cap_reg[11]
-        self.stack_base = stack_cap.base + stack_cap.offset
-        self.stack_bound = stack_cap.base + stack_cap.length
+        self.parser.pgm.stack = CheriCap(stack_cap)
         return False
 
 
@@ -1352,7 +1357,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         self._initial_stack = InitialStackAccessSubparser(self)
         self._pcc_fixup = CapabilityBranchSubparser(self)
         self._syscall_subparser = SyscallSubparser(self)
-        # self._add_subparser(self._initial_stack)
+        self._add_subparser(self._initial_stack)
         self._add_subparser(self._syscall_subparser)
         self._add_subparser(self._pcc_fixup)
 
@@ -1636,9 +1641,11 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         # the instruction as well
         is_cap = inst.opcode.startswith("clc") or inst.opcode.startswith("csc")
         if entry.is_load:
-            node_data.add_load(entry.cycles, entry.memory_address, is_cap)
+            node_data.add_deref_load(entry.cycles, entry.memory_address,
+                                     is_cap)
         elif entry.is_store:
-            node_data.add_store(entry.cycles, entry.memory_address, is_cap)
+            node_data.add_deref_store(entry.cycles, entry.memory_address,
+                                      is_cap)
         else:
             if not self._has_exception(entry):
                 logger.error("Dereference is neither a load or a store %s", inst)
@@ -1723,10 +1730,11 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                     node = self.make_root_node(entry, inst.op0.value,
                                                time=entry.cycles)
                     node_data = self.pgm.data[node]
-                    node_data.address[entry.cycles] = entry.memory_address
                     logger.debug("Found %s value %s from memory load",
                                  inst.op0.name, node_data)
                     self.vertex_map.mem_load(entry.memory_address, node)
+                node_data = self.pgm.data[node]
+                node_data.add_mem_load(entry.cycles, entry.memory_address)
                 self.regset[cd] = node
         return False
 
@@ -1769,7 +1777,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             self.vertex_map.mem_store(entry.memory_address, node)
             # set the address attribute of the node vertex data property
             node_data = self.pgm.data[node]
-            node_data.address[entry.cycles] = entry.memory_address
+            node_data.add_mem_store(entry.cycles, entry.memory_address)
 
         return False
 

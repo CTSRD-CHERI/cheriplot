@@ -277,6 +277,7 @@ class DerefPatchBuilder(BaseColorCodePatchBuilder):
 
         min_time = np.inf
         max_time = 0
+        assert False, "XXX this is broken, refactor me!!"
         columns = itemgetter("time", "addr", "type")(data.deref)
         for time, addr, type_ in zip(*columns):
             min_time = min(min_time, time)

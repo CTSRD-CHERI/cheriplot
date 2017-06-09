@@ -57,6 +57,9 @@ class MmapStatsVisitor(BFSTransform):
             # number of unique memory addresses to which a capability
             # is stored
             "stored_unique": 0,
+            # number of capabilities originating (being loaded) from the
+            # initial stack region for argv, envv and ELF auxargs
+            "from_args_stack": 0,
         }
 
         self.syscall_derived = graph.new_vertex_property("bool", val=False)
@@ -67,25 +70,50 @@ class MmapStatsVisitor(BFSTransform):
 
     def examine_vertex(self, u):
         data = self.graph.vp.data[u]
-        syscall_ret = len(data.call["type"]) > 0
-        if syscall_ret or self.syscall_derived[u]:
-            logger.debug("Data call %s", data.call)
-            self.stats["syscall_derived"] += 1
-            for v in u.out_neighbours():
-                self.syscall_derived[v] = True
-        self._get_stats(data)
+        events = data.event_tbl
+        self._get_syscall_stats(u, events)
+        self._get_deref_stats(events)
+        self._get_memop_stats(events)
+        self._get_argv_stats(events)
 
-    def _get_stats(self, data):
-        n_load = reduce(lambda t,a: a + 1 if
-                        t == NodeData.DerefType.DEREF_LOAD else a,
-                        data.deref["type"], 0)
-        n_store = reduce(lambda t,a: a + 1 if
-                         t == NodeData.DerefType.DEREF_STORE else a,
-                         data.deref["type"], 0)
-        self.stats["deref_load"] += n_load
-        self.stats["deref_store"] += n_store
-        self.stats["stored"] += len(data.address)
-        self.stats["stored_unique"] += len(set(data.address.values()))
+    def _get_syscall_stats(self, u, events):
+        if not self.syscall_derived[u]:
+            # this is relatively costly to compute so try to avoid it
+            syscall_is_ret = (
+                (events["type"] & NodeData.EventType.USE_SYSCALL) &
+                ~(events["type"] & NodeData.EventTypeUSE_IS_ARG)).any()
+            if not syscall_is_ret:
+                return
+        # the vertex is used in a syscall return
+        self.stats["syscall_derived"] += 1
+        for v in u.out_neighbours():
+            self.syscall_derived[v] = True
+
+    def _get_deref_stats(self, events):
+        n_deref_load = (
+            events["type"] & NodeData.EventType.DEREF_LOAD).sum()
+        n_deref_store = (
+            events["type"] & NodeData.EventType.DEREF_STORE).sum()
+        self.stats["deref_load"] += n_deref_load
+        self.stats["deref_store"] += n_deref_store
+
+    def _get_memop_stats(self, events):
+        mem_store = events["type"] & NodeData.EventType.STORE
+        n_store = mem_store.sum()
+        n_store_unq = len(events[mem_store]["addr"].unique())
+
+        self.stats["stored"] += n_store
+        self.stats["stored_unique"] += n_store_unq
+
+    def _get_argv_stats(self, events):
+        stack_base = self.graph.gp.stack.base
+        stack_bound = self.graph.gp.stack.bound
+        n_args_stack_load = (
+            events["type"] & NodeData.EventType.LOAD &
+            events["addr"] >= stack_base &
+            events["addr"] <= stack_bound).sum()
+        if n_args_stack_load:
+            self.stats["from_args_stack"] += 1
 
 
 class ProvenanceStatsDriver(TaskDriver):
