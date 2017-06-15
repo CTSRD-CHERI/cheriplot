@@ -30,20 +30,20 @@ import pandas as pd
 
 from functools import reduce
 
-from cheriplot.core import SubCommand, TaskDriver, ProgressTimer
+from cheriplot.core import SubCommand, TaskDriver, ProgressTimer, CumulativeTimer
 from cheriplot.provenance.transforms import BFSTransform, bfs_transform
 from cheriplot.provenance.model import CheriNodeOrigin, NodeData
 
 logger = logging.getLogger(__name__)
-
 
 class MmapStatsVisitor(BFSTransform):
     """
     Visitor that gather informations about the vertices in the graph
     """
 
-    def __init__(self, graph):
-        self.graph = graph
+    def __init__(self, pgm):
+        self.pgm = pgm
+        self.graph = pgm.graph
         self.stats = {
             # number of successors of syscall-returned capabilities
             "syscall_derived": 0,
@@ -62,7 +62,7 @@ class MmapStatsVisitor(BFSTransform):
             "from_args_stack": 0,
         }
 
-        self.syscall_derived = graph.new_vertex_property("bool", val=False)
+        self.syscall_derived = pgm.graph.new_vertex_property("bool", val=False)
         """
         Mark vertices that are successors of a syscall-returned
         capability.
@@ -80,8 +80,8 @@ class MmapStatsVisitor(BFSTransform):
         if not self.syscall_derived[u]:
             # this is relatively costly to compute so try to avoid it
             syscall_is_ret = (
-                (events["type"] & NodeData.EventType.USE_SYSCALL) &
-                ~(events["type"] & NodeData.EventTypeUSE_IS_ARG)).any()
+                (events["type"] & NodeData.EventType.USE_SYSCALL != 0) &
+                (events["type"] & NodeData.EventType.USE_IS_ARG == 0)).any()
             if not syscall_is_ret:
                 return
         # the vertex is used in a syscall return
@@ -91,14 +91,14 @@ class MmapStatsVisitor(BFSTransform):
 
     def _get_deref_stats(self, events):
         n_deref_load = (
-            events["type"] & NodeData.EventType.DEREF_LOAD).sum()
+            (events["type"] & NodeData.EventType.DEREF_LOAD) != 0).sum()
         n_deref_store = (
-            events["type"] & NodeData.EventType.DEREF_STORE).sum()
+            (events["type"] & NodeData.EventType.DEREF_STORE) != 0).sum()
         self.stats["deref_load"] += n_deref_load
         self.stats["deref_store"] += n_deref_store
 
     def _get_memop_stats(self, events):
-        mem_store = events["type"] & NodeData.EventType.STORE
+        mem_store = (events["type"] & NodeData.EventType.STORE) != 0
         n_store = mem_store.sum()
         n_store_unq = len(events[mem_store]["addr"].unique())
 
@@ -106,13 +106,13 @@ class MmapStatsVisitor(BFSTransform):
         self.stats["stored_unique"] += n_store_unq
 
     def _get_argv_stats(self, events):
-        stack_base = self.graph.gp.stack.base
+        stack_base = self.graph.gp.stack.base + self.graph.gp.stack.offset
         stack_bound = self.graph.gp.stack.bound
         n_args_stack_load = (
-            events["type"] & NodeData.EventType.LOAD &
-            events["addr"] >= stack_base &
-            events["addr"] <= stack_bound).sum()
-        if n_args_stack_load:
+            ((events["type"] & NodeData.EventType.LOAD) != 0) &
+            (events["addr"] >= stack_base) &
+            (events["addr"] <= stack_bound)).sum()
+        if n_args_stack_load > 0:
             self.stats["from_args_stack"] += 1
 
 
@@ -130,8 +130,8 @@ class ProvenanceStatsDriver(TaskDriver):
 
     def run(self):
         mmap_stats = MmapStatsVisitor(self.pgm)
-        with ProgressTimer("Gather mmap stats", logger):
-            bfs_transform(self.pgm, [mmap_stats])
+        with ProgressTimer("Gather stats", logger):
+            bfs_transform(self.pgm.graph, [mmap_stats])
 
         stats = pd.DataFrame(mmap_stats.stats, index=[0])
         print(stats)

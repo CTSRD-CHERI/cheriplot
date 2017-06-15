@@ -362,6 +362,13 @@ class MergePartialSubgraphContext:
         self.step_idx = 0
         """Merge step index."""
 
+    def _merge_graph_properties(self):
+        """Merge global properties of the graph"""
+        if self.step_idx == 0:
+            # copy the stack graph property from the first worker
+            logger.debug("Merge initial stack: %s", self.pgm_subgraph.stack)
+            self.pgm.stack = self.pgm_subgraph.stack
+
     def step(self, result):
         """
         Process a merge step
@@ -375,6 +382,7 @@ class MergePartialSubgraphContext:
         self.curr_vmap = result["mem_vertex_map"]
         self.curr_pcc_fixup = result["sub_pcc_fixup"]
         self.curr_syscall = result["sub_syscall"]
+        self._merge_graph_properties()
         transform = MergePartialSubgraph(self)
         bfs_transform(result["pgm"].graph, [transform])
         transform.finalize()
@@ -768,8 +776,6 @@ class MergePartialSubgraph(BFSTransform):
                     raise SubgraphMergeError(
                         "ROOT attached to multiple partial nodes")
                 self._merge_partial_vertex_data(u_out_data, v_data)
-                # if (u_out_data.cap.base != v_data.cap.base or
-                #     u_out_data.cap.length != v_data.cap.length):
                 if not self._check_cap_compatible(u_out_data, v_data):
                     logger.debug("do not suppress ROOT %s, previous "
                                  "regset does not have matching "
@@ -887,8 +893,6 @@ class MergePartialSubgraph(BFSTransform):
             return
 
         if self.context.step_idx == 0:
-            # copy the stack graph property from the first worker
-            self.context.pgm.stack = self.context.pgm_subgraph.stack
             # merge initial and normal vertices but ignore the vertex memory map
             if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
                 logger.debug("Merge initial vertex subgraph:%s", u)
@@ -1292,11 +1296,14 @@ class InitialStackAccessSubparser:
             return False
         self.first_eret = True
         stack_valid = regs.valid_caps[11]
-        if not stack_valid:
-            logger.warning("Invalid stack capability at return to userspace")
+        sp_valid = regs.valid_gprs[29]
+        if not stack_valid or not sp_valid:
+            logger.warning("Invalid stack capability or stack pointer "
+                           "at return to userspace")
         # remember the stack base and bound to look for accesses in that range
         stack_cap = regs.cap_reg[11]
         self.parser.pgm.stack = CheriCap(stack_cap)
+        self.parser.pgm.stack.offset = regs.gpr[29]
         return False
 
 
@@ -1374,7 +1381,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             if self.cache and not self.pgm.cache_exists:
                 super().parse(*args, **kwargs)
                 self.pgm.save()
-            else:
+            elif not self.cache:
                 super().parse(*args, **kwargs)
 
     def get_model(self):
@@ -1417,13 +1424,13 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             # need to merge partial vertices from the beginning of
             # the trace anyway, reinit the graph manager with an
             # empty one, the previous is in the results list
+            # XXX this is potentially wasteful for the 1-thread case
             self._init_graph()
         merge_ctx = MergePartialSubgraphContext(self.pgm)
         for idx, result in enumerate(results):
             with ProgressTimer("Merge partial worker result [%d/%d]" % (
                     idx + 1, len(results)), logger):
                 merge_ctx.step(result)
-        # self.pgm.set_graph(merge_ctx.pgm.graph)
 
     def _do_parse(self, start, end, direction):
         """

@@ -30,17 +30,21 @@ Provenance graph implementation and helper classes.
 """
 
 import os
-import numpy as np
-import pandas as pd
-
+import logging
 from enum import IntEnum, IntFlag, auto
-from cached_property import cached_property
 from functools import partialmethod
 from collections import OrderedDict
+
+import numpy as np
+import pandas as pd
+from cached_property import cached_property
 from graph_tool.all import *
+from cheriplot.core import ProgressTimer
 
 __all__ = ("CheriCapPerm", "CheriNodeOrigin", "CheriCap", "NodeData",
            "ProvenanceGraphManager")
+
+logger = logging.getLogger(__name__)
 
 class CheriCapPerm(IntFlag):
     """
@@ -116,6 +120,23 @@ class ProvenanceGraphManager:
             self.graph.gp["stack"] = prop_initial_stack
         self._init_props()
 
+    def _init_props(self):
+        """
+        Setup graph property shorthand accessors.
+        """
+        # graph data
+        self.data = self.graph.vp.data
+
+    @property
+    def stack(self):
+        """Shorthand getter for the stack global property."""
+        return self.graph.gp.stack
+
+    @stack.setter
+    def stack(self, value):
+        """Shorthand setter for the stack global property."""
+        self.graph.gp["stack"] = value
+
     def set_graph(self, graph):
         self.graph = graph
         self._init_props()
@@ -127,11 +148,6 @@ class ProvenanceGraphManager:
     @property
     def cache_exists(self):
         return os.path.exists(self.cache_file)
-
-    def _init_props(self):
-        # graph data
-        self.data = self.graph.vp.data
-        self.stack = self.graph.gp.stack
 
     def load(self, cache_file):
         with ProgressTimer("Load cached graph", logger):
