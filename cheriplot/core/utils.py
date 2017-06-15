@@ -27,8 +27,13 @@
 
 import logging
 import sys
+import io
+import cProfile
+import pstats
+from datetime import datetime, timedelta
 
-from datetime import datetime
+from memory_profiler import profile
+from pyprof2calltree import visualize
 
 logger = logging.getLogger(__name__)
 
@@ -103,3 +108,97 @@ class ProgressTimer:
         end = datetime.now()
         self.logger.info("%s done at %s (time %s)", self.msg,
                          end.isoformat(timespec="seconds"), end - self.start)
+
+
+class CumulativeTimer:
+    """
+    Helper context manager for profiling purposes.
+
+    This keeps track of the cumulative time spent in a block of code.
+    """
+
+    timers = {}
+
+    def __init__(self, name):
+        """
+        Each timer name returns a different shared-state cumulative timer
+        based on the borg pattern.
+        """
+        try:
+            state = self.timers[name]
+            self.__dict__ = state
+        except KeyError:
+            self.name = name
+            self.elapsed = timedelta()
+            self.timers[name] = self.__dict__
+        self.start = None
+
+    def __enter__(self):
+        self.start = datetime.now()
+
+    def __exit__(self, type, value, traceback):
+        self.elapsed += datetime.now() - self.start
+
+    def report(self, logger):
+        logger.debug("Cumulative timer probe %s elapsed %s", self.name, self.elapsed)
+
+
+class Profiler:
+    """
+    Helper context manager that enables and disables profiling for portions of
+    code.
+    This can also be used as a decorator.
+
+    The profiler can be left in the code to enable fine-grained profiling control
+    without having to change the code. When profiling is disabled the
+    profiler should have very low impact on performance.
+    """
+
+    _profilers = {}
+
+    @classmethod
+    def list_probes(cls):
+        return cls._profilers.keys()
+
+    def __init__(self, name):
+        """
+        Each profiler name returns a different shared-state profiler
+        based on the borg patter.
+        This is done to easily enable profilers in all the system with
+        minimal imports and globals usage.
+        """
+        try:
+            self.__dict__ = self._profilers[name]
+        except KeyError:
+            self.name = name
+            self._profiler = cProfile.Profile()
+            self._profile_time = False
+            self._profile_mem = False
+            self._profilers[name] = self.__dict__
+
+    def __enter__(self):
+        if self._profile_time:
+            self._profiler.enable()
+
+    def __exit__(self, type, value, traceback):
+        self._profiler.disable()
+
+    def __call__(self, target):
+        return target
+
+    def enable(self, time=False, memory=False):
+        self._profile_time = time
+        self._profile_mem = memory
+
+    def disable(self):
+        self._profile_time = False
+        self._profile_mem = False
+
+    def report(self, logger):
+        stream = io.StringIO()
+        ps = pstats.Stats(self._profiler, stream=stream)
+        ps.sort_stats("cumulative")
+        logger.debug("Cumulative timer probe %s elapsed %s", self.name, self.elapsed)
+
+    def show(self):
+        visualize(self._profiler.getstats())
