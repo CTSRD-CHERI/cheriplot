@@ -174,22 +174,3 @@ class MaskCFromPtr(SingleMaskFlatTransform):
             #     # remove cfromptr that are never stored or used in
             #     # a dereference
             #     self.vertex_mask[u] = True
-
-
-class RemovePartial(FlatTransform):
-    """
-    Delete vertices with PARTIAL origin. These are unknown vertices
-    from the beginning of the trace and can not be accounted for.
-    """
-
-    def __init__(self, pgm):
-        self.pgm = pgm
-        self.remove_list = []
-
-    def examine_vertex(self, u):
-        data = self.pgm.data[u]
-        if data.origin == CheriNodeOrigin.PARTIAL:
-            self.remove_list.append(u)
-
-    def apply_transform(self):
-        self.pgm.graph.remove_vertex(self.remove_list)
