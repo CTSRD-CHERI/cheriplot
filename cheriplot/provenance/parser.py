@@ -33,8 +33,7 @@ from enum import IntEnum
 from functools import reduce
 from graph_tool.all import Graph, load_graph
 
-from cheriplot.core import (
-    CallbackTraceParser, ProgressTimer, MultiprocessCallbackParser, IClass)
+from cheriplot.core import ProgressTimer, MultiprocessCallbackParser, IClass
 from cheriplot.provenance.model import *
 from cheriplot.provenance.transforms import bfs_transform, BFSTransform
 
@@ -1372,9 +1371,9 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
     def _init_graph(self):
         if self.cache:
             cache_file = self.path + "_provenance.gt"
-            self.pgm = ProvenanceGraphManager(cache_file)
+            self.pgm = ProvenanceGraphManager(self.path, cache_file)
         else:
-            self.pgm = ProvenanceGraphManager()
+            self.pgm = ProvenanceGraphManager(self.path)
 
     def parse(self, *args, **kwargs):
         with ProgressTimer("Parse provenance graph", logger):

@@ -300,14 +300,14 @@ class PtrBoundCdf:
     Model of the CDF that the PatchBuilder can draw
     """
 
-    def __init__(self, provenance_graph, name="???"):
-        self.graph = provenance_graph
+    def __init__(self, pgm):
+        self.graph = pgm.graph
         """The provenance graph."""
 
         self.size_cdf = None
         """2xn numpy array containing [sizes, frequency]"""
 
-        self.name = name
+        self.name = pgm.name
         """The CDF name"""
 
         self._build_cdf()
@@ -392,9 +392,9 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
         kw["loc"] = "lower right"
         return kw
 
-    def __init__(self, provenance_graph, **kwargs):
+    def __init__(self, pgm, **kwargs):
         super().__init__(**kwargs)
-        self.graph = provenance_graph
+        self.pgm = pgm
         if self.config.publish:
             self._style["font"] = FontProperties(size=25)
 
@@ -408,12 +408,11 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
             parser = PointerProvenanceParser(cache=True, trace_path=path)
             parser.parse()
             pgm = parser.get_model()
-            bfs_transform(pgm, [MaskNullAndKernelVertices(pgm)])
-            bfs_transform(pgm, [MergeCFromPtr(pgm)])
-            bfs_transform(pgm, [MaskCFromPtr(pgm)])
+            flat_transform(pgm, [MaskNullAndKernelVertices(pgm)])
+            flat_transform(pgm, [MergeCFromPtr(pgm)])
+            flat_transform(pgm, [MaskCFromPtr(pgm)])
             extra_pgm.append(pgm)
         datasets = [PtrBoundCdf(pgm) for pgm in extra_pgm]
-        datasets += [PtrBoundCdf(self.graph)]
-        datasets[-1].name = "openssl_default"
+        datasets += [PtrBoundCdf(self.pgm)]
         self.register_patch_builder(datasets, CdfPatchBuilder())
         self.process(out_file=self.config.outfile)

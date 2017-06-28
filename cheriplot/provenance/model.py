@@ -93,12 +93,14 @@ class ProvenanceGraphManager:
     provides shortcuts to the graph properties
     """
 
-    def __init__(self, cache_file=None):
+    def __init__(self, source, cache_file=None):
         """
         Create a graph manager. A new graph is generated
         if the cache file is not specified or does not exist.
         """
+        self.source_file = source
         self.cache_file = cache_file
+
         if cache_file and os.path.exists(cache_file):
             with ProgressTimer("Load cached graph", logger):
                 self.graph = load_graph(cache_file)
@@ -138,8 +140,18 @@ class ProvenanceGraphManager:
         self.graph.gp["stack"] = value
 
     def set_graph(self, graph):
+        """XXX unused"""
         self.graph = graph
         self._init_props()
+
+    @property
+    def name(self):
+        """Return the display name of the dataset"""
+        base = os.path.basename(self.source_file)
+        ext_start = base.rfind(".")
+        if ext_start > 0:
+            return base[:ext_start]
+        return base
 
     @property
     def is_cached(self):
