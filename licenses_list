@@ -1,0 +1,54 @@
+CHERI ISA: BERI HARDWARE-SOFTWARE LICENSE v1.0
+cheri-qemu: GNU
+cheritrace: BERI HARDWARE-SOFTWARE LICENSE v1.0
+
+boost c++: Boost license
+graph-tool: GPLv3
+alabaster :  custom open source
+appdirs :  MIT
+Babel :  BSD
+Brlapi :  LGPL 2.1
+cached-property :  BSD
+colorcet :  CC-BY
+cycler :  BSD
+dask :  BSD
+datashader :  BSD
+datashape :  BSD
+decorator :  new BSD License
+docutils :  public domain
+exrex :  AGPLv3
+imagesize :  MIT
+isc :  ISC
+Jinja2 :  BSD
+llvmlite :  BSD
+MarkupSafe :  BSD
+matplotlib :  BSD
+memory-profiler :  BSD
+multipledispatch :  BSD
+networkx :  BSD
+numba :  BSD
+numpy :  BSD
+odo :  BSD
+olefile :  BSD
+packaging :  BSD or Apache License
+pandas :  BSD
+Pillow :  Standard PIL License
+psutil :  BSD
+py :  MIT license
+pyelftools :  Public domain
+Pygments :  BSD License
+pyparsing :  MIT License
+pytest :  MIT license
+pytest-benchmark :  BSD
+pytest-timeout :  MIT
+python-dateutil :  Simplified BSD
+pytz :  MIT
+requests :  Apache 2.0
+scipy :  BSD
+six :  MIT
+snowballstemmer :  BSD
+sortedcontainers :  Apache 2.0
+Sphinx :  BSD
+toolz :  BSD
+virtualenv :  MIT
+xarray :  Apache
