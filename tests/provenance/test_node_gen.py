@@ -373,7 +373,7 @@ trace_cpreg_set = (
     }),
 )
 
-# see trace_cpreg_set
+# see trace_cpreg_get
 trace_cpreg_get = (
     ("cgetdefault $c1", { # vertex 0
         "c1": pct_cap(0x1000, 0x0, 0x1000, perm),
@@ -397,6 +397,7 @@ trace_cpreg_get = (
         "vertex": mk_vertex(pct_cap(0x5000, 0x0, 0x1000, perm))
     }),
     ("lui $at, 0x100", {"1": 0x100}),
+    # worker set split here
     ("csetbounds $c6, $c0, $at", { # vertex 4
         "c3": pct_cap(0x1000, 0x0, 0x100, perm),
         "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x100, perm),
@@ -413,12 +414,50 @@ trace_cpreg_get = (
                             parent=2, origin=CheriNodeOrigin.SETBOUNDS)
     }),
     ("cgetpcc $c7", {
-        "c7": pct_cap(0x5000, 0x0, 0x100, perm),
+        "c7": pct_cap(0x5000, 0x0, 0x1000, perm),
     }),
     ("csetbounds $c6, $c7, $at", { # vertex 7
         "c6": pct_cap(0x5000, 0x0, 0x100, perm),
         "vertex": mk_vertex(pct_cap(0x5000, 0x0, 0x100, perm),
                             parent=3, origin=CheriNodeOrigin.SETBOUNDS)
+    }),
+)
+
+# check that capability register contents are propagated properly
+# when using cheri instructions
+trace_cap_propagate_setoffset = (
+    ("cmove $c1, $c1", { # vertex 0
+        "c1": start_cap,
+        "vertex": mk_vertex(start_cap)
+    }),
+    ("lui $at, 0x100", {"1": 0x100}),
+    # working set split here
+    ("csetoffset $c2, $c1, $at", {
+        "c2": pct_cap(0x1000, 0x100, 0x1000, perm),
+    }),
+    ("csetbounds $c2, $c2, $at", { # vertex 1
+        "c2": pct_cap(0x1100, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x1100, 0x0, 0x100, perm),
+                            parent=0, origin=CheriNodeOrigin.SETBOUNDS),
+    }),
+)
+
+# check that capability register contents are propagated properly
+# when using cheri instructions
+trace_cap_propagate_incoffset = (
+    ("cmove $c1, $c1", { # vertex 0
+        "c1": start_cap,
+        "vertex": mk_vertex(start_cap)
+    }),
+    ("lui $at, 0x100", {"1": 0x100}),
+    # working set split here
+    ("cincoffset $c2, $c1, $at", {
+        "c2": pct_cap(0x1000, 0x100, 0x1000, perm),
+    }),
+    ("csetbounds $c2, $c2, $at", { # vertex 1
+        "c2": pct_cap(0x1100, 0x0, 0x100, perm),
+        "vertex": mk_vertex(pct_cap(0x1100, 0x0, 0x100, perm),
+                            parent=0, origin=CheriNodeOrigin.SETBOUNDS),
     }),
 )
 
@@ -447,6 +486,8 @@ trace_invalid_derive_from_unknown = (
     (trace_ddc,),
     (trace_cpreg_set,),
     (trace_cpreg_get,),
+    (trace_cap_propagate_setoffset,),
+    (trace_cap_propagate_incoffset,),
 ])
 def test_nodegen_simple(trace, threads):
     """Test provenance parser with the simplest trace possible."""

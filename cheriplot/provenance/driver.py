@@ -58,8 +58,8 @@ class ProvenancePlotDriver(BaseTraceTaskDriver):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._parser = PointerProvenanceParser(cache=self.config.cache,
-                                               trace_path=self.config.trace)
-        self._parser.mp.threads = self.config.threads
+                                               trace_path=self.config.trace,
+                                               threads=self.config.threads)
 
     def run(self):
         # XXX should probably change the way we encapsulte stuff here,

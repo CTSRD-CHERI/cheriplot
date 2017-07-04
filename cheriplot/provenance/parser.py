@@ -301,6 +301,7 @@ class RegisterSet:
         given register number.
         """
         assert idx < 32, "Out of bound register set assignment"
+
         # if the current value of the register set is short-lived
         # (never stored anywhere and not in any other regset node)
         # then it is effectively lost and "deallocated"
@@ -315,6 +316,15 @@ class RegisterSet:
         #         disable because we need a way to actually get the current cycle
         self._attach_subgraph_merge(self.reg_nodes[idx], val)
         self.reg_nodes[idx] = val
+
+    def __str__(self):
+        dump = "Register set:\n"
+        for i, v in enumerate(self.reg_nodes):
+            origin = self.pgm.data[v].origin if v else ""
+            dump += "c%d -> %s %s\n" % (i, v, origin)
+        origin = self.pgm.data[self.pcc].origin if self.pcc else ""
+        dump += "pcc -> %s %s\n" % (self.pcc, origin)
+        return dump
 
 
 class MergePartialSubgraphContext:
@@ -331,6 +341,9 @@ class MergePartialSubgraphContext:
         self.pgm_subgraph = None
         """Current subgraph pgm being merged."""
 
+        self.prev_cycles_end = -1
+        """Last cycle count of previous chunk."""
+
         self.prev_regset = None
         """Previous step final regset."""
 
@@ -342,6 +355,9 @@ class MergePartialSubgraphContext:
 
         self.prev_syscall = None
         """Previous step syscall subparser result."""
+
+        self.curr_cycles_start = None
+        """First entry cycle count of current chunk."""
 
         self.curr_regset = None
         """Current step final regset."""
@@ -381,10 +397,12 @@ class MergePartialSubgraphContext:
         self.curr_vmap = result["mem_vertex_map"]
         self.curr_pcc_fixup = result["sub_pcc_fixup"]
         self.curr_syscall = result["sub_syscall"]
+        self.curr_cycles_start = result["cycles_start"]
         self._merge_graph_properties()
         transform = MergePartialSubgraph(self)
         bfs_transform(result["pgm"].graph, [transform])
         transform.finalize()
+        self.prev_cycles_end = result["cycles_end"]
         self.step_idx += 1
 
 
@@ -566,8 +584,22 @@ class MergePartialSubgraph(BFSTransform):
         :param u_data: the source vertex data
         :param v_data: the destination vertex data
         """
+        self._update_time(u_data)
         for key, val in u_data.events.items():
             v_data.events[key].extend(val)
+
+    def _update_time(self, u_data):
+        """
+        Update the cycles time in vertex data to properly offset
+        the time.
+        """
+        delta = abs(self.context.prev_cycles_end -
+                    self.context.curr_cycles_start) - 1
+        u_data.events["time"][:] = (t + delta for t in u_data.events["time"])
+        if u_data.cap:
+            u_data.cap.t_alloc += delta
+            if u_data.cap.t_free >= 0:
+                u_data.cap.t_free += delta
 
     def _check_cap_compatible(self, u_data, v_data):
         """
@@ -691,6 +723,7 @@ class MergePartialSubgraph(BFSTransform):
                 if idx == 0:
                     # first step, use the first root data
                     root_data = self.subgraph.vp.data[v]
+                    self._update_time(root_data)
                     self.graph.vp.data[merged_root] = root_data
                 else:
                     # if the root is compatible (have same bounds & perms)
@@ -709,8 +742,8 @@ class MergePartialSubgraph(BFSTransform):
                 self.omit_vertex_map[v] = True
         if len(other):
             if len(roots) == 0:
-                # XXX we may promote the vertices to roots in
-                # this case?
+                # this should not happen, it means that something
+                # was derived from an invalid/unseen register
                 msg = "Can not resolve parent for children of "\
                       "PARTIAL vertex at trace beginning, "\
                       "the PARTIAL vertex have no associated roots"
@@ -790,6 +823,7 @@ class MergePartialSubgraph(BFSTransform):
         Case (3) of examine_vertex
         """
         v = self.graph.add_vertex()
+        self._update_time(self.subgraph.vp.data[u])
         self.graph.vp.data[v] = self.subgraph.vp.data[u]
         self.copy_vertex_map[u] = v
         for u_in in u.in_neighbours():
@@ -1112,12 +1146,6 @@ class SyscallSubparser:
     This class contains all the methods that manipulate
     registers and values that depend on the ABI and constants
     in CheriBSD.
-
-    XXX: multiprocessing not yet supported.
-    Merging the syscall state is not straightforward: we do not
-    know the correct eret, so we may look for the first eret that
-    returns to userspace, although if we do not generate vertices it
-    may be easier to merge.
     """
 
     SYS_RET = -1
@@ -1391,6 +1419,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         Return the partial result from a worker process.
 
         The returned data is a tuple containing:
+        - star and end cycle number to compute the relative cycles during merge
         - the partial graph
         - the initial register set if this worker did not
           parse the first chunk of the trace
@@ -1402,6 +1431,8 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         vertex_map)
         """
         state = {
+            "cycles_start": self.cycles_start,
+            "cycles_end": self.cycles_end,
             "pgm": self.get_model(),
             "initial_regset": self.initial_regset,
             "final_regset": self.regset,
@@ -1478,8 +1509,8 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
 
     def _handle_cpreg_get(self, regnum, inst, entry):
         """
-        When a cgetXXX is found, propagate the node from the special
-        register XXX (i.e. kcc, kdc, ...) to the destination or create a
+        When a cget<reg> is found, propagate the node from the special
+        register <reg> (i.e. kcc, kdc, ...) to the destination or create a
         new node if nothing was there.
 
         :param regnum: the index of the special register in the register set
@@ -1503,8 +1534,8 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
 
     def _handle_cpreg_set(self, regnum, inst, entry):
         """
-        When a csetXXX is found, propagate the node to the special
-        register XXX (i.e. kcc, kdc, ...) or create a new node.
+        When a cset<reg> is found, propagate the node to the special
+        register <reg> (i.e. kcc, kdc, ...) or create a new node.
 
         :param regnum: the index of the special register in the register set
         :type regnum: int
@@ -1515,7 +1546,6 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         :parm entry: trace entry
         :type entry: :class:`pycheritrace.trace_entry`
         """
-        # XXX should write a test case for this
         if not self.regset.has_reg(inst.op1.cap_index, allow_root=True):
             node = self.make_root_node(entry, inst.op0.value,
                                        time=entry.cycles)
@@ -1613,16 +1643,13 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         self.regset[inst.op0.cap_index] = node
         return False
 
-    def scan_cap(self, inst, entry, regs, last_regs, idx):
+    def scan_cap_arith(self, inst, entry, regs, last_regs, idx):
         """
         Whenever a capability instruction is found, update
         the mapping from capability register to the provenance
         tree node associated to the capability in it.
         """
-        if entry.is_store or entry.is_load or inst.opcode in self._cbk_names:
-            return False
-        else:
-            self.update_regs(inst, entry, regs, last_regs, idx)
+        self.update_regs(inst, entry, regs, last_regs, idx)
         return False
 
     def _handle_dereference(self, inst, entry, ptr_reg):
@@ -1707,8 +1734,8 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         cd = inst.op0.cap_index
         node = self.vertex_map.mem_load(entry.memory_address)
         if node is None:
-            logger.debug("Load c%d from new location 0x%x",
-                         cd, entry.memory_address)
+            logger.debug("{%d} Load c%d from new location 0x%x",
+                         idx, cd, entry.memory_address)
         # if the capability loaded from memory is valid, it
         # can be safely assumed that it corresponds to the node
         # stored in the memory_map for that location, if there is
@@ -1717,7 +1744,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         # Otherwise something has changed the memory location so we
         # clear the memory_map and the regset entry.
         if not inst.op0.value.valid:
-            logger.debug("clc load invalid, clear memory vertex map")
+            logger.debug("{%d} clc load invalid, clear memory vertex map", idx)
             self.regset[cd] = None
             if node is not None:
                 self.vertex_map.clear(entry.memory_address)
@@ -1725,7 +1752,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             # check if the load instruction has committed
             old_cd = CheriCap(last_regs.cap_reg[cd])
             curr_cd = CheriCap(regs.cap_reg[cd])
-            logger.debug("clc op0 valid old_cd %s curr_cd %s", old_cd, curr_cd)
+            logger.debug("{%d} clc op0 valid old_cd %s curr_cd %s", idx, old_cd, curr_cd)
             if old_cd != curr_cd or not self._has_exception(entry):
                 # the destination register was updated so the
                 # instruction did commit
@@ -1736,8 +1763,8 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                     node = self.make_root_node(entry, inst.op0.value,
                                                time=entry.cycles)
                     node_data = self.pgm.data[node]
-                    logger.debug("Found %s value %s from memory load",
-                                 inst.op0.name, node_data)
+                    logger.debug("{%d} Found %s value %s from memory load",
+                                 idx, inst.op0.name, node_data)
                     self.vertex_map.mem_load(entry.memory_address, node)
                 node_data = self.pgm.data[node]
                 node_data.add_mem_load(entry.cycles, entry.memory_address)
@@ -1772,8 +1799,8 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
                 node = self.make_root_node(entry, inst.op0.value,
                                            time=entry.cycles)
                 self.regset[cd] = node
-                logger.debug("Found %s value %s from memory store",
-                             inst.op0.name, node)
+                logger.debug("{%d} Found %s value %s from memory store",
+                             idx, inst.op0.name, node)
             else:
                 node = self.regset[cd]
 
@@ -1847,7 +1874,10 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         if self.regset.has_reg(op.cap_index, allow_root=False):
             parent = self.regset[op.cap_index]
         else:
-            logger.error("Error searching for parent node of %s", data)
+            logger.error("Missing parent for %s, src_operand=%d %s, "
+                         "dst_operand=%d %s XXX pid:%d", data,
+                         src_op_index, inst.operands[src_op_index],
+                         dst_op_index, inst.operands[dst_op_index], os.getpid())
             raise MissingParentError("Missing parent for %s" % data)
 
         # there must be a parent if the root nodes for the initial register
@@ -1885,9 +1915,7 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             if src_vertex:
                 self.regset[dst.cap_index] = self.regset[src.cap_index]
             else:
-                last_valid = last_regs.valid_caps[dst.cap_index]
-                curr_valid = regs.valid_caps[dst.cap_index]
-                if (not last_valid and curr_valid) or idx == 0:
+                if regs.valid_caps[dst.cap_index]:
                     # a register that was invalid has become valid, create a
                     # root for it.
                     dst_vertex = self.make_root_node(

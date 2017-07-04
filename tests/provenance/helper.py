@@ -188,7 +188,7 @@ class ProvenanceTraceWriter(MockTraceWriter):
 
     def __init__(self, *args):
         super().__init__(*args)
-        self.pgm = ProvenanceGraphManager()
+        self.pgm = ProvenanceGraphManager("mock-trace")
         self._current_side_effects = None
 
     def _process_entry(self, instr, side_effects):

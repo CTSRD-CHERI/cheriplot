@@ -368,6 +368,11 @@ class NodeData:
     def __init__(self):
 
         self.events = {"time": [], "addr": [], "type": []}
+        """
+        Event table. This is initialised as a fast-append structure.
+        It will be transformed to a DataFrame for fast indexing/update
+        when the parsing finishes.
+        """
 
         self.cap = None
         """Cheri capability data, see :class:`.CheriCap`."""

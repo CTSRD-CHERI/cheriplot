@@ -72,8 +72,9 @@ trace_mem_st_ld = (
         "c2": ddc,
         "vertex": mk_vertex(ddc)
     }),
+    # worker set split here
     ("lui $at, 0x100", {"1": 0x100}),
-    ("csetoffset $c2, $c2, $at", {"c2": pct_cap(0x0, 0x100, 0x1000, perm)}),
+    ("csetoffset $c2, $c2, $at", {"c2": pct_cap(0x0, 0x100, 0x10000, perm)}),
     # store vertex 0 at 0x100
     ("csc $c1, $zero, 0x0($c2)", {
         "c1": start_cap,
@@ -116,7 +117,7 @@ trace_mem_2st_ld = (
         "vertex": mk_vertex(ddc)
     }),
     ("lui $at, 0x100", {"1": 0x150}),
-    ("csetoffset $c2, $c2, $at", {"c2": pct_cap(0x0, 0x150, 0x1000, perm)}),
+    ("csetoffset $c2, $c2, $at", {"c2": pct_cap(0x0, 0x150, 0x10000, perm)}),
     # store v0 at 0x150
     ("csc $c1, $zero, 0x0($c2)", {
         "c1": start_cap,
@@ -141,7 +142,7 @@ trace_mem_2st_ld = (
         "vertex_deref": mk_vertex_deref(4, 0x150, True, "store")
     }),
     # clobber c1
-    ("cmove $c1, $c2", {"c1": pct_cap(0x0, 0x150, 0x1000, perm)}),
+    ("cmove $c1, $c2", {"c1": pct_cap(0x0, 0x150, 0x10000, perm)}),
     # load v5 from 0x150
     ("clc $c1, $zero, 0x0($c2)", {
         "c1": pct_cap(0x1000, 0x0, 0x150, perm),

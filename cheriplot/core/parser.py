@@ -60,7 +60,7 @@ class TraceParser:
     :type trace_path: str
     """
 
-    def __init__(self, trace_path=None, **kwargs):
+    def __init__(self, trace_path=None, defer_preload=False, **kwargs):
         super().__init__(**kwargs)
         self.path = trace_path
         self.trace = None
@@ -68,7 +68,8 @@ class TraceParser:
         if trace_path is not None:
             if not os.path.exists(trace_path):
                 raise IOError("File not found %s" % trace_path)
-            self.trace = pct.trace.open(trace_path)
+            logger.debug("Open trace %s (preload=%s)", trace_path, defer_preload)
+            self.trace = pct.trace.open(trace_path, None, defer_preload)
             if self.trace is None:
                 raise IOError("Can not open trace %s" % trace_path)
 
@@ -159,8 +160,8 @@ class Operand:
     def cap_index(self):
         """Return the register number in the range 0-31"""
         if not (self.is_register and self.info.register_number >= 64):
-            logger.error("Operand is not a capability register,"
-                         " can not get register number")
+            logger.error("Operand %s is not a capability register,"
+                         " can not get register number", self)
             raise IndexError("Operand is not a capability register")
         return self.info.register_number - 64
 
@@ -168,8 +169,8 @@ class Operand:
     def gpr_index(self):
         """Return the register number in the range 0-31"""
         if not (self.is_register and self.info.register_number < 32):
-            logger.error("Operand is not a GPR register,"
-                         " can not get register number")
+            logger.error("Operand %s is not a GPR register,"
+                         " can not get register number", self)
             raise IndexError("Operand is not a GPR register")
         return self.info.register_number
 
@@ -187,7 +188,7 @@ class Operand:
                     value = "[b:0x%x, o:0x%x, l:0x%x, v:%d, s:%d]" % (
                         self.value.base, self.value.offset,
                         self.value.length, self.value.valid,
-                        self.value.unsealed, )
+                        self.value.unsealed)
             else:
                 value = self.value
             return "<Op $%s = %s>" % (self.name, value)
@@ -497,8 +498,18 @@ class CallbackTraceParser(TraceParser):
         """Disassembler"""
 
         self._cbk_manager = CheriMipsCallbacksManager()
+        """Helper that implements callbacks resolution"""
+
         self._cbk_manager.gather_callbacks(self)
         self._subparsers = []
+        """Other parsers that can be added to the composite"""
+
+        self.cycles_start = None
+        """Cycles count of the first entry"""
+
+        self.cycles_end = None
+        """Cycles count of the last entry"""
+
 
     def _add_subparser(self, sub):
         self._subparsers.append(sub)
@@ -553,6 +564,10 @@ class CallbackTraceParser(TraceParser):
             if idx >= progress_points[0]:
                 progress_points.pop(0)
                 self.progress.advance(to=idx)
+            if start == idx:
+                self.cycles_start = entry.cycles
+            elif end == idx:
+                self.cycles_end = entry.cycles
             disasm = self._dis.disassemble(entry.inst)
             try:
                 if self._last_regs is None:
@@ -570,7 +585,8 @@ class CallbackTraceParser(TraceParser):
                     if ret:
                         break
             except Exception as e:
-                logger.error("Error in callback %s: %s", cbk, e)
+                logger.error("Error in callback %s (cycles offset %s): %s",
+                             cbk, self.cycles_start, e)
                 raise
 
             self._last_regs = regs
@@ -637,6 +653,8 @@ class MultiprocessCallbackParser(CallbackTraceParser):
 
         :param threads: number of worker processes to use.
         """
+        if threads > 1 and "defer_preload" not in kwargs:
+            kwargs["defer_preload"] = True
         super().__init__(**kwargs)
         assert threads > 0, "At least a worker process must be used!"
 
