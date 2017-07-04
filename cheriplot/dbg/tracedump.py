@@ -48,6 +48,7 @@ class TraceDumpParser(MultiprocessCallbackParser, ConfigurableComponent):
     range_format_help = "Accept a range in the form <start>-<end>, -<end>, "\
                         "<start>- or <single_value>"
 
+    info = Option(action="store_true", help="Print trace info and exit")
     start = Option("-s", type=int, default=0, help="Start offset in the trace")
     end = Option("-e", type=int, default=None, help="Stop offset in the trace")
     outfile = Option(
@@ -372,7 +373,10 @@ class TraceDumpParser(MultiprocessCallbackParser, ConfigurableComponent):
     def parse(self, start=None, end=None, direction=0):
         start = start or self.config.start
         end = end or self.config.end
-        super().parse(start, end)
+        if self.config.info:
+            self.out.write("Trace size: %s\n" % len(self))
+        else:
+            super().parse(start, end)
 
     def mp_result(self):
         """Return the temporary file."""
@@ -425,8 +429,8 @@ class PytracedumpDriver(BaseTraceTaskDriver):
                                  path=self.config.symbols_path)
         self.parser = TraceDumpParser(trace_path=self.config.trace,
                                       sym_reader=self.symbols,
-                                      config=self.config.scan)
-        self.parser.mp.threads = self.config.threads
+                                      config=self.config.scan,
+                                      threads=self.config.threads)
 
     def update_config(self, config):
         super().update_config(config)
