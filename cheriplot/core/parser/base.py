@@ -29,7 +29,6 @@
 Parser for cheri trace files based on the cheritrace library.
 """
 
-import exrex
 import math
 import numpy as np
 import logging
@@ -47,9 +46,6 @@ from multiprocessing import Pool, Value, Manager, Lock, Condition
 from cheriplot.core.utils import ProgressPrinter
 
 logger = logging.getLogger(__name__)
-
-__all__ = ("TraceParser", "CallbackTraceParser", "Operand", "Instruction",
-           "MultiprocessCallbackParser", "IClass")
 
 class TraceParser:
     """
@@ -326,11 +322,12 @@ class CallbacksManager:
     dynamically during the loop.
     """
 
-    iclass_map = None
+    iclass_map = defaultdict(lambda: [])
     """
     This is meant to be overridden in subclasses to define
     architecture-specific mapping from instruction to
     instruction classes.
+    This default returns no callback names for any IClass.
     """
 
     def __init__(self):
@@ -413,47 +410,6 @@ class CallbacksManager:
             return chain(self._callbacks[inst.opcode], self._callbacks["all"])
 
 
-class CheriMipsCallbacksManager(CallbacksManager):
-    """
-    A concrete CallbacksManager that handles callbacks for
-    CHERI-mips traces.
-    """
-
-    iclass_map = {
-        IClass.I_CAP_LOAD: list(chain(
-            exrex.generate("cl[dc][ri]?|cl[bhw][u]?[ri]?"),
-            exrex.generate("cll[cd]|cll[bhw][u]?"))),
-        IClass.I_CAP_STORE: list(chain(
-            exrex.generate("cs[bhwdc][ri]?"),
-            exrex.generate("csc[cbhwd]"))),
-        IClass.I_CAP_CAST: [
-            "ctoptr", "cfromptr"],
-        IClass.I_CAP_ARITH: [
-            "cincoffset", "csetoffset", "csub",
-            "cincbase"],
-        IClass.I_CAP_BOUND: [
-            "csetbounds", "csetboundsexact", "candperm"],
-        IClass.I_CAP_FLOW: [
-            "cbtu", "cbts", "cjr", "cjalr",
-            "ccall", "creturn"],
-        IClass.I_CAP_CPREG: [
-            "csetdefault", "cgetdefault", "cgetepcc", "csetepcc",
-            "cgetkcc", "csetkcc", "cgetkdc", "csetkdc", "cgetpcc",
-            "cgetpccsetoffset"],
-        IClass.I_CAP_CMP: [
-            "ceq", "cne", "clt", "cle", "cltu", "cleu", "cexeq"],
-        IClass.I_CAP_OTHER: [
-            "cgetperm", "cgettype", "cgetbase", "cgetlen",
-            "cgettag", "cgetsealed", "cgetoffset",
-            "cseal", "cunseal",
-            "ccleartag", "cclearregs",
-            "cgetcause", "csetcause", "ccheckperm", "cchecktype",
-            "clearlo", "clearhi", "cclearlo", "cclearhi",
-            "fpclearlo", "fpclearhi", "cmove"]
-        }
-    iclass_map[IClass.I_CAP] = list(chain(*iclass_map.values()))
-
-
 class CallbackTraceParser(TraceParser):
     """
     Trace parser that provides help to filter
@@ -484,6 +440,8 @@ class CallbackTraceParser(TraceParser):
     the previous "cap_" classes
     """
 
+    callback_manager_class = CallbacksManager
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
@@ -497,7 +455,7 @@ class CallbackTraceParser(TraceParser):
         self._dis = pct.disassembler()
         """Disassembler"""
 
-        self._cbk_manager = CheriMipsCallbacksManager()
+        self._cbk_manager = self.callback_manager_class()
         """Helper that implements callbacks resolution"""
 
         self._cbk_manager.gather_callbacks(self)
@@ -658,10 +616,10 @@ class MultiprocessCallbackParser(CallbackTraceParser):
         super().__init__(**kwargs)
         assert threads > 0, "At least a worker process must be used!"
 
-        self.is_worker = is_worker
+        self.is_worker = is_worker or threads == 1
         """Flag set if this is running in a worker process"""
 
-        if not self.is_worker:
+        if not self.is_worker or threads == 1:
             self.mp = self.MultiprocessState(threads)
             self.kwargs = kwargs
 

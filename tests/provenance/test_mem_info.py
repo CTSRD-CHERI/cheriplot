@@ -12,9 +12,9 @@ import pytest
 import logging
 import tempfile
 
-from cheriplot.provenance import (
-    PointerProvenanceParser, CheriNodeOrigin, CheriCapPerm, NodeData,
-    MissingParentError, DereferenceUnknownCapabilityError)
+from cheriplot.provenance.parser import (
+    CheriMipsModelParser, MissingParentError, DereferenceUnknownCapabilityError)
+from cheriplot.provenance.model import CheriNodeOrigin, CheriCapPerm, NodeData
 
 from cheriplot.core.test import pct_cap
 from tests.provenance.helper import (
@@ -315,8 +315,7 @@ def test_mem_tracking(trace, threads):
             w.write_trace(t)
 
         # get parsed graph
-        parser = PointerProvenanceParser(trace_path=tmp.name)
-        parser.mp.threads = threads
+        parser = CheriMipsModelParser(trace_path=tmp.name, threads=threads)
         parser.parse()
         # check the provenance graph model
         pgm = parser.get_model()
@@ -347,7 +346,6 @@ def test_mem_errors(trace, exc_type, threads):
             w.write_trace(t)
 
         # get parsed graph
-        parser = PointerProvenanceParser(trace_path=tmp.name)
-        parser.mp.threads = threads
+        parser = CheriMipsModelParser(trace_path=tmp.name, threads=threads)
         with pytest.raises(exc_type) as excinfo:
             parser.parse()

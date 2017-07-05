@@ -6,7 +6,9 @@ import pytest
 import logging
 import tempfile
 
-from cheriplot.provenance import *
+from cheriplot.provenance.parser import (
+    CheriMipsModelParser, MissingParentError, DereferenceUnknownCapabilityError)
+from cheriplot.provenance.model import CheriNodeOrigin, CheriCapPerm, NodeData
 
 from cheriplot.core.test import pct_cap
 from tests.provenance.helper import (
@@ -502,9 +504,7 @@ def test_nodegen_simple(trace, threads):
             w.write_trace(t)
 
         # get parsed graph
-        parser = PointerProvenanceParser(trace_path=tmp.name)
-        # force a single thread for this test
-        parser.mp.threads = threads
+        parser = CheriMipsModelParser(trace_path=tmp.name, threads=threads)
         parser.parse()
         # check the provenance graph model
         pgm = parser.get_model()
@@ -527,8 +527,6 @@ def test_nodegen_errors(trace, exc_type, threads):
         w.write_trace(trace, pc=0x1000)
 
         # get parsed graph
-        parser = PointerProvenanceParser(trace_path=tmp.name)
-        # force a single thread for this test
-        parser.mp.threads = threads
+        parser = CheriMipsModelParser(trace_path=tmp.name, threads=threads)
         with pytest.raises(exc_type) as excinfo:
             parser.parse()

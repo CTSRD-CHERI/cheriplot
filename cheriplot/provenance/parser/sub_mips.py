@@ -24,307 +24,22 @@
 #
 # @BERI_LICENSE_HEADER_END@
 #
+"""
+CHERI-MIPS specific subparsers that build the cheriplot graph
+"""
 
-import numpy as np
 import logging
-import os
 
-from enum import IntEnum
-from functools import reduce
-from graph_tool.all import Graph, load_graph
-
-from cheriplot.core import ProgressTimer, MultiprocessCallbackParser, IClass
-from cheriplot.provenance.model import *
+from cheriplot.core.parser import CheriMipsCallbacksManager
+from cheriplot.provenance.model import (
+    CheriNodeOrigin, CheriCapPerm, NodeData, CheriCap)
 from cheriplot.provenance.transforms import bfs_transform, BFSTransform
+from cheriplot.provenance.parser.base import (
+    CheriplotModelParser, RegisterSet, VertexMemoryMap)
+
+from .error import *
 
 logger = logging.getLogger(__name__)
-
-__all__ = ("PointerProvenanceParser", "MissingParentError",
-           "DereferenceUnknownCapabilityError", "SubgraphMergeError",
-           "UnexpectedOperationError")
-
-class SubgraphMergeError(RuntimeError):
-    """
-    Exception raised when there is an error during the merge
-    of partial results from multiprocessing workers.
-    """
-    pass
-
-
-class MissingParentError(RuntimeError):
-    """
-    Exception raised when attempting to create a provenance node but a
-    valid parent is not found.
-    This is a fatal error condition.
-    """
-    pass
-
-
-class DereferenceUnknownCapabilityError(RuntimeError):
-    """
-    Exception raised when a capability dereference is found
-    but it is not possible to determine the corresponding
-    vertex in the graph where the dereference should be registered.
-    This happens when a previously unseen capability register is
-    dereferenced or in case of bugs in the vertex propagation in
-    the register set.
-    This is a fatal error condition.
-    """
-    pass
-
-
-class UnexpectedOperationError(RuntimeError):
-    """
-    Exception raised when a seemingly impossible operation
-    occurred.
-    This is a fatal error condition.
-    """
-    pass
-
-
-class VertexMemoryMap:
-    """
-    Helper object that keeps track of the graph vertex associated
-    with each memory location used in the trace.
-    """
-
-    def __init__(self, pgm):
-        self.vertex_map = {}
-        self.pgm = pgm
-
-    def __getstate__(self):
-        """
-        Make object pickle-able, the graph-tool vertices index are used
-        instead of the vertex object.
-        """
-        logger.debug("Pickling partial result vertex-memory map %d",
-                     os.getpid())
-        state = {
-            "vertex_map": {k: int(v) for k,v in self.vertex_map.items()}
-        }
-        return state
-
-    def __setstate__(self, data):
-        """
-        Make object pickle-able, the graph-tool vertices index are used
-        instead of the vertex object.
-        """
-        logger.debug("Unpickling partial result vertex-memory map")
-        self.vertex_map = data["vertex_map"]
-
-    def clear(self, addr):
-        """
-        Unregister the vertex associated with the given memory location
-        """
-        del self.vertex_map[addr]
-
-    def mem_load(self, addr, vertex=None):
-        """
-        Register a memory load at given address and return
-        the vertex for that address if any.
-        If a vertex is specified, the vertex is set
-        in the memory map at the given address.
-        """
-        if vertex:
-            self.vertex_map[addr] = vertex
-        try:
-            return self.vertex_map[addr]
-        except KeyError:
-            return None
-
-    def mem_store(self, addr, vertex):
-        """
-        Register a memory store at given address and
-        store the vertex in the memory map for the given
-        address.
-        """
-        self.vertex_map[addr] = vertex
-
-
-class MPVertexMemoryMap(VertexMemoryMap):
-    """
-    Vertex map used by multiprocessing workers to record the
-    initial state of the map so that the initial vertices can
-    be merged with the results from other workers.
-    """
-
-    def __init__(self, pgm):
-        super().__init__(pgm)
-
-        self.initial_map = {}
-
-    def __getstate__(self):
-        state = super().__getstate__()
-        state["initial_map"] = {k: int(v) for k,v in self.initial_map.items()}
-        return state
-
-    def __setstate__(self, data):
-        super().__setstate__(data)
-        self.initial_map = data["initial_map"]
-
-    def mem_load(self, addr, vertex=None):
-        if vertex and addr not in self.initial_map:
-            self.initial_map[addr] = vertex
-        return super().mem_load(addr, vertex)
-
-
-class RegisterSet:
-    """
-    Helper object that keeps track of the graph vertex associated
-    with each register in the register file.
-
-    The register set is also used in the subgraph merge
-    resolution to produce the full graph from partial
-    results from worker processes.
-    """
-
-    def __init__(self, pgm):
-        self.reg_nodes = [None] * 32
-        """Graph node associated with each register."""
-
-        self._pcc = None
-        """Current pcc node"""
-
-        self.pgm = pgm
-        """The provenance graph manager"""
-
-    def __getstate__(self):
-        """
-        Make object pickle-able, graph-tool vertices are not pickleable
-        but their index is.
-        """
-        logger.debug("Pickling partial result register set %d", os.getpid())
-        state = {
-            "reg_nodes": [self.pgm.graph.vertex_index[u] if u != None else None
-                          for u in self.reg_nodes],
-            "_pcc": (self.pgm.graph.vertex_index[self._pcc]
-                     if self._pcc != None else None),
-            }
-        return state
-
-    def __setstate__(self, data):
-        """
-        Make object pickle-able.
-
-        Restore internal state. Note that this does not recover the vertex
-        instances from the graph as we do not require this when propagating
-        partial results from the workers.
-        XXX Doing so saves some time although it may be desirable to
-        perform the operation to avoid confusion.
-        Note also that the graph is dropped, this is to avoid pickling the
-        graph twice.
-        """
-        logger.debug("Unpickling partial result register set")
-        self.reg_nodes = data["reg_nodes"]
-        self._pcc = data["_pcc"]
-
-    def _attach_subgraph_merge(self, regset_vertex, input_vertex):
-        """
-        If needed, attach a graph vertex to a
-        partial-vertex marker in the register set
-
-        :param regset_vertex: the vertex currently contained in the
-        register set
-        :param input_vertex: the vertex that is being assigned
-        """
-        # if the node is a root and we have a PARTIAL dummy node in the register
-        # set and the node is not already attached to a PARTIAL dummy node,
-        # the root is attached to the dummy.
-        if input_vertex == None or regset_vertex == None:
-            return
-
-        in_data = self.pgm.data[input_vertex]
-        if in_data.origin == CheriNodeOrigin.ROOT:
-            for n in input_vertex.in_neighbours():
-                if self.pgm.data[n].origin == CheriNodeOrigin.PARTIAL:
-                    return
-            curr_data = self.pgm.data[regset_vertex]
-            if curr_data.origin == CheriNodeOrigin.PARTIAL:
-                self.pgm.graph.add_edge(regset_vertex, input_vertex)
-
-    @property
-    def pcc(self):
-        return self._pcc
-
-    @pcc.setter
-    def pcc(self, value):
-        self._attach_subgraph_merge(self._pcc, value)
-        self._pcc = value
-
-    def has_pcc(self, allow_root=False):
-        """
-        Check if the register set contains a valid pcc
-
-        :param idx: the register index to check
-        :param allow_root: a root can be created if the register
-        does not have a valid node.
-        """
-        if self.pcc == None:
-            return False
-        if allow_root:
-            data = self.pgm.data[self.pcc]
-            if data.origin == CheriNodeOrigin.PARTIAL:
-                return False
-        return True
-
-    def has_reg(self, idx, allow_root=False):
-        """
-        Check if the register set contains a valid entry for
-        the given register index
-
-        :param idx: the register index to check
-        :param allow_root: a root can be created if the register
-        does not have a valid node.
-        """
-        assert idx < 32, "Out of bound register set index"
-        if self[idx] == None:
-            return False
-        if allow_root:
-            data = self.pgm.data[self[idx]]
-            if data.origin == CheriNodeOrigin.PARTIAL:
-                return False
-        return True
-
-    def __getitem__(self, idx):
-        """
-        Fetch the :class:`cheriplot.core.provenance.GraphNode`
-        currently associated to a capability register with the
-        given register number.
-        """
-        assert idx < 32, "Out of bound register set fetch"
-        return self.reg_nodes[idx]
-
-    def __setitem__(self, idx, val):
-        """
-        Fetch the :class:`cheriplot.core.provenance.GraphNode`
-        currently associated to a capability register with the
-        given register number.
-        """
-        assert idx < 32, "Out of bound register set assignment"
-
-        # if the current value of the register set is short-lived
-        # (never stored anywhere and not in any other regset node)
-        # then it is effectively lost and "deallocated"
-        # if self.reg_nodes[idx] is not None:
-        #     n_refs = np.count_nonzero(self.reg_nodes == self.reg_nodes[idx])
-        #     node_data = self.pgm.data[self.reg_nodes[idx]]
-        #     # XXX may refine this by checking the memory_map to see if the
-        #     # node is still there
-        #     n_refs += len(node_data.address)
-        #     if n_refs == 1:
-        #         # can safely set the t_free
-        #         disable because we need a way to actually get the current cycle
-        self._attach_subgraph_merge(self.reg_nodes[idx], val)
-        self.reg_nodes[idx] = val
-
-    def __str__(self):
-        dump = "Register set:\n"
-        for i, v in enumerate(self.reg_nodes):
-            origin = self.pgm.data[v].origin if v else ""
-            dump += "c%d -> %s %s\n" % (i, v, origin)
-        origin = self.pgm.data[self.pcc].origin if self.pcc else ""
-        dump += "pcc -> %s %s\n" % (self.pcc, origin)
-        return dump
 
 
 class MergePartialSubgraphContext:
@@ -360,10 +75,7 @@ class MergePartialSubgraphContext:
         """First entry cycle count of current chunk."""
 
         self.curr_regset = None
-        """Current step final regset."""
-
-        self.curr_initial_regset = None
-        """Current step initial regset."""
+        """Current step initial and final regset."""
 
         self.curr_vmap = None
         """Current step vertex-memory map."""
@@ -392,8 +104,7 @@ class MergePartialSubgraphContext:
         # merge the root nodes from the initial register set
         # with the previous register set
         self.pgm_subgraph = result["pgm"]
-        self.curr_initial_regset = result["initial_regset"]
-        self.curr_regset = result["final_regset"]
+        self.curr_regset = result["regset"]
         self.curr_vmap = result["mem_vertex_map"]
         self.curr_pcc_fixup = result["sub_pcc_fixup"]
         self.curr_syscall = result["sub_syscall"]
@@ -447,17 +158,7 @@ class MergePartialSubgraph(BFSTransform):
         return self.context.pgm_subgraph.graph
 
     @property
-    def initial_regset(self):
-        """
-        Regset mapping initial register state to vertices in the
-        subgraph.
-
-        Note: the register set contains vertex handles for the subgraph.
-        """
-        return self.context.curr_initial_regset
-
-    @property
-    def final_regset(self):
+    def curr_regset(self):
         """
         Regset mapping the final register state of the worker to the
         vertices in the merged graph. This is generated from the final
@@ -548,18 +249,35 @@ class MergePartialSubgraph(BFSTransform):
         generated during this merge step).
         This is used as input to the next merge operation as previous_regset.
         """
-        regset = RegisterSet(None)
-        for idx in range(len(self.final_regset.reg_nodes)):
-            v = self.final_regset[idx]
+        # XXX
+        # regset = RegisterSet(None)
+        # for idx in range(len(self.curr_regset.reg_nodes)):
+        #     v = self.curr_regset[idx]
+        #     if v == None or self.copy_vertex_map[v] < 0:
+        #         regset.reg_nodes[idx] = None
+        #     else:
+        #         regset.reg_nodes[idx] = self.copy_vertex_map[v]
+
+        # v_pcc = self.curr_regset.pcc
+        # regset.pcc = self.copy_vertex_map[v_pcc] if v_pcc != None else None
+        # logger.debug("Final regset:\n%s", regset.reg_nodes)
+        # logger.debug("Final pcc: %s", regset.pcc)
+
+        regset = self.curr_regset
+        for idx in range(len(self.curr_regset.reg_nodes)):
+            v = self.curr_regset[idx]
             if v == None or self.copy_vertex_map[v] < 0:
                 regset.reg_nodes[idx] = None
             else:
                 regset.reg_nodes[idx] = self.copy_vertex_map[v]
 
-        v_pcc = self.final_regset.pcc
-        regset.pcc = self.copy_vertex_map[v_pcc] if v_pcc != None else None
-        logger.debug(regset.reg_nodes)
-        logger.debug(regset.pcc)
+        v_pcc = self.curr_regset.pcc
+        if v_pcc == None or self.copy_vertex_map[v_pcc] < 0:
+            regset._pcc = None
+        else:
+            regset._pcc = self.copy_vertex_map[v_pcc]
+        logger.debug("Final regset:\n%s", regset.reg_nodes)
+        logger.debug("Final pcc: %s", regset.pcc)
         return regset
 
     def get_final_vmap(self):
@@ -630,8 +348,8 @@ class MergePartialSubgraph(BFSTransform):
             logger.debug("Merge trace beginning initial vertex subgraph:%d", u)
             self._merge_trace_beginning(u)
         else:
-            if u in self.initial_regset.reg_nodes:
-                index = self.initial_regset.reg_nodes.index(u)
+            if u in self.curr_regset.initial_reg_nodes:
+                index = self.curr_regset.initial_reg_nodes.index(u)
                 v = self.previous_regset[index]
             else:
                 index = "pcc"
@@ -827,12 +545,12 @@ class MergePartialSubgraph(BFSTransform):
         self.graph.vp.data[v] = self.subgraph.vp.data[u]
         self.copy_vertex_map[u] = v
         for u_in in u.in_neighbours():
-            logger.debug("in-neighbour subgraph:%s", u_in)
+            logger.debug("in-neighbour subgraph-idx:%s", u_in)
             # v_in must exist because we are doing BFS
             # however if u_in is a root v_in is None
             v_in = self.copy_vertex_map[u_in]
             if v_in >= 0:
-                logger.debug("valid in-neighbour subgraph:%s", u_in)
+                logger.debug("valid in-neighbour subgraph-idx:%s", u_in)
                 self.graph.add_edge(v_in, v)
 
     def _merge_pcc_fixup(self, u):
@@ -863,7 +581,7 @@ class MergePartialSubgraph(BFSTransform):
                 # need to replace the corresponding parent with the
                 # saved pcc and the merge will be handled by the
                 # initial vertex merge.
-                index = self.initial_regset.reg_nodes.index(u)
+                index = self.curr_regset.initial_reg_nodes.index(u)
                 self.previous_regset.reg_nodes[index] = prev_result["saved_pcc"]
             else:
                 # normal vertex, there is no such thing as an initial
@@ -927,7 +645,8 @@ class MergePartialSubgraph(BFSTransform):
 
         if self.context.step_idx == 0:
             # merge initial and normal vertices but ignore the vertex memory map
-            if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
+            if (u in self.curr_regset.initial_reg_nodes or
+                u == self.curr_regset.initial_pcc):
                 logger.debug("Merge initial vertex subgraph:%s", u)
                 self._merge_initial_vertex(u)
             else:
@@ -940,7 +659,8 @@ class MergePartialSubgraph(BFSTransform):
             if u == self.context.curr_syscall["eret_cap"]:
                 self._merge_syscall(u)
             # merge vertices
-            if u in self.initial_regset.reg_nodes or u == self.initial_regset.pcc:
+            if (u in self.curr_regset.initial_reg_nodes or
+                u == self.curr_regset.initial_pcc):
                 logger.debug("Merge initial vertex subgraph:%s", u)
                 self._merge_initial_vertex(u)
             elif u in self.vertex_map.initial_map.values():
@@ -959,11 +679,19 @@ class CapabilityBranchSubparser:
     found.
     """
 
-    def __init__(self, parser):
-        self.parser = parser
+    def __init__(self, pgm, regset, sub_prov):
+        self.pgm = pgm
+        """Main graph manager."""
+
+        self.regset = regset
+        """Capability vertex to registers mapping."""
+
+        self.parser = sub_prov
+        # XXX this is needed because we did not put things in the right place...
 
         self._saved_pcc = None
         """Saved PCC vertex handle before a cj[al]r with an exception."""
+
         self._saved_addr = None
         """Address of the last cj[al]r with exception seen."""
 
@@ -984,14 +712,6 @@ class CapabilityBranchSubparser:
         Saved out neighbours of the jmp target so that we can
         detect anything appended to it.
         """
-
-    @property
-    def pgm(self):
-        return self.parser.pgm
-
-    @property
-    def regset(self):
-        return self.parser.regset
 
     def mp_result(self):
         """
@@ -1164,8 +884,9 @@ class SyscallSubparser:
     syscall_code =>  (syscall_name, register_number)
     """
 
-    def __init__(self, parser):
-        self.parser = parser
+    def __init__(self, pgm, regset):
+        self.pgm = pgm
+        self.regset = regset
 
         self.in_syscall = False
         """Flag indicates whether we are tracking a systemcall."""
@@ -1196,14 +917,6 @@ class SyscallSubparser:
         Time of the first eret not matched by any preceding
         syscall/exception.
         """
-
-    @property
-    def pgm(self):
-        return self.parser.pgm
-
-    @property
-    def regset(self):
-        return self.parser.regset
 
     def mp_result(self):
         try:
@@ -1312,8 +1025,8 @@ class InitialStackAccessSubparser:
     abstraction in the graph anyway.
     """
 
-    def __init__(self, parser):
-        self.parser = parser
+    def __init__(self, pgm):
+        self.pgm = pgm
 
         self.first_eret = False
         """First eret seen, userspace started."""
@@ -1329,27 +1042,21 @@ class InitialStackAccessSubparser:
                            "at return to userspace")
         # remember the stack base and bound to look for accesses in that range
         stack_cap = regs.cap_reg[11]
-        self.parser.pgm.stack = CheriCap(stack_cap)
-        self.parser.pgm.stack.offset = regs.gpr[29]
+        self.pgm.stack = CheriCap(stack_cap)
+        self.pgm.stack.offset = regs.gpr[29]
         return False
+    
 
-
-class PointerProvenanceParser(MultiprocessCallbackParser):
+class PointerProvenanceSubparser:
     """
-    Parsing logic that builds the provenance graph used in
-    all the provenance-based plots.
+    Parsing logic that builds the provenance graph layer of
+    the cheriplot graph.
     """
 
-    def __init__(self, cache=False, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, pgm):
 
-        self.cache = cache
-        """Are we using a cached dataset."""
-
-        self.pgm = None
+        self.pgm = pgm
         """Provenance graph manager, proxy access to the provenance graph."""
-
-        self._init_graph()
 
         self.regset = RegisterSet(self.pgm)
         """
@@ -1367,127 +1074,22 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         multiprocessing workers.
         """
 
-        self.initial_regset = None
-        """
-        The initial register set is created in worker processes
-        to keep track of the initial dummy graph vertices that
-        are created. This is used to correctly merge the
-        subgraphs.
-        """
-
-        self._cbk_names = (["cjr", "cjalr", "ccall", "creturn", "cfromptr",
-                            "csetbounds", "csetboundsexact", "candperm"] +
-                           self._cbk_manager.iclass_map[IClass.I_CAP_CPREG])
-        """
-        Names of callbacks for capability instructions that have custom
-        register-set handling (the set also includdes IClass.I_CAP_STORE
-        and IClass.I_CAP_LOAD but it is easier to check for trace_entry
-        is_load and is_store). This is required to properly update the
-        register set when other capability instructions are found and
-        is placed here to avoid rebuilding the list at every callback
-        invocation.
-        """
-
-        self._initial_stack = InitialStackAccessSubparser(self)
-        self._pcc_fixup = CapabilityBranchSubparser(self)
-        self._syscall_subparser = SyscallSubparser(self)
-        self._add_subparser(self._initial_stack)
-        self._add_subparser(self._syscall_subparser)
-        self._add_subparser(self._pcc_fixup)
-
-
-    def _init_graph(self):
-        if self.cache:
-            cache_file = self.path + "_provenance.gt"
-            self.pgm = ProvenanceGraphManager(self.path, cache_file)
-        else:
-            self.pgm = ProvenanceGraphManager(self.path)
-
-    def parse(self, *args, **kwargs):
-        with ProgressTimer("Parse provenance graph", logger):
-            if self.cache and not self.pgm.cache_exists:
-                super().parse(*args, **kwargs)
-                self.pgm.save()
-            elif not self.cache:
-                super().parse(*args, **kwargs)
-
-    def get_model(self):
-        return self.pgm
-
     def mp_result(self):
         """
         Return the partial result from a worker process.
 
         The returned data is a tuple containing:
-        - star and end cycle number to compute the relative cycles during merge
-        - the partial graph
-        - the initial register set if this worker did not
-          parse the first chunk of the trace
-        - the final register set
+        - the initial and final register set
         - the initial and final vertex memory maps,
         holding the live vertices in memory
 
-        :return: dict(partial_graph, initial_regset, final_regset,
-        vertex_map)
+        :return: dict
         """
         state = {
-            "cycles_start": self.cycles_start,
-            "cycles_end": self.cycles_end,
-            "pgm": self.get_model(),
-            "initial_regset": self.initial_regset,
-            "final_regset": self.regset,
+            "regset": self.regset,
             "mem_vertex_map": self.vertex_map,
-            "sub_pcc_fixup": self._pcc_fixup.mp_result(),
-            "sub_syscall": self._syscall_subparser.mp_result(),
         }
         return state
-
-    def mp_merge(self, results):
-        """
-        Populate the dataset from the partial results.
-
-        Note: this method is run in the main process,
-        assuming that the results are in-order w.r.t.
-        the trace entries indexes that were used.
-        """
-        if self.mp.threads == 1:
-            # need to merge partial vertices from the beginning of
-            # the trace anyway, reinit the graph manager with an
-            # empty one, the previous is in the results list
-            # XXX this is potentially wasteful for the 1-thread case
-            self._init_graph()
-        merge_ctx = MergePartialSubgraphContext(self.pgm)
-        for idx, result in enumerate(results):
-            with ProgressTimer("Merge partial worker result [%d/%d]" % (
-                    idx + 1, len(results)), logger):
-                merge_ctx.step(result)
-
-    def _do_parse(self, start, end, direction):
-        """
-        This sets up the different initialization of the graph and
-        register set, depending on the start index.
-
-        If the start == 0 then we initialize the register set from
-        what we find before the first return to userspace.
-        Otherwise we create dummy graph roots for each register
-        that will be used during the merge.
-        """
-        self.initial_regset = RegisterSet(self.pgm)
-        # create dummy initial nodes
-        reg_nodes = list(self.pgm.graph.add_vertex(32))
-        pcc_node = self.pgm.graph.add_vertex()
-        for n in reg_nodes + [pcc_node]:
-            data = NodeData()
-            data.origin = CheriNodeOrigin.PARTIAL
-            self.pgm.data[n] = data
-        self.initial_regset.reg_nodes = reg_nodes
-        self.initial_regset.pcc = pcc_node
-        self.regset.reg_nodes = list(reg_nodes)
-        self.regset.pcc = pcc_node
-        # use the MP vertex map
-        self.vertex_map = MPVertexMemoryMap(self.pgm)
-        super()._do_parse(start, end, direction)
-        self.pgm.save("initial_stack_test.gt")
 
     def _has_exception(self, entry, code=None):
         """
@@ -1649,7 +1251,25 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         the mapping from capability register to the provenance
         tree node associated to the capability in it.
         """
-        self.update_regs(inst, entry, regs, last_regs, idx)
+        dst = inst.op0
+        src = inst.op1
+
+        if dst and dst.is_capability:
+            if src and src.is_capability:
+                src_vertex = self.regset.has_reg(src.cap_index, allow_root=True)
+            else:
+                src_vertex = False
+
+            if src_vertex:
+                self.regset[dst.cap_index] = self.regset[src.cap_index]
+            else:
+                if regs.valid_caps[dst.cap_index]:
+                    # a register that was invalid has become valid, create a
+                    # root for it.
+                    dst_vertex = self.make_root_node(
+                        entry, dst.value, pc=entry.pc, time=entry.cycles)
+                    self.regset[src.cap_index] = dst_vertex
+                    self.regset[dst.cap_index] = dst_vertex
         return False
 
     def _handle_dereference(self, inst, entry, ptr_reg):
@@ -1875,9 +1495,9 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
             parent = self.regset[op.cap_index]
         else:
             logger.error("Missing parent for %s, src_operand=%d %s, "
-                         "dst_operand=%d %s XXX pid:%d", data,
+                         "dst_operand=%d %s", data,
                          src_op_index, inst.operands[src_op_index],
-                         dst_op_index, inst.operands[dst_op_index], os.getpid())
+                         dst_op_index, inst.operands[dst_op_index])
             raise MissingParentError("Missing parent for %s" % data)
 
         # there must be a parent if the root nodes for the initial register
@@ -1897,28 +1517,35 @@ class PointerProvenanceParser(MultiprocessCallbackParser):
         self.pgm.data[vertex] = data
         return vertex
 
-    def update_regs(self, inst, entry, regs, last_regs, idx):
-        """
-        Try to update the registers-node mapping when a capability
-        instruction is executed so that nodes are propagated in
-        the registers when their bounds do not change.
-        """
-        dst = inst.op0
-        src = inst.op1
 
-        if dst and dst.is_capability:
-            if src and src.is_capability:
-                src_vertex = self.regset.has_reg(src.cap_index, allow_root=True)
-            else:
-                src_vertex = False
+class CheriMipsModelParser(CheriplotModelParser):
+    """
+    Cheri-mips top-level cheriplot trace parser
+    """
 
-            if src_vertex:
-                self.regset[dst.cap_index] = self.regset[src.cap_index]
-            else:
-                if regs.valid_caps[dst.cap_index]:
-                    # a register that was invalid has become valid, create a
-                    # root for it.
-                    dst_vertex = self.make_root_node(
-                        entry, dst.value, pc=entry.pc, time=entry.cycles)
-                    self.regset[src.cap_index] = dst_vertex
-                    self.regset[dst.cap_index] = dst_vertex
+    callback_manager_class = CheriMipsCallbacksManager
+    subgraph_merge_context_class = MergePartialSubgraphContext
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        if self.is_worker:
+            self._provenance = PointerProvenanceSubparser(self.pgm)
+            self._initial_stack = InitialStackAccessSubparser(self.pgm)
+            self._cap_branch = CapabilityBranchSubparser(
+                self.pgm, self._provenance.regset, self._provenance)
+            self._syscall_subparser = SyscallSubparser(
+                self.pgm, self._provenance.regset)
+            # self._callgraph_subparser = CallgraphSubparser(self.pgm)
+            self._add_subparser(self._provenance)
+            self._add_subparser(self._initial_stack)
+            self._add_subparser(self._syscall_subparser)
+            self._add_subparser(self._cap_branch)
+
+    def mp_result(self):
+        """Return the partial result from a worker process."""
+        state = super().mp_result()
+        state.update(self._provenance.mp_result())
+        state["sub_pcc_fixup"] = self._cap_branch.mp_result()
+        state["sub_syscall"] = self._syscall_subparser.mp_result()
+        return state

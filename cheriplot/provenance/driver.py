@@ -31,7 +31,7 @@ from cheriplot.core import SubCommand, BaseTraceTaskDriver, ProgressTimer, Optio
 from cheriplot.provenance.plot import (
     AddressMapPlotDriver, AddressMapDerefPlotDriver, PtrSizeDerefDriver,
     PtrSizeBoundDriver, PtrSizeCdfDriver)
-from cheriplot.provenance.parser import PointerProvenanceParser
+from cheriplot.provenance.parser import CheriMipsModelParser
 from cheriplot.provenance.stats import ProvenanceStatsDriver
 from cheriplot.provenance.transforms import *
 
@@ -57,9 +57,9 @@ class ProvenancePlotDriver(BaseTraceTaskDriver):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._parser = PointerProvenanceParser(cache=self.config.cache,
-                                               trace_path=self.config.trace,
-                                               threads=self.config.threads)
+        self._parser = CheriMipsModelParser(cache=self.config.cache,
+                                            trace_path=self.config.trace,
+                                            threads=self.config.threads)
 
     def run(self):
         # XXX should probably change the way we encapsulte stuff here,

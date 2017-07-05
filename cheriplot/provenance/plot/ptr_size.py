@@ -41,7 +41,7 @@ from cheriplot.core import (
     ProgressTimer, ProgressPrinter, ExternalLegendTopPlotBuilder,
     BasePlotBuilder, PatchBuilder, LabelManager, AutoText, TaskDriver,
     Option, Argument)
-from cheriplot.provenance.parser import PointerProvenanceParser
+from cheriplot.provenance.parser import CheriMipsModelParser
 from cheriplot.provenance.transforms import *
 from cheriplot.provenance.plot import VMMapPlotDriver
 
@@ -405,7 +405,7 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
     def run(self):
         extra_pgm = []
         for path in self.config.extra_traces:
-            parser = PointerProvenanceParser(cache=True, trace_path=path)
+            parser = CheriMipsModelParser(cache=True, trace_path=path)
             parser.parse()
             pgm = parser.get_model()
             flat_transform(pgm, [MaskNullAndKernelVertices(pgm)])

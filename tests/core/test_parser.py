@@ -10,7 +10,8 @@ from unittest import mock
 from tempfile import NamedTemporaryFile
 from itertools import chain
 
-from cheriplot.core import CallbackTraceParser, MultiprocessCallbackParser
+from cheriplot.core import (
+    CallbackTraceParser, MultiprocessCallbackParser, CheriMipsCallbacksManager)
 from cheriplot.core.test import MockTraceWriter
 
 from tests.utils import skipbenchmark
@@ -180,6 +181,7 @@ expect_sets = {
 def parser_setup(mock_trace, mock_exists, request):
     
     class _Parser(CallbackTraceParser):
+        callback_manager_class = CheriMipsCallbacksManager
         pass
 
     for cbk_name, cbk_meth in request.param:
@@ -188,14 +190,6 @@ def parser_setup(mock_trace, mock_exists, request):
     expect = expect_sets[request.param]
 
     return (expect, _Parser(trace_path="no_file"), request.param)
-
-@pytest.fixture
-@mock.patch("os.path.exists")
-@mock.patch("pycheritrace.trace")
-def provenance_parser(mock_trace, mock_exists):
-
-    return PointerProvenanceParser(trace_path="no_file")
-
 
 @pytest.mark.parametrize("opcode", opcode_list)
 def test_callbacks(parser_setup, opcode):
