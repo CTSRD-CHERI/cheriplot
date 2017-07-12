@@ -35,7 +35,7 @@ from graph_tool.all import load_graph, bfs_iterator, dfs_iterator
 from cheriplot.core import (
     BaseToolTaskDriver, Argument, Option, option_range_validator,
     any_int_validator)
-from cheriplot.provenance.model import CheriNodeOrigin, NodeData
+from cheriplot.provenance.model import CheriNodeOrigin, ProvenanceVertexData
 
 logger = logging.getLogger(__name__)
 
@@ -220,17 +220,17 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
         str_vertex = StringIO()
         str_vertex.write("%s " % vdata)
         events = vdata.event_tbl
-        n_load = (events["type"] & NodeData.EventType.DEREF_LOAD).sum()
-        n_store = (events["type"] & NodeData.EventType.DEREF_STORE).sum()
+        n_load = (events["type"] & ProvenanceVertexData.EventType.DEREF_LOAD).sum()
+        n_store = (events["type"] & ProvenanceVertexData.EventType.DEREF_STORE).sum()
         str_vertex.write("deref-load: %d deref-store: %d " % (n_load, n_store))
-        n_loaded = (events["type"] & NodeData.EventType.LOAD).sum()
-        n_stored = (events["type"] & NodeData.EventType.STORE).sum()
+        n_loaded = (events["type"] & ProvenanceVertexData.EventType.LOAD).sum()
+        n_stored = (events["type"] & ProvenanceVertexData.EventType.STORE).sum()
         str_vertex.write("load: %d store: %d" % (n_loaded, n_stored))
         if self.config.full_info:
             str_vertex.write("\n")
             frame_str = vdata.event_tbl.to_string(formatters={
                 "addr": "0x{0:x}".format,
-                "type": lambda t: str(NodeData.EventType(t))
+                "type": lambda t: str(ProvenanceVertexData.EventType(t))
             })
             str_vertex.write("Event table:\n%s\n" % frame_str)
         return str_vertex.getvalue()

@@ -38,11 +38,11 @@ from collections import OrderedDict
 import numpy as np
 import pandas as pd
 from cached_property import cached_property
-from graph_tool.all import *
+from graph_tool.all import Graph, GraphView, load_graph
 from cheriplot.core import ProgressTimer
 
-__all__ = ("CheriCapPerm", "CheriNodeOrigin", "CheriCap", "NodeData",
-           "ProvenanceGraphManager")
+__all__ = ("CheriCapPerm", "CheriNodeOrigin", "CheriCap",
+           "ProvenanceGraphManager", "CallVertexData", "ProvenanceVertexData")
 
 logger = logging.getLogger(__name__)
 
@@ -74,103 +74,18 @@ class CheriNodeOrigin(IntFlag):
     Enumeration of the possible originators of
     nodes in the provenance graph.
     """
-    UNKNOWN = 0
+    UNKNOWN = auto()
     # partial result used in mutiprocessing parser
-    PARTIAL = 1
+    PARTIAL = auto()
     # root node
-    ROOT = 2
+    ROOT = auto()
+    INITIAL_ROOT = auto()
     # instructions
-    SETBOUNDS = 3
-    FROMPTR = 4
-    ANDPERM = 5
+    SETBOUNDS = auto()
+    FROMPTR = auto()
+    ANDPERM = auto()
     # aggregate nodes
-    PTR_SETBOUNDS = 6
-
-
-class ProvenanceGraphManager:
-    """
-    Handle graph operations, load and save and
-    provides shortcuts to the graph properties
-    """
-
-    def __init__(self, source, cache_file=None):
-        """
-        Create a graph manager. A new graph is generated
-        if the cache file is not specified or does not exist.
-        """
-        self.source_file = source
-        self.cache_file = cache_file
-
-        if cache_file and os.path.exists(cache_file):
-            with ProgressTimer("Load cached graph", logger):
-                self.graph = load_graph(cache_file)
-        else:
-            self.graph = Graph()
-            # CHERI capability properties
-            # prop_base = self.graph.new_vertex_property("object")
-            # prop_len = self.graph.new_vertex_property("object")
-            # prop_off = self.graph.new_vertex_property("object")
-            # prop_perm = self.graph.new_vertex_property("int32_t")
-            # prop_otype = self.graph.new_vertex_property("int32_t")
-            # prop_valid = self.graph.new_vertex_property("bool")
-            # prop_seal = self.graph.new_vertex_property("bool")
-            # prop_t_alloc = self.graph.new_vertex_property("object")
-            # prop_t_free = self.graph.new_vertex_property("object")
-            prop_initial_stack = self.graph.new_graph_property("object")
-            prop_data = self.graph.new_vertex_property("object")
-            self.graph.vp["data"] = prop_data
-            self.graph.gp["stack"] = prop_initial_stack
-        self._init_props()
-
-    def _init_props(self):
-        """
-        Setup graph property shorthand accessors.
-        """
-        # graph data
-        self.data = self.graph.vp.data
-
-    @property
-    def stack(self):
-        """Shorthand getter for the stack global property."""
-        return self.graph.gp.stack
-
-    @stack.setter
-    def stack(self, value):
-        """Shorthand setter for the stack global property."""
-        self.graph.gp["stack"] = value
-
-    def set_graph(self, graph):
-        """XXX unused"""
-        self.graph = graph
-        self._init_props()
-
-    @property
-    def name(self):
-        """Return the display name of the dataset"""
-        base = os.path.basename(self.source_file)
-        ext_start = base.rfind(".")
-        if ext_start > 0:
-            return base[:ext_start]
-        return base
-
-    @property
-    def is_cached(self):
-        return self.cache_file != None
-
-    @property
-    def cache_exists(self):
-        return os.path.exists(self.cache_file)
-
-    def load(self, cache_file):
-        with ProgressTimer("Load cached graph", logger):
-            self.graph = load_graph(cache_file)
-        self.cache_file = cache_file
-        self._init_props()
-
-    def save(self, dest=None):
-        if dest is None:
-            dest = self.cache_file
-        self.graph.save(dest)
+    PTR_SETBOUNDS = auto()
 
 
 class CheriCap:
@@ -285,7 +200,7 @@ class CheriCap:
         return not self == other
 
 
-class NodeData:
+class ProvenanceVertexData:
     """
     All the data associated with a node in the capability
     graph.
@@ -393,7 +308,7 @@ class NodeData:
     @cached_property
     def event_tbl(self):
         """
-        Tabular equivalent of NodeData.events for fast filtering and lookup.
+        Tabular equivalent of ProvenanceVertexData.events for fast filtering and lookup.
 
         XXX since when this is used effectively doubles the space occupied by
         the address table we may want to destroy self.address and replace it
@@ -431,7 +346,7 @@ class NodeData:
         see :class:`EventType`
         """
         if cap:
-            type_ |= NodeData.EventType.DEREF_IS_CAP
+            type_ |= ProvenanceVertexData.EventType.DEREF_IS_CAP
         self.add_event(time, addr, type_)
 
     def add_use(self, time, addr, arg_or_ret, type_):
@@ -447,7 +362,7 @@ class NodeData:
         see :class:`EventType`
         """
         if arg_or_ret:
-            type_ |= NodeData.EventType.USE_IS_ARG
+            type_ |= ProvenanceVertexData.EventType.USE_IS_ARG
         self.add_event(time, addr, type_)
 
     # shortcuts for use events
@@ -467,3 +382,164 @@ class NodeData:
     def __str__(self):
         return "%s origin:%s pc:0x%x kernel:%d" % (
             self.cap, self.origin.name, self.pc or 0, self.is_kernel)
+
+
+class CallVertexData:
+    """
+    Data for vertices in the call layer of the graph.
+    """
+
+    def __init__(self, address):
+
+        self.symbol = None
+        """Symbol name of the callee."""
+
+        self.symbol_file = None
+        """File name where the callee symbol was found."""
+
+        self.address = address
+        """Address of the callee."""
+
+        self.t_return = None
+        """Time of the return."""
+
+        self.addr_return = None
+        """Address of the return instruction."""
+
+    def __str__(self):
+        if self.address is None:
+            return "(unknown)"
+        dump = "call 0x%x" % self.address
+        if self.symbol is not None:
+            dump += " (%s)" % self.symbol
+        return dump
+
+
+class EdgeOperation(IntEnum):
+    """
+    Enumeration representing valid operations that an edge can represent.
+    """
+
+    CALL = auto()
+    """Call in the call layer."""
+
+    SYSCALL = auto()
+    """Syscall in the call layer."""
+
+    CALL_TARGET = auto()
+    """Capability used as call target, links provenance and call layers."""
+
+
+class ProvenanceGraphManager:
+    """
+    Handle graph operations, load and save and
+    provides shortcuts to the graph properties
+
+    Graph vertex and edges have the following properties associated:
+
+    * vertex
+
+      * data (object): vertex data object, the type depends on the layer
+      * layer_prov (bool): vertex belongs to the provenance layer
+      * layer_call (bool): vertex belongs to the call layer
+    * edge
+
+      * operation (int): :class:`EdgeOperation` type for the operation
+        represented by the edge
+      * time (object): integer (uint64_t) marking the time of the event
+    * graph
+
+      * stack (object): initial stack :class:`CheriCap` object
+    """
+
+    def __init__(self, source, cache_file=None):
+        """
+        Create a graph manager. A new graph is generated
+        if the cache file is not specified or does not exist.
+
+        :param source: source file path
+        :param cache_file: file where the graph is cached, if it exists the
+        graph is loaded from the file. Default None.
+        """
+        self.source_file = source
+        self.cache_file = cache_file
+
+        if cache_file and os.path.exists(cache_file):
+            with ProgressTimer("Load cached graph", logger):
+                self.graph = load_graph(cache_file)
+        else:
+            self.graph = Graph()
+            # CHERI capability properties
+            # XXX unless graph-tool support uint64_t vertex properties
+            # it makes no sense to split the content of the ProvenanceVertexData
+            # class in multiple properites.
+            prop_initial_stack = self.graph.new_graph_property("object")
+            prop_data = self.graph.new_vertex_property("object")
+            # edge properties
+            prop_edge_op = self.graph.new_edge_property("int")
+            prop_edge_time = self.graph.new_edge_property("object")
+            prop_edge_address = self.graph.new_edge_property("object")
+            # layers
+            layer_prov = self.graph.new_vertex_property("bool", val=False)
+            layer_call = self.graph.new_vertex_property("bool", val=False)
+            self.graph.vp["data"] = prop_data
+            self.graph.vp["layer_prov"] = layer_prov
+            self.graph.vp["layer_call"] = layer_call
+            self.graph.ep["operation"] = prop_edge_op
+            self.graph.ep["time"] = prop_edge_time
+            self.graph.ep["addr"] = prop_edge_address
+            self.graph.gp["stack"] = prop_initial_stack
+
+        self._init_props()
+
+    def _init_props(self):
+        """
+        Setup graph property shorthand accessors.
+        """
+        # graph data
+        self.data = self.graph.vp.data
+        self.layer_prov = self.graph.vp.layer_prov
+        self.layer_call = self.graph.vp.layer_call
+        self.edge_operation = self.graph.ep.operation
+        self.edge_time = self.graph.ep.time
+        self.edge_addr = self.graph.ep.addr
+        self.prov_view = GraphView(self.graph, vfilt=self.graph.vp.layer_prov)
+        self.call_view = GraphView(self.graph, vfilt=self.graph.vp.layer_call)
+
+    @property
+    def stack(self):
+        """Shorthand getter for the stack global property."""
+        return self.graph.gp.stack
+
+    @stack.setter
+    def stack(self, value):
+        """Shorthand setter for the stack global property."""
+        self.graph.gp["stack"] = value
+
+    @property
+    def name(self):
+        """Return the display name of the dataset"""
+        base = os.path.basename(self.source_file)
+        ext_start = base.rfind(".")
+        if ext_start > 0:
+            return base[:ext_start]
+        return base
+
+    @property
+    def is_cached(self):
+        return self.cache_file != None
+
+    @property
+    def cache_exists(self):
+        return os.path.exists(self.cache_file)
+
+    def load(self, cache_file):
+        with ProgressTimer("Load cached graph", logger):
+            self.graph = load_graph(cache_file)
+        self.cache_file = cache_file
+        self._init_props()
+
+    def save(self, dest=None):
+        if dest is None:
+            dest = self.cache_file
+        self.graph.save(dest)

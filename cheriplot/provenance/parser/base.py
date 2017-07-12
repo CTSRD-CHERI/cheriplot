@@ -42,7 +42,8 @@ from graph_tool.all import Graph, load_graph
 
 from cheriplot.core import ProgressTimer, MultiprocessCallbackParser
 
-from cheriplot.provenance.model import *
+from cheriplot.provenance.model import (
+    ProvenanceVertexData, ProvenanceGraphManager, CheriNodeOrigin)
 from cheriplot.provenance.transforms import bfs_transform, BFSTransform
 
 from .error import *
@@ -163,7 +164,7 @@ class RegisterSet:
         """Initial pcc vertex."""
 
         for n in self.reg_nodes + [self._pcc]:
-            data = NodeData()
+            data = ProvenanceVertexData()
             data.origin = CheriNodeOrigin.PARTIAL
             self.pgm.data[n] = data
 
@@ -217,9 +218,11 @@ class RegisterSet:
 
         in_data = self.pgm.data[input_vertex]
         if in_data.origin == CheriNodeOrigin.ROOT:
+            # if the root is already attached to a partial, do nothing
             for n in input_vertex.in_neighbours():
                 if self.pgm.data[n].origin == CheriNodeOrigin.PARTIAL:
                     return
+            # else attach it to current partial if it exists
             curr_data = self.pgm.data[regset_vertex]
             if curr_data.origin == CheriNodeOrigin.PARTIAL:
                 self.pgm.graph.add_edge(regset_vertex, input_vertex)

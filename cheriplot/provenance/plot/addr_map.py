@@ -42,7 +42,8 @@ from matplotlib.font_manager import FontProperties
 from cheriplot.core import (
     ASAxesPlotBuilderNoTitle, ASAxesPatchBuilder, PickablePatchBuilder,
     Option)
-from cheriplot.provenance.model import CheriCapPerm, CheriNodeOrigin, NodeData
+from cheriplot.provenance.model import (
+    CheriCapPerm, CheriNodeOrigin, ProvenanceVertexData)
 from cheriplot.provenance.plot import VMMapPlotDriver
 
 logger = logging.getLogger(__name__)
@@ -331,13 +332,15 @@ class DerefPatchBuilder(BaseColorCodePatchBuilder):
                 self._add_bbox(data.cap.base, data.cap.bound, max_time)
         # can probably avoid this mess by duplicating the y coordinate
         # above, we have to do that anyway below.
-        load_idx = np.where(derefs[:,3] == NodeData.DerefType.DEREF_LOAD.value)
+        load_idx = np.where(
+            derefs[:,3] == ProvenanceVertexData.DerefType.DEREF_LOAD.value)
         load = derefs[load_idx][:,:3]
         dst = np.empty((len(load),2,2))
         dst[:,:,0] = load[:,:2]
         dst[:,:,1] = np.repeat(load[:,2], 2).reshape((len(load),2))
         self._collection_map["load"] = dst
-        store_idx = np.where(derefs[:,3] == NodeData.DerefType.DEREF_LOAD.value)
+        store_idx = np.where(
+            derefs[:,3] == ProvenanceVertexData.DerefType.DEREF_LOAD.value)
         store = derefs[store_idx][:,:3]
         dst = np.empty((len(store),2,2))
         dst[:,:,0] = store[:,:2]
@@ -397,7 +400,8 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
         # set the height position of the label independently of
         # the Y scale
         rect = Rectangle((vmentry.start, 0.01),
-                         vmentry.end - vmentry.start, 0.98)
+                         vmentry.end - vmentry.start, 0.98,
+                         edgecolor="k")
         self.patches.append(rect)
         self.patch_colors.append(self._colors[vmentry.perms])
         self._ticks.add(vmentry.start)
@@ -599,7 +603,7 @@ class AddressMapDerefPlotDriver(BaseAddressMapPlotDriver):
 #                 # is found the map survives until the process
 #                 # exits
 #                 syscall_node = self.syscall_graph.add_vertex()
-#                 sys_node_data = NodeData()
+#                 sys_node_data = ProvenanceVertexData()
 #                 sys_node_data.cap = CheriCap()
 #                 sys_node_data.cap.base = data.cap.base
 #                 sys_node_data.cap.length = data.cap.length

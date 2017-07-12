@@ -8,11 +8,11 @@ import tempfile
 
 from cheriplot.provenance.parser import (
     CheriMipsModelParser, MissingParentError, DereferenceUnknownCapabilityError)
-from cheriplot.provenance.model import CheriNodeOrigin, CheriCapPerm, NodeData
+from cheriplot.provenance.model import CheriNodeOrigin, CheriCapPerm
 
 from cheriplot.core.test import pct_cap
 from tests.provenance.helper import (
-    assert_graph_equal, mk_vertex, mk_vertex_mem, mk_vertex_deref,
+    assert_graph_equal, mk_pvertex, mk_vertex_mem, mk_vertex_deref,
     mk_vertex_call, ProvenanceTraceWriter)
 
 logging.basicConfig(level=logging.DEBUG)
@@ -33,15 +33,15 @@ trace_init = (
     # {0x1000}
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "vertex": mk_vertex(start_cap)
+        "pvertex": mk_pvertex(start_cap)
     }),
     ("cmove $c30, $c30", { # kdc vertex 1
         "c30": kdc_default,
-        "vertex": mk_vertex(kdc_default)
+        "pvertex": mk_pvertex(kdc_default)
     }),
     ("cmove $c31, $c31", { # vertex 2
         "c31": pcc,
-        "vertex": mk_vertex(pcc)
+        "pvertex": mk_pvertex(pcc)
     }),
     ("eret", {}), # mark initialization end
     # {0x1010}
@@ -62,8 +62,8 @@ trace_sys_mmap = (
     }),
     ("csetbounds $c2, $c1, $at", { # vertex 3
         "c2": pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all()),
-        "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all()),
-                            parent=1, origin=CheriNodeOrigin.SETBOUNDS),
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all()),
+                              parent=1, origin=CheriNodeOrigin.SETBOUNDS),
     }),
     ("cmove $c3, $c2", {
         "c3": pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all())
@@ -87,8 +87,8 @@ trace_sys_munmap = (
     # worker set split here
     ("csetbounds $c3, $c1, $at", { # vertex 3
         "c3": pct_cap(0x1000, 0x0, 0x100, perm),
-        "vertex": mk_vertex(pct_cap(0x1000, 0x0, 0x100, perm),
-                            parent=0, origin=CheriNodeOrigin.SETBOUNDS),
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
+                              parent=0, origin=CheriNodeOrigin.SETBOUNDS),
     }),
     # {1014}
     # we do not care about the syscall args

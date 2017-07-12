@@ -29,10 +29,14 @@ CHERI-MIPS specific subparsers that build the cheriplot graph
 """
 
 import logging
+from collections import deque
+from functools import reduce
+from operator import or_
 
 from cheriplot.core.parser import CheriMipsCallbacksManager
 from cheriplot.provenance.model import (
-    CheriNodeOrigin, CheriCapPerm, NodeData, CheriCap)
+    CheriNodeOrigin, CheriCapPerm, ProvenanceVertexData,
+    CheriCap, CallVertexData)
 from cheriplot.provenance.transforms import bfs_transform, BFSTransform
 from cheriplot.provenance.parser.base import (
     CheriplotModelParser, RegisterSet, VertexMemoryMap)
@@ -249,20 +253,6 @@ class MergePartialSubgraph(BFSTransform):
         generated during this merge step).
         This is used as input to the next merge operation as previous_regset.
         """
-        # XXX
-        # regset = RegisterSet(None)
-        # for idx in range(len(self.curr_regset.reg_nodes)):
-        #     v = self.curr_regset[idx]
-        #     if v == None or self.copy_vertex_map[v] < 0:
-        #         regset.reg_nodes[idx] = None
-        #     else:
-        #         regset.reg_nodes[idx] = self.copy_vertex_map[v]
-
-        # v_pcc = self.curr_regset.pcc
-        # regset.pcc = self.copy_vertex_map[v_pcc] if v_pcc != None else None
-        # logger.debug("Final regset:\n%s", regset.reg_nodes)
-        # logger.debug("Final pcc: %s", regset.pcc)
-
         regset = self.curr_regset
         for idx in range(len(self.curr_regset.reg_nodes)):
             v = self.curr_regset[idx]
@@ -306,6 +296,16 @@ class MergePartialSubgraph(BFSTransform):
         for key, val in u_data.events.items():
             v_data.events[key].extend(val)
 
+    def _merge_layer(self, u, v):
+        """
+        Copy the graph layer properties for a vertex
+
+        :param u: source vertex in the partial subgraph
+        :param v: destination vertex in the merged graph
+        """
+        self.graph.vp.layer_prov[v] = self.subgraph.vp.layer_prov[u]
+        self.graph.vp.layer_call[v] = self.subgraph.vp.layer_call[u]
+
     def _update_time(self, u_data):
         """
         Update the cycles time in vertex data to properly offset
@@ -331,6 +331,17 @@ class MergePartialSubgraph(BFSTransform):
                     u_data.cap.length != v_data.cap.length or
                     u_data.cap.permissions != v_data.cap.permissions or
                     u_data.cap.objtype != v_data.cap.objtype)
+
+    def _check_layer(self, u, v):
+        """
+        Check if two verticex belong to the same layer
+
+        :param u: vertex in the partial subgraph
+        :param v: vertex in the merged graph
+        """
+        prov = self.subgraph.vp.layer_prov[u] == self.graph.vp.layer_prov[v]
+        call = self.subgraph.vp.layer_call[u] == self.graph.vp.layer_call[v]
+        return prov and call
 
     def _merge_initial_vertex(self, u):
         """
@@ -413,16 +424,18 @@ class MergePartialSubgraph(BFSTransform):
         case there is no previous subparser because this comes from
         the first chunk of the trace.
         Case (4) in examine_vertex:
-        The dummy register is attached to something unknown, the only
-        way to know the value of the register is by looking at ROOT
-        vertices that have been attached to the dummy.
-
-        If there are ROOT vertices, then they must be from the *same*
-        previous vertex, because ROOT vertices are attached to the
-        PARTIAL vertex only as long as they would not replace it.
-
-        The multiple ROOT vertices are merged and all the successors
-        of the PARTIAL vertex are attached to the merged vertex.
+        The dummy vertex is attached to something unexisting or unknown.
+        If there are no ROOT vertices attached to the dummy, all the children
+        come from the same capability so create an INITIAL_ROOT
+        to represent that.
+        If there are ROOT vertices attached, there are are 2 situations:
+        1. the root recovers the content of the register from an instruction
+           that moves it.
+        2. the root is unrelated and replaces the vertex in the regset.
+           This may happen if the dummy is moved and then overwritten
+           (e.g. by a clc)
+        Since it is ambiguous which root should be the parent of any non-root
+        vertices, promote them to roots.
         """
         u_data = self.subgraph.vp.data[u]
         merged_root = None
@@ -434,42 +447,43 @@ class MergePartialSubgraph(BFSTransform):
                 roots.append(u_out)
             else:
                 other.append(u_out)
-        if len(roots):
-            # merge all the roots in a single one
-            merged_root = self.graph.add_vertex()
-            for idx,v in enumerate(roots):
-                if idx == 0:
-                    # first step, use the first root data
-                    root_data = self.subgraph.vp.data[v]
-                    self._update_time(root_data)
-                    self.graph.vp.data[merged_root] = root_data
-                else:
-                    # if the root is compatible (have same bounds & perms)
-                    # merge the data into the main vertex
-                    v_data = self.subgraph.vp.data[v]
-                    if not self._check_cap_compatible(root_data, v_data):
-                        msg = "Can not merge ROOTs at trace beginning:"\
-                              " incompatible roots %s %s" % (root_data, v_data)
-                        logger.error(msg)
-                        raise SubgraphMergeError(msg)
-                    self._merge_partial_vertex_data(v_data, root_data)
-                # ensure that the children of the children will be
-                # attached to the merged root and the root vertices
-                # are ignored
-                self.copy_vertex_map[v] = merged_root
-                self.omit_vertex_map[v] = True
-        if len(other):
-            if len(roots) == 0:
-                # this should not happen, it means that something
-                # was derived from an invalid/unseen register
-                msg = "Can not resolve parent for children of "\
-                      "PARTIAL vertex at trace beginning, "\
-                      "the PARTIAL vertex have no associated roots"
-                logger.error(msg)
-                raise MissingParentError(msg)
-            # all the other (non-root) children are attached to the
-            # merged root
-            self.copy_vertex_map[u] = merged_root
+
+        if len(roots) == 0 and len(other) > 0:
+            # if there are no roots, everything must come from the
+            # same capability, create a fake root with the maximum
+            # permissions
+            base = 2**64
+            bound = 0
+            perms = 0
+            t_alloc = 2**64
+            for u_out in u.out_neighbours():
+                u_out_data = self.subgraph.vp.data[u_out]
+                base = min(base, u_out_data.cap.base)
+                bound = max(bound, u_out_data.cap.base + u_out_data.cap.length)
+                perms = perms | u_out_data.cap.permissions
+                otype = u_out_data.cap.objtype
+            base_root = self.graph.add_vertex()
+            root_data = ProvenanceVertexData()
+            self.graph.vp.data[base_root] = root_data
+            self.graph.vp.layer_prov[base_root] = True
+            root_data.cap = CheriCap()
+            root_data.cap.base = base
+            root_data.cap.offset = 0
+            root_data.cap.length = bound - base
+            root_data.cap.permissions = perms
+            root_data.cap.objtype = otype
+            root_data.cap.valid = True
+            root_data.cap.sealed = False
+            root_data.cap.t_alloc = 0
+            root_data.pc = 0
+            root_data.origin = CheriNodeOrigin.INITIAL_ROOT
+            self.copy_vertex_map[u] = base_root
+        else:
+            # promote everything to root because there is no way to be sure
+            # about provenance in this case.
+            for u_out in u.out_neighbours():
+                u_out_data = self.subgraph.vp.data[u_out]
+                u_out_data.origin = CheriNodeOrigin.ROOT
 
     def _merge_initial_vertex_to_none(self, u):
         """
@@ -483,7 +497,7 @@ class MergePartialSubgraph(BFSTransform):
         u_data = self.subgraph.vp.data[u]
         # get the length in constant memory instad of O(n) memory
         n_deref = sum(1 for etype in u_data.events["type"]
-                      if etype & NodeData.EventType.deref_mask())
+                      if etype & ProvenanceVertexData.EventType.deref_mask())
         if n_deref:
             raise SubgraphMergeError("PARTIAL vertex was dereferenced "
                                      "but is merged to None")
@@ -510,21 +524,21 @@ class MergePartialSubgraph(BFSTransform):
         logger.debug("initial vertex prev graph:%s", v)
         self.copy_vertex_map[u] = v
         v_data = self.graph.vp.data[v]
+        # XXX check that prev is also in the same layer
         self._merge_partial_vertex_data(u_data, v_data)
         for u_out in u.out_neighbours():
-            logger.debug("initial vertex out-neighbour subgraph:%s",
-                         u_out)
+            logger.debug("initial vertex out-neighbour subgraph:%s", u_out)
+            u_out_data = self.subgraph.vp.data[u_out]
+            if u_out.in_degree() != 1:
+                raise SubgraphMergeError(
+                    "vertex %s attached to multiple partial nodes" % u_out_data)
             # check that v_data agrees with all roots
             # that will be suppressed
-            u_out_data = self.subgraph.vp.data[u_out]
             if u_out_data.origin == CheriNodeOrigin.ROOT:
                 # suppress u_out but attach its children to
                 # the dummy so the connectivity is preserved
                 # so all dereferences and stores of u_out are merged in the
                 # parent
-                if len(list(u_out.in_neighbours())) != 1:
-                    raise SubgraphMergeError(
-                        "ROOT attached to multiple partial nodes")
                 self._merge_partial_vertex_data(u_out_data, v_data)
                 if not self._check_cap_compatible(u_out_data, v_data):
                     logger.debug("do not suppress ROOT %s, previous "
@@ -542,16 +556,20 @@ class MergePartialSubgraph(BFSTransform):
         """
         v = self.graph.add_vertex()
         self._update_time(self.subgraph.vp.data[u])
-        self.graph.vp.data[v] = self.subgraph.vp.data[u]
+        udata = self.subgraph.vp.data[u]
+        self.graph.vp.data[v] = udata
+        self._merge_layer(u, v)
         self.copy_vertex_map[u] = v
-        for u_in in u.in_neighbours():
-            logger.debug("in-neighbour subgraph-idx:%s", u_in)
-            # v_in must exist because we are doing BFS
-            # however if u_in is a root v_in is None
-            v_in = self.copy_vertex_map[u_in]
-            if v_in >= 0:
-                logger.debug("valid in-neighbour subgraph-idx:%s", u_in)
-                self.graph.add_edge(v_in, v)
+        if udata.origin != CheriNodeOrigin.ROOT:
+            # a root have no in-connections
+            for u_in in u.in_neighbours():
+                logger.debug("in-neighbour subgraph-idx:%s", u_in)
+                # v_in must exist because we are doing BFS
+                # however if u_in is a root v_in is None
+                v_in = self.copy_vertex_map[u_in]
+                if v_in >= 0:
+                    logger.debug("valid in-neighbour subgraph-idx:%s", u_in)
+                    self.graph.add_edge(v_in, v)
 
     def _merge_pcc_fixup(self, u):
         """
@@ -1452,7 +1470,7 @@ class PointerProvenanceSubparser:
         :return: the newly created node
         :rtype: :class:`graph_tool.Vertex`
         """
-        data = NodeData()
+        data = ProvenanceVertexData()
         data.cap = CheriCap(cap)
         # if pc is 0 indicate that we do not have a specific
         # instruction for this
@@ -1464,6 +1482,7 @@ class PointerProvenanceSubparser:
         # create graph vertex and assign the data to it
         vertex = self.pgm.graph.add_vertex()
         self.pgm.data[vertex] = data
+        self.pgm.layer_prov[vertex] = True
         return vertex
 
     def make_node(self, entry, inst, origin=None, src_op_index=1, dst_op_index=0):
@@ -1487,7 +1506,7 @@ class PointerProvenanceSubparser:
         :return: the new node
         :rtype: :class:`graph_tool.Vertex`
         """
-        data = NodeData.from_operand(inst.operands[dst_op_index])
+        data = ProvenanceVertexData.from_operand(inst.operands[dst_op_index])
         data.origin = origin
         # try to get a parent node
         op = inst.operands[src_op_index]
@@ -1515,7 +1534,137 @@ class PointerProvenanceSubparser:
         vertex = self.pgm.graph.add_vertex()
         self.pgm.graph.add_edge(parent, vertex)
         self.pgm.data[vertex] = data
+        self.pgm.layer_prov[vertex] = True
         return vertex
+
+
+class CallgraphSubparser:
+    """
+    Generate the call graph layer of the cheriplot graph.
+    """
+
+    def __init__(self, pgm, regset):
+
+        self.pgm = pgm
+        """Provenance graph manager, proxy access to the provenance graph."""
+
+        self.regset = regset
+        """Register set used to look up live vertices from the provenance layer."""
+
+        self.call_stack = deque()
+        """
+        Stack of graph vertices corresponding to the function calls
+        in the actual stack.
+        """
+
+        self.root = self.pgm.graph.add_vertex()
+        """Root vertex of the call tree"""
+
+        self.current_frame = self.root
+        """Current function vertex."""
+
+        self.pgm.layer_call[self.root] = True
+        self.pgm.data[self.root] = CallVertexData(None)
+        self.call_stack.append(self.root)
+
+    def mp_result(self):
+        """Return the partial result for multiprocess merge."""
+        return {}
+
+    def scan_cjalr(self, inst, entry, regs, last_regs, idx):
+        """
+        cjalr link_cap, target_cap
+
+        Note that we assume that the :class:`CapabilityBranchSubparser`
+        have performed any adjustment to the register set and pcc
+        and a target vertex always exist.
+        """
+        target_vertex = self.regset[inst.op1.cap_index]
+        target_cap = inst.op1.value
+        self.make_call(entry, target_cap.base + target_cap.offset,
+                       target_vertex)
+        return False
+
+    def scan_cjr(self, inst, entry, regs, last_regs, idx):
+        """
+        Attempt to register a return.
+
+        cjr cap_ret
+
+        This have the same assumptions as scan_cjalr.
+        """
+        return_vertex = self.regset[inst.op0.cap_index]
+        return_cap = inst.op0.value
+        self.make_return(entry, return_cap.base + return_cap.offset,
+                         return_vertex)
+        return False
+
+    def scan_jalr(self, inst, entry, regs, last_regs, idx):
+        self.make_call(entry)
+        return False
+
+    def scan_jr(self, inst, entry, regs, last_regs, idx):
+        self.make_return(entry)
+        return False
+
+    # def scan_syscall(self, inst, entry, regs, last_regs, idx):
+    #     pass
+
+    # def scan_exception(self, inst, entry, regs, last_regs, idx):
+    #     pass
+
+    # def scan_eret(self, inst, entry, regs, last_regs, idx):
+    #     pass
+
+    def make_call(self, entry, callee_addr, dst_vertex):
+        """
+        Create a call layer vertex in the graph.
+        XXX may want to check the expected-return address by using
+        a shadow stack, this should catch mismatch errors instead
+        of blindly relying on the cjr and jr instructions.
+        WARNING this is in fact mandatory so do it.
+
+        :param entry: trace entry of the call instruction
+        :param callee_addr: address of the callee
+        :param dst_vertex: provenance layer vertex containing
+        the call target address
+        """
+        vertex = self.pgm.graph.add_vertex()
+        self.pgm.layer_call[vertex] = True
+        self.pgm.data[vertex] = CallVertexData(callee_addr)
+        try:
+            parent = self.call_stack[-1]
+        except IndexError:
+            raise MissingParentError("Can not determine call parent for %s",
+                                     self.pgm.data[vertex])
+        edge = self.pgm.graph.add_edge(parent, vertex)
+        self.pgm.edge_operation[edge] = EdgeOperation.CALL
+        self.pgm.edge_time[edge] = entry.cycles
+        self.pgm.edge_addr[edge] = entry.pc
+
+    def make_return(self, entry):
+        """
+        Return from a call.
+        If the expected return does not match the return address then
+        do not return.
+        If the return is from a system call, eret will have no exepected
+        return so it always applies.
+        """
+        data = self.pgm.data[self.current_frame]
+        data.t_return = entry.cycles
+        data.addr_return = entry.pc
+        old_frame = self.call_stack.pop()
+        if old_frame == self.root:
+            # return from the root, we do not know what there is before that
+            # so create a new vertex in place of the root
+            self.root = self.pgm.graph.add_vertex()
+            self.pgm.layer_call[self.root] = True
+            self.pgm.data[self.root] = CallVertexData(None)
+            edge = self.pgm.graph.add_edge(self.root, old_frame)
+            self.pgm.edge_time[edge] = 0
+            self.pgm.edge_addr[edge] = 0
+            self.pgm.edge_operation[edge] = EdgeOperation.CALL
+            self.call_stack.append(self.root)
 
 
 class CheriMipsModelParser(CheriplotModelParser):
@@ -1536,11 +1685,13 @@ class CheriMipsModelParser(CheriplotModelParser):
                 self.pgm, self._provenance.regset, self._provenance)
             self._syscall_subparser = SyscallSubparser(
                 self.pgm, self._provenance.regset)
-            # self._callgraph_subparser = CallgraphSubparser(self.pgm)
+            # self._callgraph_subparser = CallgraphSubparser(
+            #     self.pgm, self._provenance.regset)
             self._add_subparser(self._provenance)
             self._add_subparser(self._initial_stack)
             self._add_subparser(self._syscall_subparser)
             self._add_subparser(self._cap_branch)
+            # self._add_subparser(self._callgraph_subparser)
 
     def mp_result(self):
         """Return the partial result from a worker process."""

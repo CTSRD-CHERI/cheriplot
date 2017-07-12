@@ -32,7 +32,7 @@ from functools import reduce
 
 from cheriplot.core import SubCommand, TaskDriver, ProgressTimer, CumulativeTimer
 from cheriplot.provenance.transforms import BFSTransform, bfs_transform
-from cheriplot.provenance.model import CheriNodeOrigin, NodeData
+from cheriplot.provenance.model import CheriNodeOrigin, ProvenanceVertexData
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +80,8 @@ class MmapStatsVisitor(BFSTransform):
         if not self.syscall_derived[u]:
             # this is relatively costly to compute so try to avoid it
             syscall_is_ret = (
-                (events["type"] & NodeData.EventType.USE_SYSCALL != 0) &
-                (events["type"] & NodeData.EventType.USE_IS_ARG == 0)).any()
+                (events["type"] & ProvenanceVertexData.EventType.USE_SYSCALL != 0) &
+                (events["type"] & ProvenanceVertexData.EventType.USE_IS_ARG == 0)).any()
             if not syscall_is_ret:
                 return
         # the vertex is used in a syscall return
@@ -91,14 +91,14 @@ class MmapStatsVisitor(BFSTransform):
 
     def _get_deref_stats(self, events):
         n_deref_load = (
-            (events["type"] & NodeData.EventType.DEREF_LOAD) != 0).sum()
+            (events["type"] & ProvenanceVertexData.EventType.DEREF_LOAD) != 0).sum()
         n_deref_store = (
-            (events["type"] & NodeData.EventType.DEREF_STORE) != 0).sum()
+            (events["type"] & ProvenanceVertexData.EventType.DEREF_STORE) != 0).sum()
         self.stats["deref_load"] += n_deref_load
         self.stats["deref_store"] += n_deref_store
 
     def _get_memop_stats(self, events):
-        mem_store = (events["type"] & NodeData.EventType.STORE) != 0
+        mem_store = (events["type"] & ProvenanceVertexData.EventType.STORE) != 0
         n_store = mem_store.sum()
         n_store_unq = len(events[mem_store]["addr"].unique())
 
@@ -109,7 +109,7 @@ class MmapStatsVisitor(BFSTransform):
         stack_base = self.graph.gp.stack.base + self.graph.gp.stack.offset
         stack_bound = self.graph.gp.stack.bound
         n_args_stack_load = (
-            ((events["type"] & NodeData.EventType.LOAD) != 0) &
+            ((events["type"] & ProvenanceVertexData.EventType.LOAD) != 0) &
             (events["addr"] >= stack_base) &
             (events["addr"] <= stack_bound)).sum()
         if n_args_stack_load > 0:
