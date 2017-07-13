@@ -414,6 +414,13 @@ class CallVertexData:
             dump += " (%s)" % self.symbol
         return dump
 
+    def __eq__(self, other):
+        if not isinstance(other, self.__class__):
+            return False
+        return (self.address == other.address and
+                self.t_return == other.t_return and
+                self.addr_return == other.addr_return)
+
 
 class EdgeOperation(IntEnum):
     """

@@ -58,6 +58,11 @@ def worker_result_base():
             "eret_cap": None,
             "eret_addr": None
         },
+        "sub_callgraph": {
+            # these must be set to a valid vertex
+            "root": None,
+            "last_frame": None,
+        }
     }
     return result
 
@@ -596,12 +601,23 @@ trace_step_2_vmap_no_previous_vertex = (
     ("prov_edge", "mem:0x10000", "root", {}),
 )
 
+# merge begin call graph vertex
+# Test merging of a simple call graph without connections to
+# the provenance graph.
+trace_begin_call_graph = (
+    ("call_node", {
+        "id": 0,
+        "addr": 0x1000,
+    }),
+)
+
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("mock_model, error", [
     (trace_begin_simple_model, None),
     (trace_begin_partial_multi_root, None),
     (trace_begin_partial_non_root, None),
     (trace_begin_partial_all_non_root, None),
+    (trace_begin_call_graph, None)
 ])
 def test_single_step_merge(worker_result_base, mock_model, error):
     """

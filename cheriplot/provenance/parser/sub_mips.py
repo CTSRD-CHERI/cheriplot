@@ -36,7 +36,7 @@ from operator import or_
 from cheriplot.core.parser import CheriMipsCallbacksManager
 from cheriplot.provenance.model import (
     CheriNodeOrigin, CheriCapPerm, ProvenanceVertexData,
-    CheriCap, CallVertexData)
+    CheriCap, CallVertexData, EdgeOperation)
 from cheriplot.provenance.transforms import bfs_transform, BFSTransform
 from cheriplot.provenance.parser.base import (
     CheriplotModelParser, RegisterSet, VertexMemoryMap)
@@ -75,6 +75,9 @@ class MergePartialSubgraphContext:
         self.prev_syscall = None
         """Previous step syscall subparser result."""
 
+        self.prev_callgraph = None
+        """Previous step call-graph subparser result."""
+
         self.curr_cycles_start = None
         """First entry cycle count of current chunk."""
 
@@ -89,6 +92,9 @@ class MergePartialSubgraphContext:
 
         self.curr_syscall = None
         """Current step syscall subparser result."""
+
+        self.curr_callgraph = None
+        """Current step call-graph subparser result."""
 
         self.step_idx = 0
         """Merge step index."""
@@ -112,6 +118,7 @@ class MergePartialSubgraphContext:
         self.curr_vmap = result["mem_vertex_map"]
         self.curr_pcc_fixup = result["sub_pcc_fixup"]
         self.curr_syscall = result["sub_syscall"]
+        self.curr_callgraph = result["sub_callgraph"]
         self.curr_cycles_start = result["cycles_start"]
         self._merge_graph_properties()
         transform = MergePartialSubgraph(self)
@@ -209,6 +216,22 @@ class MergePartialSubgraph(BFSTransform):
         self.context.prev_vmap = self.get_final_vmap()
         self.context.prev_pcc_fixup = self.get_final_pcc_fixup()
         self.context.prev_syscall = self.get_final_syscall()
+        self.context.prev_callgraph = self.get_final_callgraph()
+
+    def get_final_callgraph(self):
+        """
+        Return the call-graph subparser state to be used in the next merge
+        step.
+        Only the last frame is modified since the root information for
+        the previous step in not needed anymore.
+        """
+        callgraph = self.context.curr_callgraph
+        # set this to None to catch illegal uses
+        callgraph["root"] = None
+        if callgraph["last_frame"] is not None:
+            # tolerate graphs without a call-layer root
+            callgraph["last_frame"] = self.copy_vertex_map[callgraph["last_frame"]]
+        return callgraph
 
     def get_final_syscall(self):
         """
@@ -284,15 +307,17 @@ class MergePartialSubgraph(BFSTransform):
                 vmap.vertex_map[key] = self.copy_vertex_map[u]
         return vmap
 
-    def _merge_partial_vertex_data(self, u_data, v_data):
+    def _merge_partial_vertex_data(self, u, v):
         """
         Copy dereferences and stores from a subgraph dummy vertex
         to a vertex in the merged graph.
 
-        :param u_data: the source vertex data
-        :param v_data: the destination vertex data
+        :param u: the source vertex in the partial subgraph
+        :param v: the destination vertex in the merged graph
         """
-        self._update_time(u_data)
+        u_data = self.subgraph.vp.data[u]
+        v_data = self.graph.vp.data[v]
+        self._update_time(u)
         for key, val in u_data.events.items():
             v_data.events[key].extend(val)
 
@@ -306,18 +331,28 @@ class MergePartialSubgraph(BFSTransform):
         self.graph.vp.layer_prov[v] = self.subgraph.vp.layer_prov[u]
         self.graph.vp.layer_call[v] = self.subgraph.vp.layer_call[u]
 
-    def _update_time(self, u_data):
+    def _update_time(self, u):
         """
         Update the cycles time in vertex data to properly offset
         the time.
+
+        :param u: the subgraph vertex to update
         """
+        u_data = self.subgraph.vp.data[u]
         delta = abs(self.context.prev_cycles_end -
                     self.context.curr_cycles_start) - 1
-        u_data.events["time"][:] = (t + delta for t in u_data.events["time"])
-        if u_data.cap:
-            u_data.cap.t_alloc += delta
-            if u_data.cap.t_free >= 0:
-                u_data.cap.t_free += delta
+        if self.subgraph.vp.layer_prov[u]:
+            u_data.events["time"][:] = (t + delta for t in u_data.events["time"])
+            if u_data.cap:
+                u_data.cap.t_alloc += delta
+                if u_data.cap.t_free >= 0:
+                    u_data.cap.t_free += delta
+        elif self.subgraph.vp.layer_call[u]:
+            try:
+                u_data.t_return += delta
+            except TypeError:
+                # t_return is None
+                pass
 
     def _check_cap_compatible(self, u_data, v_data):
         """
@@ -416,7 +451,7 @@ class MergePartialSubgraph(BFSTransform):
             else:
                 # the root can be merged with the prev_vmap content
                 self.copy_vertex_map[u] = v
-                self._merge_partial_vertex_data(u_data, v_data)
+                self._merge_partial_vertex_data(u, v)
 
     def _merge_trace_beginning(self, u):
         """
@@ -520,12 +555,10 @@ class MergePartialSubgraph(BFSTransform):
         Remove ROOT children since the ROOT should not
         have been created.
         """
-        u_data = self.subgraph.vp.data[u]
         logger.debug("initial vertex prev graph:%s", v)
         self.copy_vertex_map[u] = v
-        v_data = self.graph.vp.data[v]
         # XXX check that prev is also in the same layer
-        self._merge_partial_vertex_data(u_data, v_data)
+        self._merge_partial_vertex_data(u, v)
         for u_out in u.out_neighbours():
             logger.debug("initial vertex out-neighbour subgraph:%s", u_out)
             u_out_data = self.subgraph.vp.data[u_out]
@@ -539,7 +572,8 @@ class MergePartialSubgraph(BFSTransform):
                 # the dummy so the connectivity is preserved
                 # so all dereferences and stores of u_out are merged in the
                 # parent
-                self._merge_partial_vertex_data(u_out_data, v_data)
+                v_data = self.graph.vp.data[v]
+                self._merge_partial_vertex_data(u_out, v)
                 if not self._check_cap_compatible(u_out_data, v_data):
                     logger.debug("do not suppress ROOT %s, previous "
                                  "regset does not have matching "
@@ -555,12 +589,13 @@ class MergePartialSubgraph(BFSTransform):
         Case (3) of examine_vertex
         """
         v = self.graph.add_vertex()
-        self._update_time(self.subgraph.vp.data[u])
+        self._update_time(u)
         udata = self.subgraph.vp.data[u]
         self.graph.vp.data[v] = udata
         self._merge_layer(u, v)
         self.copy_vertex_map[u] = v
-        if udata.origin != CheriNodeOrigin.ROOT:
+        if (self.subgraph.vp.layer_prov[u] and
+            udata.origin != CheriNodeOrigin.ROOT):
             # a root have no in-connections
             for u_in in u.in_neighbours():
                 logger.debug("in-neighbour subgraph-idx:%s", u_in)
@@ -624,6 +659,18 @@ class MergePartialSubgraph(BFSTransform):
             u_data.add_use_syscall(curr_syscall["eret_time"],
                                    prev_syscall["code"], False)
 
+    def _merge_callgraph(self, u):
+        """
+        Merge the root of the call tree of the subgraph to
+        the last call-layer vertex used in the previous step.
+        XXX this is actually more complicated:
+        The extra returns should be matched to previous call stack
+        and merge the call trees.
+        """
+        assert self.subgraph.vp.layer_call[u],\
+            "Subgraph call-tree root not in the call layer."
+        self.copy_vertex_map[u] = self.context.prev_callgraph["last_frame"]
+
     def examine_vertex(self, u):
         """
         Merge each vertex of the subgraph in the main merged graph.
@@ -677,7 +724,10 @@ class MergePartialSubgraph(BFSTransform):
             if u == self.context.curr_syscall["eret_cap"]:
                 self._merge_syscall(u)
             # merge vertices
-            if (u in self.curr_regset.initial_reg_nodes or
+            if u == self.context.curr_callgraph["root"]:
+                logger.debug("Merge call graph root subgraph:%s", u)
+                self._merge_callgraph(u)
+            elif (u in self.curr_regset.initial_reg_nodes or
                 u == self.curr_regset.initial_pcc):
                 logger.debug("Merge initial vertex subgraph:%s", u)
                 self._merge_initial_vertex(u)
@@ -1569,7 +1619,10 @@ class CallgraphSubparser:
 
     def mp_result(self):
         """Return the partial result for multiprocess merge."""
-        return {}
+        return {
+            "root": int(self.root),
+            "last_frame": int(self.current_frame),
+        }
 
     def scan_cjalr(self, inst, entry, regs, last_regs, idx):
         """
@@ -1588,11 +1641,12 @@ class CallgraphSubparser:
     def scan_cjr(self, inst, entry, regs, last_regs, idx):
         """
         Attempt to register a return.
-
-        cjr cap_ret
-
         This have the same assumptions as scan_cjalr.
+        cjr cap_ret
         """
+        if inst.op0.cap_index != 17:
+            # only consider the return capability
+            return False
         return_vertex = self.regset[inst.op0.cap_index]
         return_cap = inst.op0.value
         self.make_return(entry, return_cap.base + return_cap.offset,
@@ -1604,7 +1658,8 @@ class CallgraphSubparser:
         return False
 
     def scan_jr(self, inst, entry, regs, last_regs, idx):
-        self.make_return(entry)
+        addr = inst.op0.value
+        self.make_return(entry, addr, None)
         return False
 
     # def scan_syscall(self, inst, entry, regs, last_regs, idx):
@@ -1642,7 +1697,7 @@ class CallgraphSubparser:
         self.pgm.edge_time[edge] = entry.cycles
         self.pgm.edge_addr[edge] = entry.pc
 
-    def make_return(self, entry):
+    def make_return(self, entry, addr, vertex):
         """
         Return from a call.
         If the expected return does not match the return address then
@@ -1685,13 +1740,13 @@ class CheriMipsModelParser(CheriplotModelParser):
                 self.pgm, self._provenance.regset, self._provenance)
             self._syscall_subparser = SyscallSubparser(
                 self.pgm, self._provenance.regset)
-            # self._callgraph_subparser = CallgraphSubparser(
-            #     self.pgm, self._provenance.regset)
+            self._callgraph_subparser = CallgraphSubparser(
+                self.pgm, self._provenance.regset)
             self._add_subparser(self._provenance)
             self._add_subparser(self._initial_stack)
             self._add_subparser(self._syscall_subparser)
             self._add_subparser(self._cap_branch)
-            # self._add_subparser(self._callgraph_subparser)
+            self._add_subparser(self._callgraph_subparser)
 
     def mp_result(self):
         """Return the partial result from a worker process."""
@@ -1699,4 +1754,5 @@ class CheriMipsModelParser(CheriplotModelParser):
         state.update(self._provenance.mp_result())
         state["sub_pcc_fixup"] = self._cap_branch.mp_result()
         state["sub_syscall"] = self._syscall_subparser.mp_result()
+        state["sub_callgraph"] = self._callgraph_subparser.mp_result()
         return state

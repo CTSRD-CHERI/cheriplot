@@ -18,7 +18,7 @@ from cheriplot.provenance.model import CheriNodeOrigin, CheriCapPerm
 
 from cheriplot.core.test import pct_cap
 from tests.provenance.helper import (
-    assert_graph_equal, mk_pvertex, mk_vertex_mem, mk_vertex_deref,
+    assert_graph_equal, mk_pvertex, mk_vertex_mem, mk_vertex_deref, mk_cvertex,
     ProvenanceTraceWriter)
 
 logging.basicConfig(level=logging.DEBUG)
@@ -39,21 +39,24 @@ start_cap = pct_cap(0x1000, 0x0, 0x1000, perm)
 # ROOT(pcc)
 # 
 trace_mem_init = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "pvertex": mk_pvertex(start_cap)
+        "pvertex": mk_pvertex(start_cap, vid="start")
     }),
     ("cmove $c29, $c29", { # inferred kcc vertex 1
         "c29": kcc_default,
-        "pvertex": mk_pvertex(kcc_default)
+        "pvertex": mk_pvertex(kcc_default, vid="kcc")
     }),
     ("cmove $c30, $c30", { # inferred kdc vertex 2
         "c30": kdc_default,
-        "pvertex": mk_pvertex(kdc_default)
+        "pvertex": mk_pvertex(kdc_default, vid="kdc")
     }),
     ("cmove $c31, $c31", { # vertex 3
         "c31": pcc,
-        "pvertex": mk_pvertex(pcc)
+        "pvertex": mk_pvertex(pcc, vid="pcc")
     }),
     ("eret", {}), # mark initialization end
 )
@@ -70,7 +73,7 @@ trace_mem_st_ld = (
     # get ddc
     ("cgetdefault $c2", { # ddc vertex 4
         "c2": ddc,
-        "pvertex": mk_pvertex(ddc)
+        "pvertex": mk_pvertex(ddc, vid="ddc")
     }),
     # worker set split here
     ("lui $at, 0x100", {"1": 0x100}),
@@ -80,28 +83,28 @@ trace_mem_st_ld = (
         "c1": start_cap,
         "store": True,
         "mem": 0x100,
-        "vertex_mem": mk_vertex_mem(0, 0x100, "store"),
-        "vertex_deref": mk_vertex_deref(4, 0x100, True, "store")
+        "vertex_mem": mk_vertex_mem("start", 0x100, "store"),
+        "vertex_deref": mk_vertex_deref("ddc", 0x100, True, "store")
     }),
     # create (v4 ddc) -> (v6) and place it in c3
     ("csetbounds $c1, $c2, $at", { # vertex 5
         "c1": pct_cap(0x1000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
-                              parent=4, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="ddc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
     # reload vertex 0 from 0x100
     ("clc $c1, $zero, 0x0($c2)", {
         "c1": start_cap,
         "load": True,
         "mem": 0x100,
-        "vertex_mem": mk_vertex_mem(0, 0x100, "load"),
-        "vertex_deref": mk_vertex_deref(4, 0x100, True, "load")
+        "vertex_mem": mk_vertex_mem("start", 0x100, "load"),
+        "vertex_deref": mk_vertex_deref("ddc", 0x100, True, "load")
     }),
     # create ([0x100]) -> (v6) that should be (v0) -> (v6)
     ("csetbounds $c1, $c1, $at", { # vertex 6
         "c1": pct_cap(0x1000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
-                              parent=0, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="start", origin=CheriNodeOrigin.SETBOUNDS)
     }),
 )
 
@@ -114,7 +117,7 @@ trace_mem_2st_ld = (
     # get ddc
     ("cgetdefault $c2", { # ddc vertex 4
         "c2": ddc,
-        "pvertex": mk_pvertex(ddc)
+        "pvertex": mk_pvertex(ddc, vid="ddc")
     }),
     ("lui $at, 0x100", {"1": 0x150}),
     ("csetoffset $c2, $c2, $at", {"c2": pct_cap(0x0, 0x150, 0x10000, perm)}),
@@ -123,23 +126,24 @@ trace_mem_2st_ld = (
         "c1": start_cap,
         "store": True,
         "mem": 0x150,
-        "vertex_mem": mk_vertex_mem(0, 0x150, "store"),
-        "vertex_deref": mk_vertex_deref(4, 0x150, True, "store")
+        "vertex_mem": mk_vertex_mem("start", 0x150, "store"),
+        "vertex_deref": mk_vertex_deref("ddc", 0x150, True, "store")
     }),
     # worker set split here
     # create new cap in c1
     ("csetbounds $c1, $c2, $at", { # vertex 5
         "c1": pct_cap(0x1000, 0x0, 0x150, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x150, perm),
-                              parent=4, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="ddc", origin=CheriNodeOrigin.SETBOUNDS,
+                              vid="v1000")
     }),
     # store v5 at 0x150
     ("csc $c1, $zero, 0x0($c2)", {
         "c1": start_cap,
         "store": True,
         "mem": 0x150,
-        "vertex_mem": mk_vertex_mem(5, 0x150, "store"),
-        "vertex_deref": mk_vertex_deref(4, 0x150, True, "store")
+        "vertex_mem": mk_vertex_mem("v1000", 0x150, "store"),
+        "vertex_deref": mk_vertex_deref("ddc", 0x150, True, "store")
     }),
     # clobber c1
     ("cmove $c1, $c2", {"c1": pct_cap(0x0, 0x150, 0x10000, perm)}),
@@ -148,15 +152,15 @@ trace_mem_2st_ld = (
         "c1": pct_cap(0x1000, 0x0, 0x150, perm),
         "load": True,
         "mem": 0x150,
-        "vertex_mem": mk_vertex_mem(5, 0x150, "load"),
-        "vertex_deref": mk_vertex_deref(4, 0x150, True, "load")
+        "vertex_mem": mk_vertex_mem("v1000", 0x150, "load"),
+        "vertex_deref": mk_vertex_deref("ddc", 0x150, True, "load")
     }),
     # derive loaded cap and make sure that the node parent is v5
     ("lui $at, 0x100", {"1": 0x100}),
     ("csetbounds $c1, $c2, $at", { # vertex 6
         "c1": pct_cap(0x1000, 0x0, 0x150, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x150, perm),
-                              parent=4, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="ddc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
 )
 
@@ -168,19 +172,19 @@ trace_mem_st_ld_root = (
     # split worker set here
     ("clc $c2, $zero, 0x700($c1)", { # vertex 4
         "c2": pct_cap(0x2000, 0x0, 0x1000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x1000, perm)),
+        "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x1000, perm), vid="v2000"),
         "load": True,
         "mem": 0x1700,
-        "vertex_deref": mk_vertex_deref(0, 0x1700, True, "load"),
-        "vertex_mem": mk_vertex_mem(4, 0x1700, "load"),
+        "vertex_deref": mk_vertex_deref("start", 0x1700, True, "load"),
+        "vertex_mem": mk_vertex_mem("v2000", 0x1700, "load"),
     }),
     ("csc $c4, $zero, 0xf00($c1)", { # vertex 5
         "c4": pct_cap(0x8000, 0x100, 0x2000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x8000, 0x100, 0x2000, perm)),
+        "pvertex": mk_pvertex(pct_cap(0x8000, 0x100, 0x2000, perm), vid="v8000"),
         "store": True,
         "mem": 0x1f00,
-        "vertex_deref": mk_vertex_deref(0, 0x1f00, True, "store"),
-        "vertex_mem": mk_vertex_mem(5, 0x1f00, "store")
+        "vertex_deref": mk_vertex_deref("start", 0x1f00, True, "store"),
+        "vertex_mem": mk_vertex_mem("v8000", 0x1f00, "store")
     }),
     # pad to make the working set of workers to split at the marked point
     ("nop", {}), ("nop", {}), ("nop", {}),
@@ -194,13 +198,13 @@ trace_mem_st_ld_invalid = (
         "c2": pct_cap(0xbadadd12, 0xbad, 0x1000, 0xbaad, valid=False),
         "load": True,
         "mem": 0x1800,
-        "vertex_deref": mk_vertex_deref(0, 0x1800, True, "load")
+        "vertex_deref": mk_vertex_deref("start", 0x1800, True, "load")
     }),
     ("csc $c2, $zero, 0x800($c1)", {
         "c2": pct_cap(0xbadadd12, 0xbad, 0x1000, 0xbaad, valid=False),
         "load": True,
         "mem": 0x1800,
-        "vertex_deref": mk_vertex_deref(0, 0x1800, True, "load")
+        "vertex_deref": mk_vertex_deref("start", 0x1800, True, "load")
     }),
     # pad to make the working set of workers to split at the marked point
     ("nop", {}), ("nop", {}), ("nop", {}),
@@ -237,7 +241,7 @@ trace_mem_mp_deref_merge = (
     ("csetbounds $c2, $c1, $at", { # vertex 4
         "c2": pct_cap(0x1000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
-                              parent=0, origin=CheriNodeOrigin.SETBOUNDS),
+                              parent="start", origin=CheriNodeOrigin.SETBOUNDS),
     }),
     # dereference and store c1 so that the dummy vertex takes some
     # data to propagate to v0
@@ -245,13 +249,13 @@ trace_mem_mp_deref_merge = (
         "c1": start_cap,
         "mem": 0x1000,
         "store": True,
-        "vertex_deref": mk_vertex_deref(0, 0x1000, True, "store"),
-        "vertex_mem": mk_vertex_mem(0, 0x1000, "store"),
+        "vertex_deref": mk_vertex_deref("start", 0x1000, True, "store"),
+        "vertex_mem": mk_vertex_mem("start", 0x1000, "store"),
     }),
     # create a root that goes in c1
     ("cgetdefault $c1", { # vertex 5
         "c1": ddc,
-        "pvertex": mk_pvertex(ddc)
+        "pvertex": mk_pvertex(ddc, vid="ddc")
     }),
     # pad to make the working set of workers to split at the marked point
     ("nop", {}),
@@ -271,22 +275,22 @@ trace_mem_mp_vertex_map = (
         "c1": start_cap,
         "store": True,
         "mem": 0x1000,
-        "vertex_deref": mk_vertex_deref(0, 0x1000, True, "store"),
-        "vertex_mem": mk_vertex_mem(0, 0x1000, "store"),
+        "vertex_deref": mk_vertex_deref("start", 0x1000, True, "store"),
+        "vertex_mem": mk_vertex_mem("start", 0x1000, "store"),
     }),
     # split worker set here
     ("clc $c2, $zero, 0x0($c1)", {
         "c2": start_cap,
         "load": True,
         "mem": 0x1000,
-        "vertex_deref": mk_vertex_deref(0, 0x1000, True, "load"),
-        "vertex_mem": mk_vertex_mem(0, 0x1000, "load"),
+        "vertex_deref": mk_vertex_deref("start", 0x1000, True, "load"),
+        "vertex_mem": mk_vertex_mem("start", 0x1000, "load"),
     }),
     ("lui $at, 0x100", {"1": 0x100}),
     ("csetbounds $c3, $c2, $at", { # vertex 4
         "c3": pct_cap(0x1000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
-                              parent=0, origin=CheriNodeOrigin.SETBOUNDS),
+                              parent="start", origin=CheriNodeOrigin.SETBOUNDS),
     }),
     # pad to make the working set of workers to split at the marked point
     ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),

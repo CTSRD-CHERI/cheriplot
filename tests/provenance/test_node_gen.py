@@ -12,7 +12,7 @@ from cheriplot.provenance.model import CheriNodeOrigin, CheriCapPerm
 
 from cheriplot.core.test import pct_cap
 from tests.provenance.helper import (
-    assert_graph_equal, mk_pvertex, ProvenanceTraceWriter)
+    assert_graph_equal, mk_pvertex, mk_cvertex, ProvenanceTraceWriter)
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -33,21 +33,24 @@ perm_cap = pct_cap(0x1100, 0x0, 0x100, CheriCapPerm.STORE)
 # common part of the trace used for tests that do not
 # require special initialization of the registers
 trace_init = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "pvertex": mk_pvertex(start_cap)
+        "pvertex": mk_pvertex(start_cap, vid="start")
     }),
     ("cmove $c29, $c29", { # kcc vertex 1
         "c29": kcc_default,
-        "pvertex": mk_pvertex(kcc_default)
+        "pvertex": mk_pvertex(kcc_default, vid="kcc")
     }),
     ("cmove $c30, $c30", { # kdc vertex 2
         "c30": kdc_default,
-        "pvertex": mk_pvertex(kdc_default)
+        "pvertex": mk_pvertex(kdc_default, vid="kdc")
     }),
     ("cmove $c31, $c31", { # vertex 3
         "c31": pcc,
-        "pvertex": mk_pvertex(pcc)
+        "pvertex": mk_pvertex(pcc, vid="pcc")
     }),
     ("eret", {}), # mark initialization end
 )
@@ -60,38 +63,41 @@ trace_init = (
 # ROOT(kcc)
 # ROOT(kdc)
 trace_explicit_kcc_kdc = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "pvertex": mk_pvertex(start_cap)
+        "pvertex": mk_pvertex(start_cap, vid="start")
     }),
     ("cmove $c29, $c29", { # kcc vertex 1
         "c29": kcc,
-        "pvertex": mk_pvertex(kcc)
+        "pvertex": mk_pvertex(kcc, vid="kcc")
     }),
     ("cmove $c30, $c30", { # kdc vertex 2
         "c30": kdc,
-        "pvertex": mk_pvertex(kdc)
+        "pvertex": mk_pvertex(kdc, vid="kdc")
     }),
     ("cmove $c31, $c31", { # vertex 3
         "c31": pcc,
-        "pvertex": mk_pvertex(pcc)
+        "pvertex": mk_pvertex(pcc, vid="pcc")
     }),
     ("eret", {}),
     # worker set split here
     ("lui $at, 0x100", {"1": 0x100}),
     ("cfromptr $c2, $c1, $at", { # vertex 4
         "c2": ptr_cap,
-        "pvertex": mk_pvertex(ptr_cap, 0, CheriNodeOrigin.FROMPTR)
+        "pvertex": mk_pvertex(ptr_cap, "start", CheriNodeOrigin.FROMPTR, vid="pv4")
     }),
     ("daddiu $at, $at, 0x100", {"1": 0x200}),
     ("csetbounds $c1, $c2, $at", { # vertex 5
         "c1": bound_cap,
-        "pvertex": mk_pvertex(bound_cap, 4, CheriNodeOrigin.SETBOUNDS)
+        "pvertex": mk_pvertex(bound_cap, "pv4", CheriNodeOrigin.SETBOUNDS)
     }),
     ("lui $at, 0x0c", {"1": 0x08}),
     ("candperm $c2, $c2, $at", { # vertex 6
         "c2": perm_cap,
-        "pvertex": mk_pvertex(perm_cap, 4, CheriNodeOrigin.ANDPERM)
+        "pvertex": mk_pvertex(perm_cap, "pv4", CheriNodeOrigin.ANDPERM)
     })
 )
 
@@ -103,23 +109,26 @@ trace_explicit_kcc_kdc = (
 # ii) during an exception/syscall cgetpcc gives kcc
 # iii) during an exception/syscall epcc is the initial pcc
 #
-# ROOT(kcc) -> B (v3)
-#          `-> B (v6)
+# ROOT(kcc) -> B (v400)
+#          `-> B (v500)
 # ROOT(kdc_default)
-# ROOT(pcc) -> B (v3)
-#          `-> B (v5)
+# ROOT(pcc) -> B (v300)
+#          `-> B (v0c)
 trace_pcc_epcc_tracking = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
     ("cmove $c29, $c29", { # kcc vertex 0
         "c29": kcc,
-        "pvertex": mk_pvertex(kcc)
+        "pvertex": mk_pvertex(kcc, vid="kcc")
     }),
     ("cmove $c30, $c30", { # kdc vertex 1
         "c30": kdc_default,
-        "pvertex": mk_pvertex(kdc_default)
+        "pvertex": mk_pvertex(kdc_default, vid="kdc")
     }),
     ("cmove $c31, $c31", { # vertex 2 (pcc vertex)
         "c31": pcc,
-        "pvertex": mk_pvertex(pcc)
+        "pvertex": mk_pvertex(pcc, vid="pcc")
     }),
     ("eret", {}),
     # derive capability from pcc vertex
@@ -133,7 +142,8 @@ trace_pcc_epcc_tracking = (
         "c2": pct_cap(0x300, 0x0, 0x100, exec_perm),
         "pvertex": mk_pvertex(
             pct_cap(0x300, 0x0, 0x100, exec_perm),
-            parent=2, origin=CheriNodeOrigin.SETBOUNDS)        
+            parent="pcc", origin=CheriNodeOrigin.SETBOUNDS,
+            vid="v300")
     }),
     # trigger exception, check that pcc-derived capabilities
     # are appended to kcc.
@@ -157,7 +167,8 @@ trace_pcc_epcc_tracking = (
         "c2": pct_cap(0x400, 0x0, 0x100, CheriCapPerm.all()),
         "pvertex": mk_pvertex(
             pct_cap(0x400, 0x0, 0x100, CheriCapPerm.all()),
-            parent=0, origin=CheriNodeOrigin.SETBOUNDS)
+            parent="kcc", origin=CheriNodeOrigin.SETBOUNDS,
+            vid="v400")
     }),
     # c31 here should be the pcc, NOT updated with the content of c2
     # after cjr
@@ -168,7 +179,8 @@ trace_pcc_epcc_tracking = (
         "c2": pct_cap(0x0c, 0x0, 0x100, exec_perm),
         "pvertex": mk_pvertex(
             pct_cap(0x0c, 0x0, 0x100, exec_perm),
-            parent=2, origin=CheriNodeOrigin.SETBOUNDS)
+            parent="pcc", origin=CheriNodeOrigin.SETBOUNDS,
+            vid="v0c")
     }),
     # nested interrupt
     ("ld $2, 0($1)", {"exc": 0}),
@@ -182,7 +194,8 @@ trace_pcc_epcc_tracking = (
         "c2": pct_cap(0x500, 0x0, 0x100, CheriCapPerm.all()),
         "pvertex": mk_pvertex(
             pct_cap(0x500, 0x0, 0x100, CheriCapPerm.all()),
-            parent=0, origin=CheriNodeOrigin.SETBOUNDS)
+            parent="kcc", origin=CheriNodeOrigin.SETBOUNDS,
+            vid="v500")
     }),
 )
 
@@ -193,21 +206,24 @@ trace_pcc_epcc_tracking = (
 #
 # ROOT(ddc) -> B
 trace_ddc = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
     ("cmove $c0, $c0", { # ddc vertex 0
         "c0": ddc,
-        "pvertex": mk_pvertex(ddc)
+        "pvertex": mk_pvertex(ddc, vid="ddc")
     }),
     ("cmove $c29, $c29", { # kcc vertex 1
         "c29": kcc_default,
-        "pvertex": mk_pvertex(kcc_default)
+        "pvertex": mk_pvertex(kcc_default, vid="kcc")
     }),
     ("cmove $c30, $c30", { # kdc vertex 2
         "c30": kdc_default,
-        "pvertex": mk_pvertex(kdc_default)
+        "pvertex": mk_pvertex(kdc_default, vid="kdc")
     }),
     ("cmove $c31, $c31", { # vertex 3 (pcc vertex)
         "c31": pcc,
-        "pvertex": mk_pvertex(pcc)
+        "pvertex": mk_pvertex(pcc, vid="pcc")
     }),
     ("eret", {}),
     # derive capability from ddc vertex
@@ -221,7 +237,7 @@ trace_ddc = (
         "c2": pct_cap(0x300, 0x0, 0x100, exec_perm),
         "pvertex": mk_pvertex(
             pct_cap(0x300, 0x0, 0x100, exec_perm),
-            parent=0, origin=CheriNodeOrigin.SETBOUNDS)
+            parent="ddc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
 )
 
@@ -256,7 +272,7 @@ trace_mp_move_and_setbounds = (
     ("csetbounds $c1, $c2, $at", { # vertex 4
         "c1": pct_cap(0x1000, 0x00, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x00, 0x100, perm),
-                              parent=0, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="start", origin=CheriNodeOrigin.SETBOUNDS)
     }),
 )
 
@@ -279,7 +295,8 @@ trace_mp_cjr_exception_pcc_update = (
     ("csetbounds $c2, $c2, $at", { # vertex 4
         "c2": pct_cap(0x100, 0x0, 0x100, exec_perm),
         "pvertex": mk_pvertex(pct_cap(0x100, 0x0, 0x100, exec_perm),
-                              parent=3, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="pcc", origin=CheriNodeOrigin.SETBOUNDS,
+                              vid="expected_pcc")
     }),
     ("cjr $c2", {"exc": 1}),
     ("nop", {}),
@@ -292,7 +309,7 @@ trace_mp_cjr_exception_pcc_update = (
         "c2": pct_cap(0x100, 0x0, 0x0c, exec_perm),
         "pvertex": mk_pvertex(
             pct_cap(0x100, 0x0, 0x0c, exec_perm),
-            parent=4, origin=CheriNodeOrigin.SETBOUNDS)
+            parent="expected_pcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
     # pad so that the worker set is split at the marked point
     ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),
@@ -314,7 +331,7 @@ trace_mp_cjr_exception_pcc_unchanged = (
     ("csetbounds $c2, $c2, $at", { # vertex 4
         "c2": pct_cap(0x100, 0x0, 0x100, exec_perm),
         "pvertex": mk_pvertex(pct_cap(0x100, 0x0, 0x100, exec_perm),
-                              parent=3, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="pcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
     ("cjr $c2", {"exc": 1}),
     ("nop", {}),
@@ -327,7 +344,7 @@ trace_mp_cjr_exception_pcc_unchanged = (
         "c2": pct_cap(0x100, 0x0, 0x0c, exec_perm),
         "pvertex": mk_pvertex(
             pct_cap(0x100, 0x0, 0x0c, exec_perm),
-            parent=3, origin=CheriNodeOrigin.SETBOUNDS)
+            parent="pcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
     # pad so that the worker set is split at the marked point
     ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),
@@ -340,17 +357,20 @@ trace_mp_cjr_exception_pcc_unchanged = (
 # checked for the possibility to assing a valid vertex when none
 # is present.
 trace_cpreg_set = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
     ("csetdefault $c1", { # vertex 0
         "c1": pct_cap(0x1000, 0x0, 0x1000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x1000, perm))
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x1000, perm), vid="ddc")
     }),
     ("csetepcc $c2", { # vertex 1
         "c2": pct_cap(0x2000, 0x0, 0x1000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x1000, perm))
+        "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x1000, perm), vid="epcc")
     }),
     ("csetkcc $c3", { # vertex 2
         "c3": pct_cap(0x3000, 0x0, 0x1000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x3000, 0x0, 0x1000, perm))
+        "pvertex": mk_pvertex(pct_cap(0x3000, 0x0, 0x1000, perm), vid="kcc")
     }),
     # XXX this crashes the assembler?
     # ("csetkdc $c4", {
@@ -361,33 +381,36 @@ trace_cpreg_set = (
     ("csetbounds $c5, $c1, $at", { # vertex 3
         "c3": pct_cap(0x1000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
-                              parent=0, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="ddc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
     ("csetbounds $c5, $c2, $at", { # vertex 4
         "c5": pct_cap(0x2000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x100, perm),
-                              parent=1, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="epcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
     ("csetbounds $c5, $c3, $at", { # vertex 5
         "c5": pct_cap(0x3000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x3000, 0x0, 0x100, perm),
-                              parent=2, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="kcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
 )
 
 # see trace_cpreg_get
 trace_cpreg_get = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
     ("cgetdefault $c1", { # vertex 0
         "c1": pct_cap(0x1000, 0x0, 0x1000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x1000, perm))
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x1000, perm), vid="ddc")
     }),
     ("cgetepcc $c2", { # vertex 1
         "c2": pct_cap(0x2000, 0x0, 0x1000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x1000, perm))
+        "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x1000, perm), vid="epcc")
     }),
     ("cgetkcc $c3", { # vertex 2
         "c3": pct_cap(0x3000, 0x0, 0x1000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x3000, 0x0, 0x1000, perm))
+        "pvertex": mk_pvertex(pct_cap(0x3000, 0x0, 0x1000, perm), vid="kcc")
     }),
     # XXX this crashes the assembler?
     # ("cgetkdc $c4", {
@@ -396,24 +419,24 @@ trace_cpreg_get = (
     # }),
     ("cgetpcc $c5", { # vertex 3
         "c5": pct_cap(0x5000, 0x0, 0x1000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x5000, 0x0, 0x1000, perm))
+        "pvertex": mk_pvertex(pct_cap(0x5000, 0x0, 0x1000, perm), vid="pcc")
     }),
     ("lui $at, 0x100", {"1": 0x100}),
     # worker set split here
     ("csetbounds $c6, $c0, $at", { # vertex 4
         "c3": pct_cap(0x1000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
-                              parent=0, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="ddc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
     ("csetbounds $c6, $c31, $at", { # vertex 5
         "c6": pct_cap(0x2000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x100, perm),
-                              parent=1, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="epcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
     ("csetbounds $c6, $c29, $at", { # vertex 6
         "c6": pct_cap(0x3000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x3000, 0x0, 0x100, perm),
-                              parent=2, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="kcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
     ("cgetpcc $c7", {
         "c7": pct_cap(0x5000, 0x0, 0x1000, perm),
@@ -421,16 +444,19 @@ trace_cpreg_get = (
     ("csetbounds $c6, $c7, $at", { # vertex 7
         "c6": pct_cap(0x5000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x5000, 0x0, 0x100, perm),
-                              parent=3, origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="pcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
 )
 
 # check that capability register contents are propagated properly
 # when using cheri instructions
 trace_cap_propagate_setoffset = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "pvertex": mk_pvertex(start_cap)
+        "pvertex": mk_pvertex(start_cap, vid="start")
     }),
     ("lui $at, 0x100", {"1": 0x100}),
     # working set split here
@@ -440,16 +466,19 @@ trace_cap_propagate_setoffset = (
     ("csetbounds $c2, $c2, $at", { # vertex 1
         "c2": pct_cap(0x1100, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1100, 0x0, 0x100, perm),
-                              parent=0, origin=CheriNodeOrigin.SETBOUNDS),
+                              parent="start", origin=CheriNodeOrigin.SETBOUNDS),
     }),
 )
 
 # check that capability register contents are propagated properly
 # when using cheri instructions
 trace_cap_propagate_incoffset = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "pvertex": mk_pvertex(start_cap)
+        "pvertex": mk_pvertex(start_cap, vid="start")
     }),
     ("lui $at, 0x100", {"1": 0x100}),
     # working set split here
@@ -459,7 +488,7 @@ trace_cap_propagate_incoffset = (
     ("csetbounds $c2, $c2, $at", { # vertex 1
         "c2": pct_cap(0x1100, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1100, 0x0, 0x100, perm),
-                              parent=0, origin=CheriNodeOrigin.SETBOUNDS),
+                              parent="start", origin=CheriNodeOrigin.SETBOUNDS),
     }),
 )
 
@@ -470,6 +499,9 @@ trace_cap_propagate_incoffset = (
 # there is nothing to compare to in the previous merge step.
 # UNK -> P
 trace_invalid_derive_from_unknown = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None)
+    }),
     ("cmove $c31, $c31", { # pcc is always loaded after eret
         "c31": pcc,
         "pvertex": mk_pvertex(pcc)

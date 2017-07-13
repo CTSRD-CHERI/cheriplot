@@ -39,10 +39,6 @@ def assert_vertex_equal(exp_graph, exp_v, other_graph, other_v):
     Test that two provenance graph vertices have the same
     properties and data.
     """
-    # test vertex data
-    v_data = exp_graph.vp.data[exp_v]
-    u_data = other_graph.vp.data[other_v]
-    assert_vertex_data_equal(v_data, u_data)
     # test layer association
     v_layer = exp_graph.vp.layer_prov[exp_v]
     u_layer = other_graph.vp.layer_prov[other_v]
@@ -52,8 +48,17 @@ def assert_vertex_equal(exp_graph, exp_v, other_graph, other_v):
     u_layer = other_graph.vp.layer_call[other_v]
     assert v_layer == u_layer,\
         "call layer mapping differ expect:%s found:%s" % (v_layer, u_layer)
+    # test vertex data
+    v_data = exp_graph.vp.data[exp_v]
+    u_data = other_graph.vp.data[other_v]
+    if other_graph.vp.layer_prov[other_v]:
+        assert_prov_vertex_data_equal(v_data, u_data)
+    elif other_graph.vp.layer_call[other_v]:
+        assert_call_vertex_data_equal(v_data, u_data)
+    else:
+        pytest.fail("Invalid vertex layer %s (expected: %s)", u_data, v_data)
 
-def assert_vertex_data_equal(u_data, v_data):
+def assert_prov_vertex_data_equal(u_data, v_data):
     """
     Test that two provenance graph vertices have the same data
     """
@@ -96,6 +101,13 @@ def assert_vertex_data_equal(u_data, v_data):
 
     assert bool_match, "events differ:\nexpect:%s\nfound:%s" % (
         u_data.event_tbl, v_data.event_tbl)
+
+def assert_call_vertex_data_equal(u_data, v_data):
+    """
+    Test that two call graph vertices have the same data
+    """
+    assert u_data == v_data, "call differ:\nexpect:%s\nfound:%s" % (
+        u_data, v_data)
 
 def assert_graph_equal(expect, other):
     """
@@ -141,8 +153,8 @@ def assert_graph_equal(expect, other):
             msg += "vertex %d: %s\n\n" % e
         pytest.fail(msg)
 
-def mk_pvertex(cap, parent=-1, origin=CheriNodeOrigin.ROOT, pc=None,
-              mem=None, t_alloc=-1, t_free=-1):
+def mk_pvertex(cap, parent=None, origin=CheriNodeOrigin.ROOT, pc=None,
+               mem=None, t_alloc=-1, t_free=-1, vid=None):
     """
     Create ProvenanceTraceWriter side-effect to produce a vertex in the
     provenance layer.
@@ -157,10 +169,10 @@ def mk_pvertex(cap, parent=-1, origin=CheriNodeOrigin.ROOT, pc=None,
         data.cap = CheriCap(cap)
         data.cap.t_alloc = t_alloc
         data.cap.t_free = t_free
-        return data, None
+        return data, None, vid
     return (parent, _data)
 
-def mk_cvertex(addr, parent=-1, pc=None, call_time=None):
+def mk_cvertex(addr, parent=None, pc=None, call_time=None, vid=None):
     """
     Create ProvenanceTraceWriter side-effect to produce a vertex in the
     call layer.
@@ -173,7 +185,7 @@ def mk_cvertex(addr, parent=-1, pc=None, call_time=None):
             edata["addr"] = pc
         if call_time is not None:
             edata["time"] = call_time
-        return data, edata
+        return data, edata, vid
     return (parent, _data)
 
 def mk_cvertex_ret(parent):
@@ -183,7 +195,7 @@ def mk_cvertex_ret(parent):
     """
     return parent
 
-def mk_vertex_deref(vertex_idx, addr, is_cap, type_):
+def mk_vertex_deref(vertex_id, addr, is_cap, type_):
     """
     Generate the side-effect data for an expected vertex
     dereference, this should be used with the vertex_deref
@@ -195,9 +207,9 @@ def mk_vertex_deref(vertex_idx, addr, is_cap, type_):
         type_ = ProvenanceVertexData.EventType.DEREF_STORE
     elif type_ == "call":
         type_ = ProvenanceVertexData.EventType.DEREF_CALL
-    return (vertex_idx, addr, is_cap, type_)
+    return (vertex_id, addr, is_cap, type_)
 
-def mk_vertex_call(vertex_idx, symbol, type_):
+def mk_vertex_call(vertex_id, symbol, type_):
     """
     Generate the side-effect data for an expected vertex
     used as call argument or return, this should be used with the vertex_call
@@ -212,9 +224,9 @@ def mk_vertex_call(vertex_idx, symbol, type_):
         type_ = ProvenanceVertexData.EventType.USE_CALL
     elif type_ == "ccall":
         type_ = ProvenanceVertexData.EventType.USE_CCALL
-    return (vertex_idx, symbol, type_)
+    return (vertex_id, symbol, type_)
 
-def mk_vertex_mem(vertex_idx, addr, type_):
+def mk_vertex_mem(vertex_id, addr, type_):
     """
     Generate the side-effect data for an expected vertex store,
     this should be used with the vertex_store side-effect
@@ -228,7 +240,7 @@ def mk_vertex_mem(vertex_idx, addr, type_):
         type_ = ProvenanceVertexData.EventType.LOAD
     elif type_ == "store":
         type_ = ProvenanceVertexData.EventType.STORE
-    return (vertex_idx, addr, type_)
+    return (vertex_id, addr, type_)
 
 class ProvenanceTraceWriter(MockTraceWriter):
     """
@@ -239,21 +251,22 @@ class ProvenanceTraceWriter(MockTraceWriter):
     def __init__(self, *args):
         super().__init__(*args)
         self.pgm = ProvenanceGraphManager("mock-trace")
-        self._current_side_effects = None
+        """Mock graph manager."""
 
-        # XXX wait to have merge-logic tests
-        # self.call_layer_root = self.pgm.graph.add_vertex()
-        # self.pgm.layer_call[self.call_layer_root] = True
-        # self.pgm.data[self.call_layer_root] = CallVertexData(None)
-        self.call_layer_root = None
+        self._expect_vertex_id_map = {}
+        """Map a user-defined node name to the node in the expected graph."""
 
     def _process_entry(self, instr, side_effects):
-        self._current_side_effects = side_effects
         if instr:
             return super()._process_entry(instr, side_effects)
         else:
             super()._process_side_effects(None, side_effects)
             return None
+
+    def _id_to_vertex(self, vid):
+        if vid is None:
+            return None
+        return self._expect_vertex_id_map[vid]
 
     def _side_effect(self, entry, key, val):
         if key == "pvertex":
@@ -261,12 +274,14 @@ class ProvenanceTraceWriter(MockTraceWriter):
             v = self.pgm.graph.add_vertex()
             self.pgm.layer_prov[v] = True
             # the side effect parameter is (parent, ProvenanceVertexData)
-            parent, data_builder = val
+            parent_id, data_builder = val
+            parent = self._id_to_vertex(parent_id)
             edge = None
-            if val[0] >= 0:
+            if parent is not None:
                 # valid parent
                 edge = self.pgm.graph.add_edge(self.pgm.graph.vertex(parent), v)
-            data, edata = data_builder()
+            data, edata, vid = data_builder()
+            self._expect_vertex_id_map[vid] = v
             if data.pc == None:
                 # fixup the pc with the trace entry pc
                 data.pc = entry.pc
@@ -275,26 +290,28 @@ class ProvenanceTraceWriter(MockTraceWriter):
             if data.cap.t_alloc == -1:
                 # if entry is None this must be a root node, so by convention it is 0
                 data.cap.t_alloc = entry.cycles if entry else 0
-            logger.debug("register mock prov vertex %d -> %s", parent, data)
+            logger.debug("register mock prov vertex %s -> %s", parent, data)
             self.pgm.data[v] = data
         elif key == "cvertex":
             # side effect that creates a call layer vertex
             v = self.pgm.graph.add_vertex()
             self.pgm.layer_call[v] = True
             # the side effect parameter is (parent, ProvenanceVertexData)
-            parent, data_builder = val
-            if parent < 0:
-                parent = self.call_layer_root
-            edge = self.pgm.graph.add_edge(self.pgm.graph.vertex(parent), v)
-            data, edata = data_builder()
-            logger.debug("register mock call vertex %d -> %s", parent, data)
-            for k,v in edata.items():
-                self.pgm.graph.ep[k] = v
+            parent_id, data_builder = val
+            parent = self._id_to_vertex(parent_id)
+            data, edata, vid = data_builder()
+            self._expect_vertex_id_map[vid] = v
+            logger.debug("register mock call vertex %s -> %s", parent, data)
+            if parent is not None:
+                edge = self.pgm.graph.add_edge(self.pgm.graph.vertex(parent), v)
+                for k,v in edata.items():
+                    setattr(self.pgm.graph.ep[edge], k, v)
             self.pgm.data[v] = data
         elif key == "cret":
-            assert self.pgm.layer_call[val] == True,\
+            v = self._id_to_vertex(val)
+            assert self.pgm.layer_call[v] == True,\
                 "cret side-effect for non-call layer vertex %d" % val
-            data = self.pgm.data[val]
+            data = self.pgm.data[v]
             # set the return time/addr of a call-layer vertex to the
             # current entry values
             data.t_return = entry.cycles
@@ -302,16 +319,19 @@ class ProvenanceTraceWriter(MockTraceWriter):
         elif key == "vertex_mem":
             # a vertex memory write or read is expected
             # see mk_vertex_mem
-            idx, addr, type_ = val
-            self.pgm.data[idx].add_event(entry.cycles, addr, type_)
+            vid, addr, type_ = val
+            v = self._id_to_vertex(vid)
+            self.pgm.data[v].add_event(entry.cycles, addr, type_)
         elif key == "vertex_deref":
             # a vertex dereference is expected
-            idx, addr, is_cap, type_ = val
-            self.pgm.data[idx].add_deref(entry.cycles, addr, is_cap, type_)
+            vid, addr, is_cap, type_ = val
+            v = self._id_to_vertex(vid)
+            self.pgm.data[v].add_deref(entry.cycles, addr, is_cap, type_)
         elif key == "vertex_call":
             # a vertex is expected to be used as a call/return argument
-            idx, sym, type_ = val
-            self.pgm.data[idx].add_event(entry.cycles, sym, type_)
+            vid, sym, type_ = val
+            v = self._id_to_vertex(vid)
+            self.pgm.data[v].add_event(entry.cycles, sym, type_)
         else:
             super()._side_effect(entry, key, val)
 
@@ -343,10 +363,26 @@ class MockGraphBuilder:
         return node_id_map
 
     def build_prov_node(self, gm, idmap, spec):
+        """Create a mock node in the provenance layer."""
         v = gm.graph.add_vertex()
-        # set layer and node data
         gm.layer_prov[v] = True
         vdata = ProvenanceVertexData()
+        for key, val in spec.items():
+            if key == "id":
+                idmap[val] = v
+            elif hasattr(vdata, key):
+                setattr(vdata, key, val)
+        gm.data[v] = vdata
+        return v
+
+    def build_call_node(self, gm, idmap, spec):
+        """
+        Create a mock node in the call layer.
+        XXX this may be combined with build_call_node
+        """
+        v = gm.graph.add_vertex()
+        gm.layer_call[v] = True
+        vdata = CallVertexData(None)
         for key, val in spec.items():
             if key == "id":
                 idmap[val] = v
@@ -439,3 +475,8 @@ class MockGraphBuilder:
                 evt = spec.get("evt", None)
                 if evt is not None:
                     vdata.events = evt
+            elif item_type == "call_node":
+                # call vertex
+                spec = item[1]
+                self.build_call_node(subgraph, mock_node_id_map, spec)
+                self.build_call_node(self.expect, self.expect_node_id, spec)

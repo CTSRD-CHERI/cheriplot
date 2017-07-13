@@ -12,7 +12,7 @@ from cheriplot.provenance.model import CheriNodeOrigin, CheriCapPerm
 
 from cheriplot.core.test import pct_cap
 from tests.provenance.helper import (
-    assert_graph_equal, mk_pvertex, mk_vertex_mem, mk_vertex_deref,
+    assert_graph_equal, mk_pvertex, mk_vertex_mem, mk_vertex_deref, mk_cvertex,
     mk_vertex_call, ProvenanceTraceWriter)
 
 logging.basicConfig(level=logging.DEBUG)
@@ -30,18 +30,21 @@ start_cap = pct_cap(0x1000, 0x0, 0x1000, perm)
 # common part of the trace used for tests that do not
 # require special initialization of the registers
 trace_init = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
     # {0x1000}
     ("cmove $c1, $c1", { # vertex 0
         "c1": start_cap,
-        "pvertex": mk_pvertex(start_cap)
+        "pvertex": mk_pvertex(start_cap, vid="start")
     }),
     ("cmove $c30, $c30", { # kdc vertex 1
         "c30": kdc_default,
-        "pvertex": mk_pvertex(kdc_default)
+        "pvertex": mk_pvertex(kdc_default, vid="kdc")
     }),
     ("cmove $c31, $c31", { # vertex 2
         "c31": pcc,
-        "pvertex": mk_pvertex(pcc)
+        "pvertex": mk_pvertex(pcc, vid="pcc")
     }),
     ("eret", {}), # mark initialization end
     # {0x1010}
@@ -63,7 +66,8 @@ trace_sys_mmap = (
     ("csetbounds $c2, $c1, $at", { # vertex 3
         "c2": pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all()),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all()),
-                              parent=1, origin=CheriNodeOrigin.SETBOUNDS),
+                              parent="kdc", origin=CheriNodeOrigin.SETBOUNDS,
+                              vid="v1000"),
     }),
     ("cmove $c3, $c2", {
         "c3": pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all())
@@ -75,7 +79,7 @@ trace_sys_mmap = (
     }),
     ("eret", {
         # expect the vertex to be used in a syscall ret
-        "vertex_call": mk_vertex_call(3, 447, "syscall_ret"),
+        "vertex_call": mk_vertex_call("v1000", 447, "syscall_ret"),
     }),
 )
 
@@ -88,13 +92,14 @@ trace_sys_munmap = (
     ("csetbounds $c3, $c1, $at", { # vertex 3
         "c3": pct_cap(0x1000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
-                              parent=0, origin=CheriNodeOrigin.SETBOUNDS),
+                              parent="start", origin=CheriNodeOrigin.SETBOUNDS,
+                              vid="v1000"),
     }),
     # {1014}
     # we do not care about the syscall args
     ("syscall", {
         # expect the vertex to be used in a syscall ret
-        "vertex_call": mk_vertex_call(3, 73, "syscall_arg"),
+        "vertex_call": mk_vertex_call("v1000", 73, "syscall_arg"),
     }),
     # epcc address should match the expected return 0x1014
     ("lui $at, 0x14", {"1": 0x14}),
