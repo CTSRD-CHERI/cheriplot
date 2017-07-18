@@ -11,7 +11,7 @@ from cheriplot.provenance.parser.base import RegisterSet, VertexMemoryMap
 from cheriplot.provenance.parser.sub_mips import MergePartialSubgraphContext
 from cheriplot.provenance.model import (
     CheriNodeOrigin, CheriCapPerm, ProvenanceVertexData,
-    ProvenanceGraphManager, CheriCap)
+    ProvenanceGraphManager, CheriCap, EdgeOperation)
 
 from tests.provenance.helper import (
     assert_graph_equal, MockGraphBuilder)
@@ -606,8 +606,78 @@ trace_step_2_vmap_no_previous_vertex = (
 # the provenance graph.
 trace_begin_call_graph = (
     ("call_node", {
+        "root": True,
         "id": 0,
+        "addr": None,
+    }),
+)
+
+# merge begin call graph vertices
+# Test the merge logic when multiple roots are added to the original
+# root because extra returns were found.
+trace_begin_call_graph_extra_ret = (
+    ("call_node", {
+        "root": True,
+        "id": 0,
+        "addr": None,
+    }),
+    ("call_node", {
+        "id": 1,
+        "addr": None,
+        "t_return": 1000,
+        "addr_return": 0x100c,
+    }),
+    ("call_edge", 0, 1, {
+        "operation": EdgeOperation.CALL,
+        "time": 0,
+        "addr": 0,
+    }),
+)
+
+# merge begin call graph vertex
+# Test merging of simple call subgraphs without connections to
+# the provenance graph.
+# <call-root> -> 1 -> 3
+trace_step_1_call_graph = (
+    ("call_node", {
+        "root": True,
+        "id": 0,
+        "addr": None,
+    }),
+    ("call_node", {
+        "last": True,
+        "id": 1,
         "addr": 0x1000,
+    }),
+    ("call_edge", 0, 1, {
+        "operation": EdgeOperation.CALL,
+        "time": 1000,
+        "addr": 0xf000,
+    }),
+)
+trace_step_2_call_graph = (
+    ("call_node", {
+        "only": "subgraph",
+        "root": True,
+        "id": 2,
+        "addr": None,
+    }),
+    ("call_node", {
+        "last": True,
+        "id": 3,
+        "addr": 0x5000,
+    }),
+    ("call_edge", 2, 3, {
+        "only": "subgraph",
+        "operation": EdgeOperation.CALL,
+        "time": 2000,
+        "addr": 0xb000,
+    }),
+    ("call_edge", 1, 3, {
+        "only": "expect",
+        "operation": EdgeOperation.CALL,
+        "time": 2000,
+        "addr": 0xb000,
     }),
 )
 
@@ -617,7 +687,8 @@ trace_begin_call_graph = (
     (trace_begin_partial_multi_root, None),
     (trace_begin_partial_non_root, None),
     (trace_begin_partial_all_non_root, None),
-    (trace_begin_call_graph, None)
+    (trace_begin_call_graph, None),
+    (trace_begin_call_graph_extra_ret, None),
 ])
 def test_single_step_merge(worker_result_base, mock_model, error):
     """
@@ -658,6 +729,7 @@ def test_single_step_merge(worker_result_base, mock_model, error):
     (trace_step_1_vmap_err_incompatible,
      trace_step_2_vmap_err_incompatible_perms, SubgraphMergeError),
     (trace_step_empty, trace_step_2_vmap_no_previous_vertex, None),
+    (trace_step_1_call_graph, trace_step_2_call_graph, None),
 ])
 def test_two_step_merge(mock_model1, mock_model2, error):
     """

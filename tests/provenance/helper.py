@@ -2,7 +2,7 @@ import pytest
 import logging
 import operator
 
-from itertools import repeat
+from itertools import repeat, chain
 from functools import reduce
 from io import StringIO
 
@@ -31,7 +31,11 @@ def dump_vertices(graph):
 def dump_edges(graph):
     dump = StringIO()
     for e in graph.edges():
-        dump.write("%d -> %d\n" % (e.source(), e.target()))
+        e_addr = graph.ep.addr[e] or 0
+        e_op = EdgeOperation(graph.ep.operation[e]).name if graph.ep.operation[e] else ""
+        dump.write("%d -> %d [time:%s addr:0x%x op:%s]\n" % (
+            e.source(), e.target(), graph.ep.time[e],
+            e_addr, e_op))
     return dump.getvalue()
 
 def assert_vertex_equal(exp_graph, exp_v, other_graph, other_v):
@@ -109,6 +113,29 @@ def assert_call_vertex_data_equal(u_data, v_data):
     assert u_data == v_data, "call differ:\nexpect:%s\nfound:%s" % (
         u_data, v_data)
 
+def assert_edge_equal(expect, e, other, f):
+    """
+    Test that two edges in the graph have equal data.
+    """
+    edge_dump = "expect:(%d -> %d) found:(%d -> %d)" % (
+        e.source(), e.target(), f.source(), f.target())
+    e_time = expect.ep.time[e]
+    f_time = other.ep.time[f]
+    assert e_time == f_time, "Edge %s time differ expect:%s found:%s" % (
+        edge_dump, e_time, f_time)
+    e_addr = expect.ep.addr[e]
+    f_addr = other.ep.addr[f]
+    assert e_addr == f_addr, "Edge %s addr differ expect:%s found:%s" % (
+        edge_dump,
+        "0x%x" % e_addr if e_addr is not None else e_addr,
+        "0x%x" % f_addr if f_addr is not None else f_addr)
+    e_op = expect.ep.operation[e]
+    f_op = other.ep.operation[f]
+    assert e_op == f_op, "Edge %s operation differ expect:%s found:%s" % (
+        edge_dump,
+        EdgeOperation(e_op).name if e_op is not None else e_op,
+        EdgeOperation(f_op).name if f_op is not None else f_op)
+
 def assert_graph_equal(expect, other):
     """
     Test if the graph is equal to the given one.
@@ -135,10 +162,10 @@ def assert_graph_equal(expect, other):
             # check that vertices match
             for v in expect.vertices():
                 assert_vertex_equal(expect, v, other, isomap[v])
-                # v_data = expect.vp.data[v]
-                # u = isomap[v]
-                # u_data = other.vp.data[u]
-                # assert_vertex_equal(v_data, u_data)
+                for v_out in v.out_neighbours():
+                    e = expect.edge(v, v_out)
+                    f = other.edge(isomap[v], isomap[v_out])
+                    assert_edge_equal(expect, e, other, f)
         except AssertionError as ex:
             errors.append((v,ex))
             continue
@@ -151,6 +178,10 @@ def assert_graph_equal(expect, other):
         for e,iso in zip(errors, isomaps):
             msg += "Isomap: %s\n" % [iso[i] for i in range(n_vertices)]
             msg += "vertex %d: %s\n\n" % e
+        msg += "Expected graph:\n%s\n%s\n\n" % (
+            dump_vertices(expect), dump_edges(expect))
+        msg += "Found graph:\n%s\n%s\n\n" % (
+            dump_vertices(other), dump_edges(other))
         pytest.fail(msg)
 
 def mk_pvertex(cap, parent=None, origin=CheriNodeOrigin.ROOT, pc=None,
@@ -172,7 +203,8 @@ def mk_pvertex(cap, parent=None, origin=CheriNodeOrigin.ROOT, pc=None,
         return data, None, vid
     return (parent, _data)
 
-def mk_cvertex(addr, parent=None, pc=None, call_time=None, vid=None):
+def mk_cvertex(addr, op=EdgeOperation.CALL, parent=None, pc=None,
+               call_time=None, vid=None):
     """
     Create ProvenanceTraceWriter side-effect to produce a vertex in the
     call layer.
@@ -180,20 +212,23 @@ def mk_cvertex(addr, parent=None, pc=None, call_time=None, vid=None):
     def _data():
         """Generate expected vertex and edge data."""
         data = CallVertexData(addr)
-        edata = {"operation": EdgeOperation.CALL}
-        if pc is not None:
-            edata["addr"] = pc
-        if call_time is not None:
-            edata["time"] = call_time
+        edata = {
+            "operation": op,
+            "addr": pc,
+            "time": call_time,
+        }
         return data, edata, vid
     return (parent, _data)
 
-def mk_cvertex_ret(parent):
+def mk_cvertex_ret(*args):
     """
     Create ProvenanceTraceWriter side-effect to set a call-vertex
     return time and address to the current instruction.
+
+    :param *args: IDs of vertices that have the return point marked
+    by this side-effect.
     """
-    return parent
+    return args
 
 def mk_vertex_deref(vertex_id, addr, is_cap, type_):
     """
@@ -257,6 +292,13 @@ class ProvenanceTraceWriter(MockTraceWriter):
         """Map a user-defined node name to the node in the expected graph."""
 
     def _process_entry(self, instr, side_effects):
+        """
+        Process an entry in the trace model.
+        If an instruction is provided, then go through the normal
+        entry processing for the tracewriter. If no instruction
+        is give, there is not a real trace entry backing this entry,
+        so process the side effects and return None (no trace entry).
+        """
         if instr:
             return super()._process_entry(instr, side_effects)
         else:
@@ -269,6 +311,13 @@ class ProvenanceTraceWriter(MockTraceWriter):
         return self._expect_vertex_id_map[vid]
 
     def _side_effect(self, entry, key, val):
+        """
+        Process side effects for a mock model entry.
+
+        :param entry: the trace entry for this model entry, may be None
+        :param key: side effect key
+        :param val: side effect params, depend on the side-effect
+        """
         if key == "pvertex":
             # side effect that creates a provenance layer vertex
             v = self.pgm.graph.add_vertex()
@@ -300,22 +349,28 @@ class ProvenanceTraceWriter(MockTraceWriter):
             parent_id, data_builder = val
             parent = self._id_to_vertex(parent_id)
             data, edata, vid = data_builder()
+            self.pgm.data[v] = data
             self._expect_vertex_id_map[vid] = v
             logger.debug("register mock call vertex %s -> %s", parent, data)
+            # set edge data defaults
+            if edata["addr"] is None:
+                edata["addr"] = entry.pc if entry else 0
+            if edata["time"] is None:
+                edata["time"] = entry.cycles if entry else 0
             if parent is not None:
                 edge = self.pgm.graph.add_edge(self.pgm.graph.vertex(parent), v)
-                for k,v in edata.items():
-                    setattr(self.pgm.graph.ep[edge], k, v)
-            self.pgm.data[v] = data
+                for key,val in edata.items():
+                    self.pgm.graph.ep[key][edge] = val
         elif key == "cret":
-            v = self._id_to_vertex(val)
-            assert self.pgm.layer_call[v] == True,\
-                "cret side-effect for non-call layer vertex %d" % val
-            data = self.pgm.data[v]
-            # set the return time/addr of a call-layer vertex to the
-            # current entry values
-            data.t_return = entry.cycles
-            data.addr_return = entry.pc
+            for vid in val:
+                v = self._id_to_vertex(vid)
+                assert self.pgm.layer_call[v] == True,\
+                    "cret side-effect for non-call layer vertex %d" % vid
+                data = self.pgm.data[v]
+                # set the return time/addr of a call-layer vertex to the
+                # current entry values
+                data.t_return = entry.cycles
+                data.addr_return = entry.pc
         elif key == "vertex_mem":
             # a vertex memory write or read is expected
             # see mk_vertex_mem
@@ -386,12 +441,14 @@ class MockGraphBuilder:
         for key, val in spec.items():
             if key == "id":
                 idmap[val] = v
+            elif key == "addr":
+                vdata.address = val
             elif hasattr(vdata, key):
                 setattr(vdata, key, val)
         gm.data[v] = vdata
         return v
 
-    def build_prov_edge(self, gm, idmap, src, dst, spec):
+    def build_expect_prov_edge(self, gm, idmap, src, dst, spec):
         try:
             src_idx = idmap[src]
             dst_idx = idmap[dst]
@@ -420,6 +477,17 @@ class MockGraphBuilder:
             except KeyError:
                 return
             e = gm.graph.add_edge(src_idx, dst_idx)
+
+    def build_call_edge(self, gm, idmap, src, dst, spec):
+        try:
+            src_idx = idmap[src]
+            dst_idx = idmap[dst]
+        except KeyError:
+            return
+        edge = gm.graph.add_edge(src_idx, dst_idx)
+        gm.edge_operation[edge] = spec.get("operation", EdgeOperation.UNKNOWN)
+        gm.edge_time[edge] = spec.get("time", 0)
+        gm.edge_addr[edge] = spec.get("addr", 0)
 
     def set_final_regset(self, regset, v, spec):
         """put the vertex in the final register set"""
@@ -463,8 +531,8 @@ class MockGraphBuilder:
                     self.build_subgraph_prov_edge(mock_result, mock_node_id_map,
                                                   src, dst, spec)
                 if only is None or only == "expect":
-                    self.build_prov_edge(self.expect, self.expect_node_id,
-                                         src, dst, spec)
+                    self.build_expect_prov_edge(self.expect, self.expect_node_id,
+                                                src, dst, spec)
             elif item_type == "partial":
                 # modify partial vertex
                 spec = item[1]
@@ -476,7 +544,28 @@ class MockGraphBuilder:
                 if evt is not None:
                     vdata.events = evt
             elif item_type == "call_node":
-                # call vertex
+                # call layer vertex
                 spec = item[1]
-                self.build_call_node(subgraph, mock_node_id_map, spec)
-                self.build_call_node(self.expect, self.expect_node_id, spec)
+                only = spec.pop("only", None)
+                if only is None or only == "subgraph":
+                    # call node is the root (there should only be one)
+                    call_root = spec.pop("root", False)
+                    # call node is the last (there should only be one)
+                    call_last = spec.pop("last", False)
+                    v = self.build_call_node(subgraph, mock_node_id_map, spec)
+                    if call_root:
+                        mock_result["sub_callgraph"]["root"] = v
+                    if call_last:
+                        mock_result["sub_callgraph"]["last_frame"] = v
+                if only is None or only == "expect":
+                    self.build_call_node(self.expect, self.expect_node_id, spec)
+            elif item_type == "call_edge":
+                # call layer edge
+                src, dst, spec = item[1:]
+                only = spec.get("only", None)
+                if only is None or only == "subgraph":
+                    self.build_call_edge(subgraph, mock_node_id_map,
+                                         src, dst, spec)
+                if only is None or only == "expect":
+                    self.build_call_edge(self.expect, self.expect_node_id,
+                                         src, dst, spec)

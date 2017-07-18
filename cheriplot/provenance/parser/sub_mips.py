@@ -321,6 +321,17 @@ class MergePartialSubgraph(BFSTransform):
         for key, val in u_data.events.items():
             v_data.events[key].extend(val)
 
+    def _merge_edge_data(self, e, f):
+        """
+        Copy edge data from a subgraph edge to a merged graph edge.
+
+        :param e: the source edge in the partial subgraph
+        :param f: the destiantion edge in the merged subgraph
+        """
+        self.graph.ep.time[f] = self.subgraph.ep.time[e]
+        self.graph.ep.addr[f] = self.subgraph.ep.addr[e]
+        self.graph.ep.operation[f] = self.subgraph.ep.operation[e]
+
     def _merge_layer(self, u, v):
         """
         Copy the graph layer properties for a vertex
@@ -594,17 +605,20 @@ class MergePartialSubgraph(BFSTransform):
         self.graph.vp.data[v] = udata
         self._merge_layer(u, v)
         self.copy_vertex_map[u] = v
+
         if (self.subgraph.vp.layer_prov[u] and
-            udata.origin != CheriNodeOrigin.ROOT):
-            # a root have no in-connections
-            for u_in in u.in_neighbours():
-                logger.debug("in-neighbour subgraph-idx:%s", u_in)
-                # v_in must exist because we are doing BFS
-                # however if u_in is a root v_in is None
-                v_in = self.copy_vertex_map[u_in]
-                if v_in >= 0:
-                    logger.debug("valid in-neighbour subgraph-idx:%s", u_in)
-                    self.graph.add_edge(v_in, v)
+            udata.origin == CheriNodeOrigin.ROOT):
+            # do not copy edges to a root vertex
+            return
+        for u_in in u.in_neighbours():
+            logger.debug("in-neighbour subgraph-idx:%s", u_in)
+            # v_in must exist because we are doing BFS
+            # however if u_in is a root v_in is None
+            v_in = self.copy_vertex_map[u_in]
+            if v_in >= 0:
+                logger.debug("valid in-neighbour subgraph-idx:%s", u_in)
+                e = self.graph.add_edge(v_in, v)
+                self._merge_edge_data(self.subgraph.edge(u_in, u), e)
 
     def _merge_pcc_fixup(self, u):
         """
@@ -666,6 +680,7 @@ class MergePartialSubgraph(BFSTransform):
         XXX this is actually more complicated:
         The extra returns should be matched to previous call stack
         and merge the call trees.
+        Currently only supports initial merge in the 1-thread parser
         """
         assert self.subgraph.vp.layer_call[u],\
             "Subgraph call-tree root not in the call layer."
@@ -880,6 +895,12 @@ class CapabilityBranchSubparser:
         return False
 
     def scan_cjalr(self, inst, entry, regs, last_regs, idx):
+        """
+        cjalr target, link
+
+        op0 is the link register
+        op1 is the target register
+        """
         # save current pcc
         cd_idx = inst.op0.cap_index
         if not self.regset.has_pcc(allow_root=True):
@@ -1037,7 +1058,7 @@ class SyscallSubparser:
                 data = self.pgm.data[vertex]
                 logger.debug("Detected syscall %d capability argument: %s",
                              self.code, data)
-                data.add_use_syscall(entry.cycles, self.code, True)
+                # data.add_use_syscall(entry.cycles, self.code, True)
             else:
                 self.in_syscall = True
                 self.pc_eret = entry.pc + 4
@@ -1073,7 +1094,7 @@ class SyscallSubparser:
             data = self.pgm.data[vertex]
             logger.debug("Detected syscall %d capability return: %s",
                          self.code, data)
-            data.add_use_syscall(entry.cycles, self.code, False)
+            # data.add_use_syscall(entry.cycles, self.code, False)
         self.regset.pcc = self.regset[31] # restore saved pcc
         return False
 
@@ -1113,7 +1134,7 @@ class InitialStackAccessSubparser:
         self.pgm.stack = CheriCap(stack_cap)
         self.pgm.stack.offset = regs.gpr[29]
         return False
-    
+
 
 class PointerProvenanceSubparser:
     """
@@ -1605,28 +1626,61 @@ class CallgraphSubparser:
         """
         Stack of graph vertices corresponding to the function calls
         in the actual stack.
+        The call stack contains entries of the type
+        (vertex, expected_return_addr)
+        The call stack is never empty, there is always at least
+        the root element.
         """
 
         self.root = self.pgm.graph.add_vertex()
         """Root vertex of the call tree"""
 
-        self.current_frame = self.root
-        """Current function vertex."""
+        self.exception_depth = 0
+        """Number of nested exceptions currently active."""
+
+        self._in_syscall = False
+        """Signal whether we are in a syscall."""
 
         self.pgm.layer_call[self.root] = True
         self.pgm.data[self.root] = CallVertexData(None)
-        self.call_stack.append(self.root)
+        self.call_stack.append((self.root, None))
+
+    @property
+    def current_frame(self):
+        """
+        Return the current (last) vertex in the call stack.
+        """
+        last, _ = self.call_stack[-1]
+        return last
 
     def mp_result(self):
         """Return the partial result for multiprocess merge."""
+        def _make_pickleable(entry):
+            vertex, link_addr = entry
+            return (int(vertex), link_addr)
+        call_stack = deque(map(_make_pickleable, self.call_stack))
         return {
             "root": int(self.root),
             "last_frame": int(self.current_frame),
+            "call_stack": call_stack,
+            "exception_depth": self.exception_depth,
         }
+
+    def _get_syscall_code(self, regs):
+        """Get the syscall code for direct and indirect syscalls."""
+        # syscall code in $v0
+        # syscall arguments in $a0-$a7/$c3-$c10
+        code = regs.gpr[1] # $v0
+        indirect_code = regs.gpr[3] # $a0
+        is_indirect = (code == 0 or code == 198)
+        return indirect_code if is_indirect else code
 
     def scan_cjalr(self, inst, entry, regs, last_regs, idx):
         """
-        cjalr link_cap, target_cap
+        cjalr target, link
+
+        op0 is the link register
+        op1 is the target register
 
         Note that we assume that the :class:`CapabilityBranchSubparser`
         have performed any adjustment to the register set and pcc
@@ -1634,8 +1688,12 @@ class CallgraphSubparser:
         """
         target_vertex = self.regset[inst.op1.cap_index]
         target_cap = inst.op1.value
-        self.make_call(entry, target_cap.base + target_cap.offset,
-                       target_vertex)
+        link_cap = inst.op0.value
+        target_addr = target_cap.base + target_cap.offset
+        link_addr = link_cap.base + link_cap.offset
+        if not inst.has_exception:
+            self._make_call(entry, target_addr, link_addr, target_vertex,
+                            EdgeOperation.CALL)
         return False
 
     def scan_cjr(self, inst, entry, regs, last_regs, idx):
@@ -1644,82 +1702,182 @@ class CallgraphSubparser:
         This have the same assumptions as scan_cjalr.
         cjr cap_ret
         """
-        if inst.op0.cap_index != 17:
-            # only consider the return capability
-            return False
         return_vertex = self.regset[inst.op0.cap_index]
         return_cap = inst.op0.value
-        self.make_return(entry, return_cap.base + return_cap.offset,
-                         return_vertex)
+        return_addr = return_cap.base + return_cap.offset
+        if not inst.has_exception:
+            self._make_call_return(entry, return_addr, return_vertex)
         return False
 
     def scan_jalr(self, inst, entry, regs, last_regs, idx):
-        self.make_call(entry)
+        """
+        op0: link register
+        op1: target register
+        """
+        target_addr = inst.op1.value
+        link_addr = inst.op0.value
+        if not inst.has_exception:
+            self._make_call(entry, target_addr, link_addr, None,
+                            EdgeOperation.CALL)
         return False
 
     def scan_jr(self, inst, entry, regs, last_regs, idx):
         addr = inst.op0.value
-        self.make_return(entry, addr, None)
+        if not inst.has_exception:
+            self._make_call_return(entry, addr, None)
         return False
 
-    # def scan_syscall(self, inst, entry, regs, last_regs, idx):
-    #     pass
+    def scan_exception(self, inst, entry, regs, last_regs, idx):
+        """
+        When an exception occurs record it because the next
+        eret should be ignored.
+        XXX Note for now assume no context switches are tracked.
+        """
+        self.exception_depth += 1
+        return False
 
-    # def scan_exception(self, inst, entry, regs, last_regs, idx):
-    #     pass
+    def scan_syscall(self, inst, entry, regs, last_regs, idx):
+        """
+        Scan a syscall instruction and detect the syscall type
+        and arguments.
+        When adding the call to the call_stack do not specify
+        an expected return address since syscalls have the
+        asthonishing property of not always returning in the
+        same place.
+        """
+        code = self._get_syscall_code(regs)
+        self._in_syscall = True
+        self._make_call(entry, code, None, None, EdgeOperation.SYSCALL)
+        return False
 
-    # def scan_eret(self, inst, entry, regs, last_regs, idx):
-    #     pass
+    def scan_eret(self, inst, entry, regs, last_regs, idx):
+        """
+        Scan eret instructions to properly restore pcc from epcc
+        and capture syscall return values.
+        """
+        self.exception_depth -= 1
+        if self._in_syscall and self.exception_depth == 0:
+            epcc_valid = regs.valid_caps[31]
+            if not epcc_valid:
+                msg = "eret without valid epcc register"
+                logger.error(msg)
+                raise UnexpectedOperationError(msg)
+            epcc = regs.cap_reg[31]
+            if self.exception_depth != 0:
+                msg = "{%d} Return from syscall while an "\
+                      "exception is active" % entry.cycles
+                logger.error(msg)
+                raise UnexpectedOperationError(msg)
+            self._in_syscall = False
+            # c3 holds the syscall capability return if any.
+            cret = self.regset[3]
+            self._make_syscall_return(entry, epcc.base + epcc.offset, cret)
+        elif self.exception_depth < 0:
+            # XXX currently we do not handle extra erets so ignore them
+            self.exception_depth = 0
+        return False
 
-    def make_call(self, entry, callee_addr, dst_vertex):
+    def _make_call(self, entry, callee_addr, link_addr, dst_vertex, op):
         """
         Create a call layer vertex in the graph.
-        XXX may want to check the expected-return address by using
-        a shadow stack, this should catch mismatch errors instead
-        of blindly relying on the cjr and jr instructions.
-        WARNING this is in fact mandatory so do it.
 
         :param entry: trace entry of the call instruction
         :param callee_addr: address of the callee
+        :param link_addr: expected return address
         :param dst_vertex: provenance layer vertex containing
         the call target address
+        :param op: operation performed (EdgeOperation), e.g. CALL, SYSCALL
         """
         vertex = self.pgm.graph.add_vertex()
         self.pgm.layer_call[vertex] = True
         self.pgm.data[vertex] = CallVertexData(callee_addr)
-        try:
-            parent = self.call_stack[-1]
-        except IndexError:
-            raise MissingParentError("Can not determine call parent for %s",
-                                     self.pgm.data[vertex])
+        assert len(self.call_stack) > 0, "Empty call_stack is invalid."
+        parent, _ = self.call_stack[-1]
         edge = self.pgm.graph.add_edge(parent, vertex)
-        self.pgm.edge_operation[edge] = EdgeOperation.CALL
+        self.pgm.edge_operation[edge] = op
         self.pgm.edge_time[edge] = entry.cycles
         self.pgm.edge_addr[edge] = entry.pc
+        # update state
+        self.call_stack.append((vertex, link_addr))
 
-    def make_return(self, entry, addr, vertex):
+    def _make_syscall_return(self, entry, addr, vertex):
+        """
+        Return from a system call.
+        Register a return for all outstanding calls until the
+        syscall vertex is found.
+        """
+        while self.current_frame != self.root:
+            for edge in self.current_frame.all_edges():
+                if edge.target() != self.current_frame:
+                    # out-edge
+                    continue
+                eop = self.pgm.edge_operation[edge]
+                if (eop == EdgeOperation.SYSCALL or
+                    eop == EdgeOperation.CALL):
+                    # the edge from the call-layer parent
+                    break
+            else:
+                # no good edge
+                msg = "No call-layer parent for non-root vertex %s" % (
+                    self.current_frame)
+                logger.error(msg)
+                raise UnexpectedOperationError(msg)
+            if eop == EdgeOperation.SYSCALL:
+                # mark return from the syscall and finish
+                self._make_return(entry, addr, vertex)
+                break
+            else:
+                # eop == EdgeOperation.CALL
+                # mark return for outstanding call and continue
+                # walking the call stack
+                self._make_return(entry, addr, None)
+        else:
+            # create new root with this
+            self._make_return(entry, addr, vertex)
+
+    def _make_call_return(self, entry, addr, vertex):
         """
         Return from a call.
         If the expected return does not match the return address then
         do not return.
-        If the return is from a system call, eret will have no exepected
-        return so it always applies.
         """
-        data = self.pgm.data[self.current_frame]
+        prev_vertex, ret_addr = self.call_stack[-1]
+        if ret_addr is not None and ret_addr != addr:
+            msg = "Unexpected return address 0x%x, expected 0x%x" % (
+                addr, ret_addr)
+            logger.warning(msg)
+            # XXX for now just skip the entry, it may be interesting
+            # to look back the call stack in case we jump back more
+            # than 1 frame.
+            return
+        self._make_return(entry, addr, vertex)
+
+    def _make_return(self, entry, addr, vertex):
+        """
+        Mark a call/syscall vertex return value and time.
+        This pops the last frame from the call_stack and
+        sets the return-related data.
+
+        :param entry: trace entry of the return instruction
+        :param addr: return address
+        :param vertex: vertex holding the return capability
+        """
+        prev_vertex, _ = self.call_stack.pop()
+        # set the return values in the current frame
+        data = self.pgm.data[prev_vertex]
         data.t_return = entry.cycles
         data.addr_return = entry.pc
-        old_frame = self.call_stack.pop()
-        if old_frame == self.root:
+        if prev_vertex == self.root:
             # return from the root, we do not know what there is before that
             # so create a new vertex in place of the root
             self.root = self.pgm.graph.add_vertex()
             self.pgm.layer_call[self.root] = True
             self.pgm.data[self.root] = CallVertexData(None)
-            edge = self.pgm.graph.add_edge(self.root, old_frame)
+            edge = self.pgm.graph.add_edge(self.root, prev_vertex)
             self.pgm.edge_time[edge] = 0
             self.pgm.edge_addr[edge] = 0
             self.pgm.edge_operation[edge] = EdgeOperation.CALL
-            self.call_stack.append(self.root)
+            self.call_stack.append((self.root, None))
 
 
 class CheriMipsModelParser(CheriplotModelParser):

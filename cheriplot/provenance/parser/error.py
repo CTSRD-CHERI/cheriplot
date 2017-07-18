@@ -58,6 +58,16 @@ class DereferenceUnknownCapabilityError(RuntimeError):
     pass
 
 
+class ReturnToUnexpectedAddress(RuntimeError):
+    """
+    Exception raised by the call-graph parser.
+    When a return is found to land to an address
+    different from the expected return address for a previous
+    frame.
+    """
+    pass
+
+
 class UnexpectedOperationError(RuntimeError):
     """
     Exception raised when a seemingly impossible operation

@@ -54,7 +54,7 @@ trace_sys_mmap = (
     # {0x1014}
     ("lui $v0, 447", {"2": 447}), # mmap code
     # we do not care about the syscall args
-    ("syscall", {}),
+    ("syscall", {"exc": 8}),
     # {0x101c}
     ("cincoffset $c1, $kdc, $zero", {"c1": kdc_default}),
     # worker set split here
@@ -112,8 +112,8 @@ trace_sys_munmap = (
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
-    (trace_init, trace_sys_mmap),
-    (trace_init, trace_sys_munmap),
+    # (trace_init, trace_sys_mmap),
+    # (trace_init, trace_sys_munmap),
 ])
 def test_syscall_simple(trace, threads):
     """Test provenance parser with the simplest trace possible."""

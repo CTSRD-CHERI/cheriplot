@@ -408,8 +408,16 @@ class CallVertexData:
 
     def __str__(self):
         if self.address is None:
-            return "(unknown)"
-        dump = "call 0x%x" % self.address
+            return "(unknown/root)"
+        if self.addr_return is not None:
+            addr_ret = "0x%x" % self.addr_return
+        else:
+            addr_ret = None
+        if self.t_return is not None:
+            t_ret = "%d" % self.t_return
+        else:
+            t_ret = None
+        dump = "call 0x%x, ret:%s @ t=%s" % (self.address, addr_ret, t_ret)
         if self.symbol is not None:
             dump += " (%s)" % self.symbol
         return dump
@@ -427,6 +435,8 @@ class EdgeOperation(IntEnum):
     Enumeration representing valid operations that an edge can represent.
     """
 
+    UNKNOWN = 0
+
     CALL = auto()
     """Call in the call layer."""
 
@@ -435,6 +445,15 @@ class EdgeOperation(IntEnum):
 
     CALL_TARGET = auto()
     """Capability used as call target, links provenance and call layers."""
+
+    VISIBLE = auto()
+    """Capability visible (from the register set) in a called function."""
+
+    _RETURN = auto()
+    """
+    Capability used as return value in a called function
+    (or at least present in c3).
+    """
 
 
 class ProvenanceGraphManager:
@@ -483,7 +502,7 @@ class ProvenanceGraphManager:
             prop_initial_stack = self.graph.new_graph_property("object")
             prop_data = self.graph.new_vertex_property("object")
             # edge properties
-            prop_edge_op = self.graph.new_edge_property("int")
+            prop_edge_op = self.graph.new_edge_property("int", val=0)
             prop_edge_time = self.graph.new_edge_property("object")
             prop_edge_address = self.graph.new_edge_property("object")
             # layers

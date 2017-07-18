@@ -41,8 +41,15 @@ def bfs_transform(graph, transforms):
     however running multiple transforms at once saves time
     because the root vertices have to be searched only once.
     """
+    # we first look for the roots, this works around a bug in graph_tool
+    # that do not correctly travereses graphs in BFS
+    roots = []
+    for v in graph.vertices():
+        if v.in_degree() == 0:
+            roots.append(v)
     for t in transforms:
-        bfs_search(graph, visitor=t)
+        for r in roots:
+            bfs_search(graph, r, visitor=t)
     # apply the transforms here so that they can not
     # invalidate the vertex handles even if one of them
     # deletes vertices (note that property maps are not
