@@ -15,7 +15,7 @@ from cheriplot.provenance.model import (
 from cheriplot.core.test import pct_cap
 from tests.provenance.helper import (
     assert_graph_equal, mk_pvertex, mk_cvertex, mk_cvertex_ret, mk_vertex_deref,
-    ProvenanceTraceWriter)
+    mk_cvertex_visible, ProvenanceTraceWriter)
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -44,12 +44,19 @@ trace_cap_call = (0x1000, (
     }),
     ("cmove $c1, $c1", {
         "c1": target_cap,
-        "pvertex": mk_pvertex(target_cap)
+        "pvertex": mk_pvertex(target_cap, vid="target")
     }),
     ("cjalr $c1, $c17", {
         "c17": link_cap,
-        "pvertex": mk_pvertex(link_cap),
-        "cvertex": mk_cvertex(0xc000, parent="call-root", vid="call")
+        "pvertex": mk_pvertex(link_cap, vid="link"),
+        "cvertex": mk_cvertex(
+            0xc000,
+            parent="call-root",
+            vid="call",
+            visible=[
+                mk_cvertex_visible("target", 0x0, 1),
+                mk_cvertex_visible("link", 0x0, 17),
+            ])
     }),
     ("nop", {}),
     ("cjr $c17", {
@@ -72,23 +79,38 @@ trace_cap_return_0x1000 = (0x1000, (
     # 0x1000
     ("cmove $c1, $c1", {
         "c1": fn_a,
-        "pvertex": mk_pvertex(fn_a),
+        "pvertex": mk_pvertex(fn_a, vid="cap-fn_a"),
     }),
     ("cjalr $c1, $c17", {
         "c17": pct_cap(0x1000, 0x0c, 0xf000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm)),
-        "cvertex": mk_cvertex(0x10000, parent="call-root", vid="call-f_a"),
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm), vid="pcc"),
+        "cvertex": mk_cvertex(
+            0x10000,
+            parent="call-root",
+            vid="call-f_a",
+            visible=[
+                mk_cvertex_visible("cap-fn_a", 0x0, 1),
+                mk_cvertex_visible("pcc", 0x0c, 17),
+            ]),
     }),
     ("nop", {}),
 ))
 trace_cap_return_0x10000 = (0x10000, (
     ("cmove $c1, $c2", {
         "c1": fn_b,
-        "pvertex": mk_pvertex(fn_b),
+        "pvertex": mk_pvertex(fn_b, vid="cap-fn_b"),
     }),
     ("cjalr $c1, $c10", {
         "c10": pct_cap(0x10000, 0x0c, 0xf000, perm),
-        "cvertex": mk_cvertex(0x20000, parent="call-f_a", vid="call-f_b"),
+        "cvertex": mk_cvertex(
+            0x20000,
+            parent="call-f_a",
+            vid="call-f_b",
+            visible=[
+                mk_cvertex_visible("cap-fn_b", 0x0, 1),
+                mk_cvertex_visible("cap-fn_a", 0x0c, 10),
+                mk_cvertex_visible("pcc", 0x0c, 17),
+            ]),
     }),
     ("nop", {}),
 ))
@@ -106,24 +128,40 @@ trace_cap_return_0x1000c = (0x1000c, (
     ("nop", {}),
 ))
 trace_cap_return_0x100c = (0x100c, (
-    ("cmove $c1, $c3", {
+    ("cmove $c1, $c6", {
         "c1": fn_c,
-        "pvertex": mk_pvertex(fn_c),
+        "pvertex": mk_pvertex(fn_c, vid="cap-fn_c"),
     }),
     ("cjalr $c1, $c17", {
         "c17": pct_cap(0x1000, 0x18, 0xf000, perm),
-        "cvertex": mk_cvertex(0x30000, parent="call-root", vid="call-f_c")
+        "cvertex": mk_cvertex(
+            0x30000,
+            parent="call-root",
+            vid="call-f_c",
+            visible=[
+                mk_cvertex_visible("cap-fn_c", 0x0, 1),
+                mk_cvertex_visible("pcc", 0x18, 17),
+                mk_cvertex_visible("cap-fn_a", 0x0c, 10),
+            ])
     }),
     ("nop", {}),
 ))
 trace_cap_return_0x30000 = (0x30000, (
     ("cmove $c1, $c4", {
         "c4": fn_d,
-        "pvertex": mk_pvertex(fn_d),
+        "pvertex": mk_pvertex(fn_d, vid="cap-fn_d"),
     }),
     ("cjalr $c1, $c10", {
         "c10": pct_cap(0x30000, 0x0c, 0xf000, perm),
-        "cvertex": mk_cvertex(0x40000, parent="call-f_c", vid="call-f_d"),
+        "cvertex": mk_cvertex(
+            0x40000,
+            parent="call-f_c",
+            vid="call-f_d",
+            visible=[
+                mk_cvertex_visible("cap-fn_d", 0x0, 1),
+                mk_cvertex_visible("cap-fn_c", 0x0c, 10),
+                mk_cvertex_visible("pcc", 0x18, 17),
+            ]),
     }),
     ("nop", {}),
 ))
@@ -137,11 +175,19 @@ trace_cap_return_0x40000 = (0x40000, (
 trace_cap_return_0x3000c = (0x3000c, (
     ("cmove $c1, $c5", {
         "c4": fn_e,
-        "pvertex": mk_pvertex(fn_e),
+        "pvertex": mk_pvertex(fn_e, vid="cap-fn_e"),
     }),
     ("cjalr $c1, $c10", {
         "c10": pct_cap(0x30000, 0x18, 0xf000, perm),
-        "cvertex": mk_cvertex(0xf0000, parent="call-f_c", vid="call-f_e"),
+        "cvertex": mk_cvertex(
+            0xf0000,
+            parent="call-f_c",
+            vid="call-f_e",
+            visible=[
+                mk_cvertex_visible("cap-fn_e", 0x0, 1),
+                mk_cvertex_visible("cap-fn_c", 0x18, 10),
+                mk_cvertex_visible("pcc", 0x18, 17),
+            ]),
     }),
     ("nop", {}),
 ))
@@ -155,12 +201,19 @@ trace_cjr_to_unexpected_addr_0x1000 = (0x1000, (
     }),
     ("cmove $c1, $c1", {
         "c1": fn_a,
-        "pvertex": mk_pvertex(fn_a),
+        "pvertex": mk_pvertex(fn_a, vid="cap-fn_a"),
     }),
     ("cjalr $c1, $c17", {
         "c17": pct_cap(0x1000, 0x0c, 0xf000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm)),
-        "cvertex": mk_cvertex(0x10000, parent="call-root", vid="call-f_a"),
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm), vid="link"),
+        "cvertex": mk_cvertex(
+            0x10000,
+            parent="call-root",
+            vid="call-f_a",
+            visible=[
+                mk_cvertex_visible("cap-fn_a", 0x0, 1),
+                mk_cvertex_visible("link", 0x0c, 17),
+            ]),
     }),
     ("nop", {}),
 ))
@@ -190,12 +243,19 @@ trace_cap_call_extra_return = (0x1000, (
     }),
     ("cmove $c1, $c1", {
         "c1": fn_a,
-        "pvertex": mk_pvertex(fn_a),
+        "pvertex": mk_pvertex(fn_a, vid="cap-fn_a"),
     }),
     ("cjalr $c1, $c17", {
         "c17": pct_cap(0x1000, 0x0c, 0xf000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm)),
-        "cvertex": mk_cvertex(0x10000, parent="old-call-root", vid="fn_a")
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm), vid="link"),
+        "cvertex": mk_cvertex(
+            0x10000,
+            parent="old-call-root",
+            vid="fn_a",
+            visible=[
+                mk_cvertex_visible("cap-fn_a", 0x0, 1),
+                mk_cvertex_visible("link", 0x0c, 17),
+            ])
     }),
     ("nop", {})
 ))
@@ -224,12 +284,19 @@ trace_non_cap_call_0x1000 = (0x1000, (
     }),
     ("cmove $c1, $c1", {
         "c1": fn_a,
-        "pvertex": mk_pvertex(fn_a),
+        "pvertex": mk_pvertex(fn_a, vid="cap-fn_a"),
     }),
     ("cjalr $c1, $c17", {
         "c17": pct_cap(0x1000, 0x0c, 0xf000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm)),
-        "cvertex": mk_cvertex(0x10000, parent="call-root", vid="fn_cap_a")
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm), vid="link"),
+        "cvertex": mk_cvertex(
+            0x10000,
+            parent="call-root",
+            vid="fn_cap_a",
+            visible=[
+                mk_cvertex_visible("cap-fn_a", 0x0, 1),
+                mk_cvertex_visible("link", 0x0c, 17),
+            ])
     }),
     ("nop", {}),
 ))
@@ -238,7 +305,14 @@ trace_non_cap_call_0x10000 = (0x10000, (
     ("dsll $1, $1, 16", {"1": 0x90000}),
     ("jalr $1", {
         "31": 0x1000c,
-        "cvertex": mk_cvertex(0x90000, parent="fn_cap_a", vid="fn_a"),
+        "cvertex": mk_cvertex(
+            0x90000,
+            parent="fn_cap_a",
+            vid="fn_a",
+            visible=[
+                mk_cvertex_visible("cap-fn_a", 0x0, 1),
+                mk_cvertex_visible("link", 0x0c, 17),
+            ]),
     }),
     ("nop", {}),
 ))
@@ -259,18 +333,32 @@ trace_non_cap_call_0x100c = (0x100c, (
     ("dsll $1, $1, 16", {"1": 0xb0000}),
     ("jalr $1", {
         "31": 0x1018,
-        "cvertex": mk_cvertex(0xb0000, parent="call-root", vid="fn_b"),        
+        "cvertex": mk_cvertex(
+            0xb0000,
+            parent="call-root",
+            vid="fn_b",
+            visible=[
+                mk_cvertex_visible("cap-fn_a", 0x0, 1),
+                mk_cvertex_visible("link", 0x0c, 17),
+            ]),
     }),
     ("nop", {}),
 ))
 trace_non_cap_call_0xb0000 = (0xb0000, (
     ("cmove $c1, $c2", {
         "c1": fn_b,
-        "pvertex": mk_pvertex(fn_b),
+        "pvertex": mk_pvertex(fn_b, vid="cap-fn_b"),
     }),
     ("cjalr $c1, $c17", {
         "c17": pct_cap(0x0, 0xb000c, 0x100000, perm),
-        "cvertex": mk_cvertex(0x20000, parent="fn_b", vid="fn_cap_b")
+        "cvertex": mk_cvertex(
+            0x20000,
+            parent="fn_b",
+            vid="fn_cap_b",
+            visible=[
+                mk_cvertex_visible("cap-fn_b", 0x0, 1),
+                mk_cvertex_visible("link", 0xb000c, 17),
+            ]),
     }),
     ("nop", {}),
 ))
@@ -306,7 +394,7 @@ trace_syscall = (0x1000, (
     ("cmove $c31, $c31", {
         "c31": pct_cap(0x1000, 0x0c, 0x10000, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0x10000, perm)),
-    }),    
+    }),
     ("eret", {
         "cret": mk_cvertex_ret("syscall")
     }),
@@ -403,12 +491,19 @@ trace_syscall_mixed_0x1000 = (0x1000, (
     }),
     ("cmove $c1, $c1", {
         "c1": fn_a,
-        "pvertex": mk_pvertex(fn_a)
+        "pvertex": mk_pvertex(fn_a, vid="cap-fn_a")
     }),
     ("cjalr $c1, $c17", {
         "c17": pct_cap(0x1000, 0x18, 0xf000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x1000, 0x18, 0xf000, perm)),
-        "cvertex": mk_cvertex(0x10000, parent="syscall", vid="call-fn_a"),
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x18, 0xf000, perm), vid="link"),
+        "cvertex": mk_cvertex(
+            0x10000,
+            parent="syscall",
+            vid="call-fn_a",
+            visible=[
+                mk_cvertex_visible("cap-fn_a", 0x0, 1),
+                mk_cvertex_visible("link", 0x18, 17),
+            ]),
     }),
     ("nop", {}),
 ))
@@ -417,7 +512,14 @@ trace_syscall_mixed_0x10000 = (0x10000, (
     ("dsll $1, $1, 16", {"1": 0x20000}),
     ("jalr $1", {
         "31": 0x10010,
-        "cvertex": mk_cvertex(0x20000, parent="call-fn_a", vid="call-fn_b"),
+        "cvertex": mk_cvertex(
+            0x20000,
+            parent="call-fn_a",
+            vid="call-fn_b",
+            visible=[
+                mk_cvertex_visible("cap-fn_a", 0x0, 1),
+                mk_cvertex_visible("link", 0x18, 17),
+            ]),
     }),
     ("nop", {}),
 ))
@@ -454,8 +556,16 @@ trace_syscall_epcc_update = (0x1000, (
     # {0x1014}
     ("syscall", {
         "exc": 8,
-        "cvertex": mk_cvertex(447, op=EdgeOperation.SYSCALL,
-                              parent="call-root", vid="mmap"),
+        "cvertex": mk_cvertex(
+            447,
+            op=EdgeOperation.SYSCALL,
+            parent="call-root",
+            vid="mmap",
+            visible=[
+                mk_cvertex_visible("start", 0x0, 1),
+                mk_cvertex_visible("kdc", 0x0, 30),
+                mk_cvertex_visible("pcc", 0x0, 31),
+            ]),
     }),
     ("cincoffset $c1, $kdc, $zero", {"c1": kdc_default}),
     # simulate return of mmap(0x1000, 0x1000, ...)
@@ -470,7 +580,7 @@ trace_syscall_epcc_update = (0x1000, (
                               vid="v1000"),
     }),
     ("cmove $c3, $c2", {
-        "c3": pct_cap(0x1000, 0x0, 0x1000, CheriCapPerm.all())
+        "c3": pct_cap(0x1000, 0xf00, 0x1000, CheriCapPerm.all())
     }),
     # epcc address should match the expected return
     ("lui $at, 0x14", {"1": 0x18}),
@@ -478,10 +588,82 @@ trace_syscall_epcc_update = (0x1000, (
         "c31": pct_cap(0x1000, 0x18, 0x1000, perm),
     }),
     ("eret", {
-        "cret": mk_cvertex_ret("mmap"),
+        "cret": mk_cvertex_ret("mmap", offset=0xf00, retid="v1000"),
         # expect the vertex to be used in a syscall ret (TODO)
         # "vertex_call": mk_vertex_call("v1000", 447, "syscall_ret"),
     }),
+))
+
+# test arguments/return to call
+# Check that visible and return vertices are correctly linked
+# in different situations.
+# call-root -> fn_a
+#           -> fn_b
+trace_call_connect_prov_0x1000 = (0x1000, (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("cmove $c1, $c1", {
+        "c1": fn_a,
+        "pvertex": mk_pvertex(fn_a, vid="cap-fn_a"),
+    }),
+    ("cmove $c2, $c2", {
+        "c2": fn_b,
+        "pvertex": mk_pvertex(fn_b, vid="cap-fn_b"),
+    }),
+    ("cmove $c3, $c3", {
+        "c2": start_cap,
+        "pvertex": mk_pvertex(start_cap, vid="start"),
+    }),
+    ("cjalr $c1, $c17", {
+        "c17": pct_cap(0x1000, 0x14, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x14, 0x1000, perm), vid="link"),
+        "cvertex": mk_cvertex(
+            0x10000,
+            parent="call-root",
+            vid="call-fn_a",
+            visible=[
+                mk_cvertex_visible("cap-fn_a", 0x0, 1),
+                mk_cvertex_visible("cap-fn_b", 0x0, 2),
+                mk_cvertex_visible("start", 0x0, 3),
+                mk_cvertex_visible("link", 0x14, 17),
+            ])
+    }),
+    ("nop", {}),
+))
+trace_call_connect_prov_0x10000 = (0x10000, (
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("cincoffset $c4, $c3, $at", {
+        "c4": pct_cap(0x1000, 0x100, 0x1000, perm),
+    }),
+    ("lui $at, 0x1f0", {"1": 0x1f0}),
+    ("cincoffset $c3, $c3, $at", {
+        "c3": pct_cap(0x1000, 0x1f0, 0x1000, perm),
+    }),
+    ("cmove $c5, $c3", {
+        "c5": pct_cap(0x1000, 0x1f0, 0x1000, perm),
+    }),
+    ("cjalr $c2, $c17", {
+        "c17": pct_cap(0x10000, 0x14, 0xf000, perm),
+        "cvertex": mk_cvertex(
+            0x20000,
+            parent="call-fn_a",
+            vid="call-fn_b",
+            visible=[
+                mk_cvertex_visible("cap-fn_a", 0x0, 1),
+                mk_cvertex_visible("cap-fn_b", 0x0, 2),
+                mk_cvertex_visible("start", 0x1f0, 3, 5),
+                mk_cvertex_visible("start", 0x100, 4),
+                mk_cvertex_visible("cap-fn_a", 0x14, 17),
+            ])
+    }),
+    ("nop", {}),
+))
+trace_call_connect_prov_0x20000 = (0x20000, (
+    ("cjr $c17", {
+        "cret": mk_cvertex_ret("call-fn_b", offset=0x1f0, retid="start")
+    }),
+    ("nop", {}),
 ))
 
 @pytest.mark.timeout(10)
@@ -505,7 +687,9 @@ trace_syscall_epcc_update = (0x1000, (
     (trace_syscall_except,),
     (trace_syscall_mixed_0x1000, trace_syscall_mixed_0x10000,
      trace_syscall_mixed_0x20000),
-    (trace_syscall_epcc_update,)
+    (trace_syscall_epcc_update,),
+    (trace_call_connect_prov_0x1000, trace_call_connect_prov_0x10000,
+     trace_call_connect_prov_0x20000),
 ])
 def test_callgen(traces, threads):
     """Test provenance parser with the simplest trace possible."""

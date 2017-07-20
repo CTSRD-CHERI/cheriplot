@@ -33,9 +33,9 @@ def dump_edges(graph):
     for e in graph.edges():
         e_addr = graph.ep.addr[e] or 0
         e_op = EdgeOperation(graph.ep.operation[e]).name if graph.ep.operation[e] else ""
-        dump.write("%d -> %d [time:%s addr:0x%x op:%s]\n" % (
+        dump.write("%d -> %d [time:%s addr:0x%x op:%s regs:%s]\n" % (
             e.source(), e.target(), graph.ep.time[e],
-            e_addr, e_op))
+            e_addr, e_op, graph.ep.regs[e]))
     return dump.getvalue()
 
 def assert_vertex_equal(exp_graph, exp_v, other_graph, other_v):
@@ -135,6 +135,10 @@ def assert_edge_equal(expect, e, other, f):
         edge_dump,
         EdgeOperation(e_op).name if e_op is not None else e_op,
         EdgeOperation(f_op).name if f_op is not None else f_op)
+    e_reg = set(expect.ep.regs[e])
+    f_reg = set(other.ep.regs[f])
+    assert e_reg == f_reg, "Edge %s associated register differ "\
+        "expect:%s found:%s" % (edge_dump, e_reg, f_reg)
 
 def assert_graph_equal(expect, other):
     """
@@ -203,11 +207,39 @@ def mk_pvertex(cap, parent=None, origin=CheriNodeOrigin.ROOT, pc=None,
         return data, None, vid
     return (parent, _data)
 
+def mk_cvertex_visible(vid, offset, *args):
+    """
+    Helper mostly useful for clarity.
+    Create a tuple in the visible argument to :func:`mk_cvertex`
+
+    :param vid: vertex id
+    :param offset: expected offset of the vertex at call time
+    :param *args: indices of registers to which the vertex is associated with.
+    """
+    return (vid, offset, args)
+
 def mk_cvertex(addr, op=EdgeOperation.CALL, parent=None, pc=None,
-               call_time=None, vid=None):
+               call_time=None, vid=None, visible=[]):
     """
     Create ProvenanceTraceWriter side-effect to produce a vertex in the
     call layer.
+
+    :param addr: the target address of the expected call
+    :param op: EdgeOperation (default CALL) of the edge connecting
+    this node to the parent (set edge_operation)
+    :param parent: vertex id of the parent vertex
+    :param pc: address of the call instruction (set edge_addr)
+    :param call_time: time of the call instruction (set edge_time)
+    :param vid: id of the new vertex created, this is only a shorthand
+    to reference vertices in the mock model.
+    :param visible: iterable of elements of type
+    (mock-vertex-id, offset, (reg,...)) where:
+    *mock-vertex-id* is the id of the provenance vertex to be
+    connected to the new vertex as EdgeOperation.VISIBLE;
+    *offset* is the capability offset of the capability
+    at the time of call;
+    *reg* is the index of a register that holds the capability.
+    :return: tuple containing (parent, vertex_and_edge_data_builder)
     """
     def _data():
         """Generate expected vertex and edge data."""
@@ -217,18 +249,26 @@ def mk_cvertex(addr, op=EdgeOperation.CALL, parent=None, pc=None,
             "addr": pc,
             "time": call_time,
         }
-        return data, edata, vid
+        return data, edata, vid, visible
     return (parent, _data)
 
-def mk_cvertex_ret(*args):
+def mk_cvertex_ret(*args, retid=None, offset=None):
     """
     Create ProvenanceTraceWriter side-effect to set a call-vertex
     return time and address to the current instruction.
 
     :param *args: IDs of vertices that have the return point marked
     by this side-effect.
+    :param retid: id of the provenance vertex marked as return value,
+    if multiple vertices are given in *args, retid should be an iterable
+    of the same length.
+    :param offset: offset of the returned capability
     """
-    return args
+    if isinstance(retid, list) or isinstance(retid, tuple):
+        assert len(args) == len(retid)
+    else:
+        retid = repeat(retid)
+    return (args, retid, offset)
 
 def mk_vertex_deref(vertex_id, addr, is_cap, type_):
     """
@@ -348,7 +388,8 @@ class ProvenanceTraceWriter(MockTraceWriter):
             # the side effect parameter is (parent, ProvenanceVertexData)
             parent_id, data_builder = val
             parent = self._id_to_vertex(parent_id)
-            data, edata, vid = data_builder()
+            # see mk_cvertex for the data_builder
+            data, edata, vid, visible_vertices = data_builder()
             self.pgm.data[v] = data
             self._expect_vertex_id_map[vid] = v
             logger.debug("register mock call vertex %s -> %s", parent, data)
@@ -361,8 +402,16 @@ class ProvenanceTraceWriter(MockTraceWriter):
                 edge = self.pgm.graph.add_edge(self.pgm.graph.vertex(parent), v)
                 for key,val in edata.items():
                     self.pgm.graph.ep[key][edge] = val
+            for visible_vid, cap_offset, regs in visible_vertices:
+                u = self._id_to_vertex(visible_vid)
+                edge = self.pgm.graph.add_edge(u, v)
+                self.pgm.edge_operation[edge] = EdgeOperation.VISIBLE
+                self.pgm.edge_addr[edge] = cap_offset
+                self.pgm.edge_time[edge] = entry.cycles if entry else 0
+                self.pgm.edge_regs[edge] = regs
         elif key == "cret":
-            for vid in val:
+            calls, ret_vertices, ret_target = val
+            for vid, ret_id in zip(calls, ret_vertices):
                 v = self._id_to_vertex(vid)
                 assert self.pgm.layer_call[v] == True,\
                     "cret side-effect for non-call layer vertex %d" % vid
@@ -371,6 +420,12 @@ class ProvenanceTraceWriter(MockTraceWriter):
                 # current entry values
                 data.t_return = entry.cycles
                 data.addr_return = entry.pc
+                if ret_id is not None:
+                    ret_v = self._id_to_vertex(ret_id)
+                    edge = self.pgm.graph.add_edge(ret_v, v)
+                    self.pgm.edge_operation[edge] = EdgeOperation.RETURN
+                    self.pgm.edge_addr[edge] = ret_target
+                    self.pgm.edge_time[edge] = entry.cycles
         elif key == "vertex_mem":
             # a vertex memory write or read is expected
             # see mk_vertex_mem
@@ -488,6 +543,7 @@ class MockGraphBuilder:
         gm.edge_operation[edge] = spec.get("operation", EdgeOperation.UNKNOWN)
         gm.edge_time[edge] = spec.get("time", 0)
         gm.edge_addr[edge] = spec.get("addr", 0)
+        gm.edge_regs[edge] = spec.get("regs", [])
 
     def set_final_regset(self, regset, v, spec):
         """put the vertex in the final register set"""

@@ -30,6 +30,8 @@ CHERI-MIPS specific subparsers that build the cheriplot graph
 
 import logging
 from collections import deque
+from contextlib import suppress
+from itertools import chain
 from functools import reduce
 from operator import or_
 
@@ -157,6 +159,10 @@ class MergePartialSubgraph(BFSTransform):
             Mark vertices in the subgraph that should be ignored when moving
             to the merged graph.
             """
+
+            self.copy_edge_map = self.subgraph.new_edge_property(
+                "bool", val=False)
+            """Keep track of which edges have been merged."""
 
     @property
     def graph(self):
@@ -331,6 +337,7 @@ class MergePartialSubgraph(BFSTransform):
         self.graph.ep.time[f] = self.subgraph.ep.time[e]
         self.graph.ep.addr[f] = self.subgraph.ep.addr[e]
         self.graph.ep.operation[f] = self.subgraph.ep.operation[e]
+        self.graph.ep.regs[f] = self.subgraph.ep.regs[e]
 
     def _merge_layer(self, u, v):
         """
@@ -487,7 +494,17 @@ class MergePartialSubgraph(BFSTransform):
         merged_root = None
         roots = []
         other = []
+        if u.in_degree() > 0:
+            # no edge should enter the PARTIAL vertex
+            msg = "Invalid PARTIAL vertex with inbound edges %s" % u
+            logger.error(msg)
+            raise SubgraphMergeError(msg)
+        # only consider children in the provenance layer
+        # edges between the call-layer and partial vertices are discarded
         for u_out in u.out_neighbours():
+            if not self.subgraph.vp.layer_prov[u_out]:
+                continue
+            # child in the provenance layer
             u_out_data = self.subgraph.vp.data[u_out]
             if u_out_data.origin == CheriNodeOrigin.ROOT:
                 roots.append(u_out)
@@ -502,7 +519,7 @@ class MergePartialSubgraph(BFSTransform):
             bound = 0
             perms = 0
             t_alloc = 2**64
-            for u_out in u.out_neighbours():
+            for u_out in other:
                 u_out_data = self.subgraph.vp.data[u_out]
                 base = min(base, u_out_data.cap.base)
                 bound = max(bound, u_out_data.cap.base + u_out_data.cap.length)
@@ -527,7 +544,7 @@ class MergePartialSubgraph(BFSTransform):
         else:
             # promote everything to root because there is no way to be sure
             # about provenance in this case.
-            for u_out in u.out_neighbours():
+            for u_out in chain(roots, other):
                 u_out_data = self.subgraph.vp.data[u_out]
                 u_out_data.origin = CheriNodeOrigin.ROOT
 
@@ -606,19 +623,32 @@ class MergePartialSubgraph(BFSTransform):
         self._merge_layer(u, v)
         self.copy_vertex_map[u] = v
 
-        if (self.subgraph.vp.layer_prov[u] and
-            udata.origin == CheriNodeOrigin.ROOT):
-            # do not copy edges to a root vertex
-            return
-        for u_in in u.in_neighbours():
-            logger.debug("in-neighbour subgraph-idx:%s", u_in)
-            # v_in must exist because we are doing BFS
-            # however if u_in is a root v_in is None
-            v_in = self.copy_vertex_map[u_in]
-            if v_in >= 0:
-                logger.debug("valid in-neighbour subgraph-idx:%s", u_in)
-                e = self.graph.add_edge(v_in, v)
-                self._merge_edge_data(self.subgraph.edge(u_in, u), e)
+        # merge all edges to neighbours if they have not been added yet
+        # we look for both in and out neighbours because we can not rely
+        # on traversal ordering.
+        for e in u.all_edges():
+            logger.debug("scanning edge %d -> %d", e.source(), e.target())
+            if (self.copy_edge_map[e] or self.copy_vertex_map[e.target()] < 0 or
+                self.copy_vertex_map[e.source()] < 0):
+                # edge already copied or one of the edge ends
+                # have not been copied yet, skip
+                continue
+            # go on and copy the edge
+            self.copy_edge_map[e] = True
+            if u == e.source():
+                target = self.copy_vertex_map[e.target()]
+                merged_edge = self.graph.add_edge(v, target)
+            else:
+                if (self.subgraph.vp.layer_prov[u] and
+                    udata.origin == CheriNodeOrigin.ROOT):
+                    # do not copy edges to a root vertex
+                    continue
+                source = self.copy_vertex_map[e.source()]
+                merged_edge = self.graph.add_edge(source, v)
+            self._merge_edge_data(e, merged_edge)
+            logger.debug("merged edge %d -> %d as %d -> %d",
+                         e.source(), e.target(),
+                         merged_edge.source(), merged_edge.target())
 
     def _merge_pcc_fixup(self, u):
         """
@@ -1049,22 +1079,22 @@ class SyscallSubparser:
         Scan a syscall instruction and detect the syscall type
         and arguments.
         """
-        self.code = self._get_syscall_code(regs)
-        try:
-            record = SyscallSubparser.syscall_codes[self.code]
-            if record[1] != SyscallSubparser.SYS_RET:
-                # record the use of a vertex as system call argument
-                vertex = self.regset[record[1]]
-                data = self.pgm.data[vertex]
-                logger.debug("Detected syscall %d capability argument: %s",
-                             self.code, data)
-                # data.add_use_syscall(entry.cycles, self.code, True)
-            else:
-                self.in_syscall = True
-                self.pc_eret = entry.pc + 4
-        except KeyError:
-            # not interested in the syscall
-            pass
+        # self.code = self._get_syscall_code(regs)
+        # try:
+        #     record = SyscallSubparser.syscall_codes[self.code]
+        #     if record[1] != SyscallSubparser.SYS_RET:
+        #         # record the use of a vertex as system call argument
+        #         vertex = self.regset[record[1]]
+        #         data = self.pgm.data[vertex]
+        #         logger.debug("Detected syscall %d capability argument: %s",
+        #                      self.code, data)
+        #         # data.add_use_syscall(entry.cycles, self.code, True)
+        #     else:
+        #         self.in_syscall = True
+        #         self.pc_eret = entry.pc + 4
+        # except KeyError:
+        #     # not interested in the syscall
+        #     pass
         return False
 
     def scan_eret(self, inst, entry, regs, last_regs, idx):
@@ -1072,29 +1102,29 @@ class SyscallSubparser:
         Scan eret instructions to properly restore pcc from epcc
         and capture syscall return values.
         """
-        self.exception_depth -= 1
-        epcc_valid = regs.valid_caps[31]
-        if not epcc_valid:
-            msg = "eret without valid epcc register"
-            logger.error(msg)
-            raise UnexpectedOperationError(msg)
-        epcc = regs.cap_reg[31]
-        if self.exception_depth < 0:
-            # the trace begins within a syscall/exception
-            self.initial_eret_cap = self.regset[3]
-            self.initial_eret_addr = epcc.base + epcc.offset
-            self.initial_eret_time = entry.cycles
-            # restore a 0 exception depth
-            self.exception_depth = 0
+        # self.exception_depth -= 1
+        # epcc_valid = regs.valid_caps[31]
+        # if not epcc_valid:
+        #     msg = "eret without valid epcc register"
+        #     logger.error(msg)
+        #     raise UnexpectedOperationError(msg)
+        # epcc = regs.cap_reg[31]
+        # if self.exception_depth < 0:
+        #     # the trace begins within a syscall/exception
+        #     self.initial_eret_cap = self.regset[3]
+        #     self.initial_eret_addr = epcc.base + epcc.offset
+        #     self.initial_eret_time = entry.cycles
+        #     # restore a 0 exception depth
+        #     self.exception_depth = 0
 
-        if (self.in_syscall and
-            epcc.base + epcc.offset == self.pc_eret):
-            self.in_syscall = False
-            vertex = self.regset[3]
-            data = self.pgm.data[vertex]
-            logger.debug("Detected syscall %d capability return: %s",
-                         self.code, data)
-            # data.add_use_syscall(entry.cycles, self.code, False)
+        # if (self.in_syscall and
+        #     epcc.base + epcc.offset == self.pc_eret):
+        #     self.in_syscall = False
+        #     vertex = self.regset[3]
+        #     data = self.pgm.data[vertex]
+        #     logger.debug("Detected syscall %d capability return: %s",
+        #                  self.code, data)
+        #     data.add_use_syscall(entry.cycles, self.code, False)
         self.regset.pcc = self.regset[31] # restore saved pcc
         return False
 
@@ -1692,7 +1722,7 @@ class CallgraphSubparser:
         target_addr = target_cap.base + target_cap.offset
         link_addr = link_cap.base + link_cap.offset
         if not inst.has_exception:
-            self._make_call(entry, target_addr, link_addr, target_vertex,
+            self._make_call(entry, regs, target_addr, link_addr, target_vertex,
                             EdgeOperation.CALL)
         return False
 
@@ -1702,11 +1732,10 @@ class CallgraphSubparser:
         This have the same assumptions as scan_cjalr.
         cjr cap_ret
         """
-        return_vertex = self.regset[inst.op0.cap_index]
         return_cap = inst.op0.value
         return_addr = return_cap.base + return_cap.offset
         if not inst.has_exception:
-            self._make_call_return(entry, return_addr, return_vertex)
+            self._make_call_return(entry, return_addr, regs)
         return False
 
     def scan_jalr(self, inst, entry, regs, last_regs, idx):
@@ -1717,14 +1746,14 @@ class CallgraphSubparser:
         target_addr = inst.op1.value
         link_addr = inst.op0.value
         if not inst.has_exception:
-            self._make_call(entry, target_addr, link_addr, None,
+            self._make_call(entry, regs, target_addr, link_addr, None,
                             EdgeOperation.CALL)
         return False
 
     def scan_jr(self, inst, entry, regs, last_regs, idx):
         addr = inst.op0.value
         if not inst.has_exception:
-            self._make_call_return(entry, addr, None)
+            self._make_call_return(entry, addr, regs)
         return False
 
     def scan_exception(self, inst, entry, regs, last_regs, idx):
@@ -1747,7 +1776,7 @@ class CallgraphSubparser:
         """
         code = self._get_syscall_code(regs)
         self._in_syscall = True
-        self._make_call(entry, code, None, None, EdgeOperation.SYSCALL)
+        self._make_call(entry, regs, code, None, None, EdgeOperation.SYSCALL)
         return False
 
     def scan_eret(self, inst, entry, regs, last_regs, idx):
@@ -1763,25 +1792,19 @@ class CallgraphSubparser:
                 logger.error(msg)
                 raise UnexpectedOperationError(msg)
             epcc = regs.cap_reg[31]
-            if self.exception_depth != 0:
-                msg = "{%d} Return from syscall while an "\
-                      "exception is active" % entry.cycles
-                logger.error(msg)
-                raise UnexpectedOperationError(msg)
             self._in_syscall = False
-            # c3 holds the syscall capability return if any.
-            cret = self.regset[3]
-            self._make_syscall_return(entry, epcc.base + epcc.offset, cret)
+            self._make_syscall_return(entry, epcc.base + epcc.offset, regs)
         elif self.exception_depth < 0:
             # XXX currently we do not handle extra erets so ignore them
             self.exception_depth = 0
         return False
 
-    def _make_call(self, entry, callee_addr, link_addr, dst_vertex, op):
+    def _make_call(self, entry, regs, callee_addr, link_addr, dst_vertex, op):
         """
         Create a call layer vertex in the graph.
 
         :param entry: trace entry of the call instruction
+        :param regs: cheritrace regset of the call instruction
         :param callee_addr: address of the callee
         :param link_addr: expected return address
         :param dst_vertex: provenance layer vertex containing
@@ -1799,8 +1822,46 @@ class CallgraphSubparser:
         self.pgm.edge_addr[edge] = entry.pc
         # update state
         self.call_stack.append((vertex, link_addr))
+        self._link_visible_vertices(vertex, entry, regs)
 
-    def _make_syscall_return(self, entry, addr, vertex):
+    def _link_visible_vertices(self, vertex, entry, regs):
+        """
+        Attach provenance vertices from the register set to the
+        given call vertex to signal the vertices visible from the
+        function called.
+
+        * Single edge from prov-vertex to call-vertex when the prov-vertex
+        is only found in a single register with a given current offset
+
+        * Multiple edges from prov-vertex to call-vertex when the prov-vertex
+        is found in more than one register with different offsets.
+
+        * Single edge with multiple register indices when the prov-vertex
+        is found in multiple registers with the same offset.
+        """
+        all_regs = chain(self.regset.reg_nodes, [self.regset.pcc])
+        # temporarily hold prov-vertex => edge pairs
+        visible_edges = {}
+        for reg_idx, u in enumerate(all_regs):
+            if u is None or not regs.valid_caps[reg_idx]:
+                continue
+            offset = regs.cap_reg[reg_idx].offset
+            with suppress(KeyError):
+                # u is already linked to the called frame, check if
+                # the offset matches
+                edge = visible_edges[(u, offset)]
+                if self.pgm.edge_addr[edge] == offset:
+                    self.pgm.edge_regs[edge].append(reg_idx)
+                    continue
+            # make new edge prov-vertex -> call
+            edge = self.pgm.graph.add_edge(u, vertex)
+            visible_edges[(u, offset)] = edge
+            self.pgm.edge_operation[edge] = EdgeOperation.VISIBLE
+            self.pgm.edge_time[edge] = entry.cycles
+            self.pgm.edge_addr[edge] = offset
+            self.pgm.edge_regs[edge].append(reg_idx)
+
+    def _make_syscall_return(self, entry, addr, regs):
         """
         Return from a system call.
         Register a return for all outstanding calls until the
@@ -1822,20 +1883,14 @@ class CallgraphSubparser:
                     self.current_frame)
                 logger.error(msg)
                 raise UnexpectedOperationError(msg)
+            self._make_return(entry, addr, regs)
             if eop == EdgeOperation.SYSCALL:
-                # mark return from the syscall and finish
-                self._make_return(entry, addr, vertex)
                 break
-            else:
-                # eop == EdgeOperation.CALL
-                # mark return for outstanding call and continue
-                # walking the call stack
-                self._make_return(entry, addr, None)
         else:
             # create new root with this
-            self._make_return(entry, addr, vertex)
+            self._make_return(entry, addr, regs)
 
-    def _make_call_return(self, entry, addr, vertex):
+    def _make_call_return(self, entry, addr, regs):
         """
         Return from a call.
         If the expected return does not match the return address then
@@ -1850,9 +1905,9 @@ class CallgraphSubparser:
             # to look back the call stack in case we jump back more
             # than 1 frame.
             return
-        self._make_return(entry, addr, vertex)
+        self._make_return(entry, addr, regs)
 
-    def _make_return(self, entry, addr, vertex):
+    def _make_return(self, entry, addr, regs):
         """
         Mark a call/syscall vertex return value and time.
         This pops the last frame from the call_stack and
@@ -1860,20 +1915,30 @@ class CallgraphSubparser:
 
         :param entry: trace entry of the return instruction
         :param addr: return address
-        :param vertex: vertex holding the return capability
+        :param regs: register set
         """
-        prev_vertex, _ = self.call_stack.pop()
+        curr_frame, _ = self.call_stack.pop()
         # set the return values in the current frame
-        data = self.pgm.data[prev_vertex]
+        data = self.pgm.data[curr_frame]
         data.t_return = entry.cycles
         data.addr_return = entry.pc
-        if prev_vertex == self.root:
+        if self.regset[3] is not None:
+            if regs.valid_caps[3]:
+                offset = regs.cap_reg[3].offset
+            else:
+                offset = None
+            # capability in the return register
+            edge = self.pgm.graph.add_edge(self.regset[3], curr_frame)
+            self.pgm.edge_time[edge] = entry.cycles
+            self.pgm.edge_addr[edge] = offset
+            self.pgm.edge_operation[edge] = EdgeOperation.RETURN
+        if curr_frame == self.root:
             # return from the root, we do not know what there is before that
             # so create a new vertex in place of the root
             self.root = self.pgm.graph.add_vertex()
             self.pgm.layer_call[self.root] = True
             self.pgm.data[self.root] = CallVertexData(None)
-            edge = self.pgm.graph.add_edge(self.root, prev_vertex)
+            edge = self.pgm.graph.add_edge(self.root, curr_frame)
             self.pgm.edge_time[edge] = 0
             self.pgm.edge_addr[edge] = 0
             self.pgm.edge_operation[edge] = EdgeOperation.CALL

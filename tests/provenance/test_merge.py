@@ -681,6 +681,94 @@ trace_step_2_call_graph = (
     }),
 )
 
+# merge begin call graph
+# Test initial merge with visible provenance layer vertices
+trace_begin_call_graph_with_visible = (
+    ("call_node", {
+        "root": True,
+        "id": "call-root",
+        "addr": None,
+    }),
+    ("call_node", {
+        "id": "fn",
+        "addr": 0xf0000,
+    }),
+    ("prov_node", {
+        "id": "arg0",
+        "origin": CheriNodeOrigin.ROOT,
+        "cap": model_cap(0x1000, 0x0, 0x100, rw_perm, t=100),
+        "pc": 0x3000
+    }),
+    ("prov_node", {
+        "id": "arg1",
+        "origin": CheriNodeOrigin.ROOT,
+        "cap": model_cap(0x5000, 0x0, 0x100, rw_perm, t=100),
+        "pc": 0x10000
+    }),
+    ("call_edge", "call-root", "fn", {
+        "operation": EdgeOperation.CALL,
+        "time": 10,
+        "addr": 0x1000,
+    }),
+    ("call_edge", "arg0", "fn", {
+        "operation": EdgeOperation.VISIBLE,
+        "time": 10,
+        # offset of arg0 at time of call != from offset in the prov vertex
+        "addr": 0x50,
+        # pretend we found arg0 in $c10
+        "regs": [10],
+    }),
+    ("call_edge", "arg1", "fn", {
+        "operation": EdgeOperation.VISIBLE,
+        "time": 10,
+        "addr": 0x10,
+        "regs": [4],
+    }),
+    ("prov_edge", "partial-1", "arg0", {}),
+    ("prov_edge", "partial-2", "arg1", {}),
+)
+
+# merge begin call graph
+# Test initial merge with visible provenance layer vertices
+# where a PARTIAL vertex is visible
+trace_begin_call_graph_partial_visible = (
+    ("call_node", {
+        "root": True,
+        "id": "call-root",
+        "addr": None,
+    }),
+    ("call_node", {
+        "id": "fn",
+        "addr": 0xf0000,
+    }),
+    ("prov_node", {
+        "id": "arg0",
+        "origin": CheriNodeOrigin.ROOT,
+        "cap": model_cap(0x1000, 0x0, 0x100, rw_perm, t=100),
+        "pc": 0x3000
+    }),
+    ("call_edge", "call-root", "fn", {
+        "operation": EdgeOperation.CALL,
+        "time": 10,
+        "addr": 0x1000,
+    }),
+    ("call_edge", "arg0", "fn", {
+        "operation": EdgeOperation.VISIBLE,
+        "time": 10,
+        # offset of arg0 at time of call != from offset in the prov vertex
+        "addr": 0x50,
+        # pretend we found arg0 in $c10
+        "regs": [10],
+    }),
+    ("call_edge", "partial-2", "fn", {
+        "operation": EdgeOperation.VISIBLE,
+        "time": 10,
+        "addr": 0x10,
+        "regs": [4],
+    }),
+    ("prov_edge", "partial-1", "arg0", {}),
+)
+
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("mock_model, error", [
     (trace_begin_simple_model, None),
@@ -689,6 +777,8 @@ trace_step_2_call_graph = (
     (trace_begin_partial_all_non_root, None),
     (trace_begin_call_graph, None),
     (trace_begin_call_graph_extra_ret, None),
+    (trace_begin_call_graph_with_visible, None),
+    (trace_begin_call_graph_partial_visible, None),
 ])
 def test_single_step_merge(worker_result_base, mock_model, error):
     """

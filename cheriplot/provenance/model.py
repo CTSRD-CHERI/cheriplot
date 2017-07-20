@@ -449,7 +449,7 @@ class EdgeOperation(IntEnum):
     VISIBLE = auto()
     """Capability visible (from the register set) in a called function."""
 
-    _RETURN = auto()
+    RETURN = auto()
     """
     Capability used as return value in a called function
     (or at least present in c3).
@@ -473,6 +473,14 @@ class ProvenanceGraphManager:
       * operation (int): :class:`EdgeOperation` type for the operation
         represented by the edge
       * time (object): integer (uint64_t) marking the time of the event
+      * addr (object): integer (uint64_t) meaning depends on the operation:
+        * CALL/SYSCALL: address of the call instruction
+        * VISIBLE: offset of the capability that is visible (source vertex)
+        * RETURN: offset of the capability that is marked
+          as return (source vertex)
+      * reg (int): Only valid for VISIBLE edges, index of the register where
+        the source vertex is found at the time of the call. This is used to
+        link capabilities to function arguments.
     * graph
 
       * stack (object): initial stack :class:`CheriCap` object
@@ -503,6 +511,7 @@ class ProvenanceGraphManager:
             prop_data = self.graph.new_vertex_property("object")
             # edge properties
             prop_edge_op = self.graph.new_edge_property("int", val=0)
+            prop_edge_regs = self.graph.new_edge_property("vector<int>")
             prop_edge_time = self.graph.new_edge_property("object")
             prop_edge_address = self.graph.new_edge_property("object")
             # layers
@@ -514,6 +523,7 @@ class ProvenanceGraphManager:
             self.graph.ep["operation"] = prop_edge_op
             self.graph.ep["time"] = prop_edge_time
             self.graph.ep["addr"] = prop_edge_address
+            self.graph.ep["regs"] = prop_edge_regs
             self.graph.gp["stack"] = prop_initial_stack
 
         self._init_props()
@@ -529,6 +539,7 @@ class ProvenanceGraphManager:
         self.edge_operation = self.graph.ep.operation
         self.edge_time = self.graph.ep.time
         self.edge_addr = self.graph.ep.addr
+        self.edge_regs = self.graph.ep.regs
         self.prov_view = GraphView(self.graph, vfilt=self.graph.vp.layer_prov)
         self.call_view = GraphView(self.graph, vfilt=self.graph.vp.layer_call)
 
