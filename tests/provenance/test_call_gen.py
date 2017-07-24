@@ -595,9 +595,6 @@ trace_syscall_epcc_update = (0x1000, (
     }),
     ("eret", {
         "cret": mk_cvertex_ret("mmap", offset=0xf00, retid="v1000"),
-        # expect the vertex to be used in a syscall ret (TODO)
-        # XXXXX THIS SHOULD BE WORKING BY NOW!!
-        # "vertex_call": mk_vertex_call("v1000", 447, "syscall_ret"),
     }),
 ))
 

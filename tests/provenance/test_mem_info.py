@@ -300,7 +300,8 @@ trace_mem_mp_vertex_map = (
     ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),
 )
 
-# Test memory info
+# Test memory overwrite event
+# DELETE events should be issued to the vertex that is removed from a memory location
 trace_mem_overwrite = (
     ("cmove $c2, $c2", {
         "c2": pct_cap(0x2000, 0x0, 0x1000, perm),
@@ -338,6 +339,153 @@ trace_mem_overwrite = (
     }),
 )
 
+# Test memory overwrite events for unaligned accesses and
+# across subgraph merge
+trace_mem_mp_overwrite = (
+    ("", {
+        "cvertex": mk_cvertex(None, vid="call-root"),
+    }),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x10, 0x0, 0x100, perm),
+        "pvertex": mk_pvertex(pct_cap(0x10, 0x0, 0x100, perm), vid="v10"),
+    }),
+    ("cmove $c2, $c2", {
+        "c2": pct_cap(0x20, 0x0, 0x100, perm),
+        "pvertex": mk_pvertex(pct_cap(0x20, 0x0, 0x100, perm), vid="v20"),
+    }),
+    ("cmove $c3, $c3", {
+        "c2": pct_cap(0x0, 0x0, 0xf000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xf000, perm), vid="target"),
+    }),
+    ("lui $at, 0x1000", {"1": 0x1000}),
+    ("csc $c1, $zero, 0x0($c3)", {
+        "store": True,
+        "mem": 0x0,
+        "vertex_deref": mk_vertex_deref("target", 0x0, True, "store"),
+        "vertex_mem": mk_vertex_mem("v10", 0x0, "store"),
+    }),
+    ("csc $c2, $at, 0x0($c3)", {
+        "store": True,
+        "mem": 0x1000,
+        "vertex_deref": mk_vertex_deref("target", 0x1000, True, "store"),
+        "vertex_mem": mk_vertex_mem("v20", 0x1000, "store"),
+    }),
+    # worker set split here
+    ("csd $at, $zero, 0x0($c3)", {
+        "store": True,
+        "mem": 0x0,
+        "vertex_deref": mk_vertex_deref("target", 0x0, False, "store"),
+        "vertex_mem_overwrite": mk_vertex_mem("v10", 0x0, "delete"),
+    }),
+    ("sb $at, 0x1005($at)", {
+        "store": True,
+        "mem": 0x1005,
+        "vertex_mem_overwrite": mk_vertex_mem("v20", 0x1000, "delete"),
+    }),
+    # pad to make the worker set split at the marked point
+    ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),
+)
+
+# Test t_free with memory overwrite
+# t_free should be set to the original vertex across the subgraph boundary
+trace_mem_mp_out_of_scope = (
+    ("", {
+        "cvertex": mk_cvertex(None, vid="call-root"),
+    }),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x10, 0x0, 0x100, perm),
+        "pvertex": mk_pvertex(pct_cap(0x10, 0x0, 0x100, perm), vid="v10"),
+    }),
+    ("cmove $c2, $c2", {
+        "c2": pct_cap(0x20, 0x0, 0x100, perm),
+        "pvertex": mk_pvertex(pct_cap(0x20, 0x0, 0x100, perm), vid="v20"),
+    }),
+    ("cmove $c3, $c3", {
+        "c3": pct_cap(0x0, 0x0, 0xf000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xf000, perm), vid="target"),
+    }),
+    ("lui $at, 0x1000", {"1": 0x1000}),
+    ("csc $c1, $zero, 0x0($c3)", {
+        "store": True,
+        "mem": 0x0,
+        "vertex_deref": mk_vertex_deref("target", 0x0, True, "store"),
+        "vertex_mem": mk_vertex_mem("v10", 0x0, "store"),
+    }),
+    ("csc $c2, $at, 0x0($c3)", {
+        "store": True,
+        "mem": 0x1000,
+        "vertex_deref": mk_vertex_deref("target", 0x1000, True, "store"),
+        "vertex_mem": mk_vertex_mem("v20", 0x1000, "store"),
+    }),
+    # remove the vertices from the register file
+    ("cmove $c2, $c3", {
+        "c2": pct_cap(0x0, 0x0, 0xf000, perm),
+    }),
+    ("cmove $c1, $c3", {
+        "c1": pct_cap(0x0, 0x0, 0xf000, perm),
+    }),
+    # worker set split here
+    # remove vertices from memory, they should be also marked in t_free
+    ("csd $at, $zero, 0x0($c3)", {
+        "store": True,
+        "mem": 0x0,
+        "vertex_deref": mk_vertex_deref("target", 0x0, False, "store"),
+        "vertex_mem_overwrite": mk_vertex_mem("v10", 0x0, "delete"),
+        "pfree": "v10",
+    }),
+    ("sb $at, 0x1005($at)", {
+        "store": True,
+        "mem": 0x1005,
+        "vertex_mem_overwrite": mk_vertex_mem("v20", 0x1000, "delete"),
+        "pfree": "v20",
+    }),
+    # pad to make the worker set split at the marked point
+    ("nop", {}), ("nop", {}),
+)
+
+# Test t_free with memory overwrite
+# the second subgraph would set t_free because a vertex is deleted there
+# but globally it is still available
+trace_mem_mp_in_scope = (
+    ("", {
+        "cvertex": mk_cvertex(None, vid="call-root"),
+    }),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x10, 0x0, 0x100, perm),
+        "pvertex": mk_pvertex(pct_cap(0x10, 0x0, 0x100, perm), vid="v10"),
+    }),
+    ("cmove $c3, $c3", {
+        "c3": pct_cap(0x0, 0x0, 0xf000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xf000, perm), vid="target"),
+    }),
+    ("lui $at, 0x1000", {"1": 0x1000}),
+    ("csc $c1, $zero, 0x0($c3)", {
+        "store": True,
+        "mem": 0x0,
+        "vertex_deref": mk_vertex_deref("target", 0x0, True, "store"),
+        "vertex_mem": mk_vertex_mem("v10", 0x0, "store"),
+    }),
+    # worker set split here
+    ("csc $c1, $at, 0x0($c3)", {
+        "store": True,
+        "mem": 0x1000,
+        "vertex_deref": mk_vertex_deref("target", 0x1000, True, "store"),
+        "vertex_mem": mk_vertex_mem("v10", 0x1000, "store"),
+    }),
+    # remove the vertices from the register file
+    ("cmove $c1, $c3", {
+        "c1": pct_cap(0x0, 0x0, 0xf000, perm),
+    }),
+    ("csd $at, $at, 0x0($c3)", {
+        "store": True,
+        "mem": 0x1000,
+        "vertex_deref": mk_vertex_deref("target", 0x1000, False, "store"),
+        "vertex_mem_overwrite": mk_vertex_mem("v10", 0x1000, "delete"),
+    }),
+    # pad to make the worker set split at the marked point
+    ("nop", {}),
+)
+
 @pytest.mark.timeout(5)
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
@@ -348,6 +496,9 @@ trace_mem_overwrite = (
     (trace_mem_init, trace_mem_mp_deref_merge,),
     (trace_mem_init, trace_mem_mp_vertex_map,),
     (trace_mem_init, trace_mem_overwrite,),
+    (trace_mem_mp_overwrite,),
+    (trace_mem_mp_out_of_scope,),
+    (trace_mem_mp_in_scope,),
 ])
 def test_mem_tracking(trace, threads):
     """Test provenance parser with the simplest trace possible."""
