@@ -80,11 +80,15 @@ def assert_prov_vertex_data_equal(u_data, v_data):
     # we ensure ordering at the use/deref/memop category level
     memop_mask = ProvenanceVertexData.EventType.memop_mask()
     deref_mask = ProvenanceVertexData.EventType.deref_mask()
-    use_mask = ProvenanceVertexData.EventType.use_mask()
-    masks = [memop_mask, deref_mask, use_mask]
+    # use_mask = ProvenanceVertexData.EventType.use_mask() XXX use events no longer exist
+    # masks = [memop_mask, deref_mask, use_mask]
+    masks = [memop_mask, deref_mask]
     # compare the table type column with each mask
     # t = event-table type column (Series)
     # m = mask pattern
+    assert len(u_data.event_tbl) == len(v_data.event_tbl),\
+        "events differ:\nexpect:%s\nfound:%s" % (
+            u_data.event_tbl, v_data.event_tbl)
     fn = lambda t,m: (t & m) != 0
     u_cond = map(fn, repeat(u_data.event_tbl["type"]), masks)
     v_cond = map(fn, repeat(v_data.event_tbl["type"]), masks)
@@ -284,23 +288,6 @@ def mk_vertex_deref(vertex_id, addr, is_cap, type_):
         type_ = ProvenanceVertexData.EventType.DEREF_CALL
     return (vertex_id, addr, is_cap, type_)
 
-def mk_vertex_call(vertex_id, symbol, type_):
-    """
-    Generate the side-effect data for an expected vertex
-    used as call argument or return, this should be used with the vertex_call
-    side-effect key in the trace writer.
-    """
-    if type_ == "syscall_arg":
-        type_ = (ProvenanceVertexData.EventType.USE_SYSCALL |
-                 ProvenanceVertexData.EventType.USE_IS_ARG)
-    elif type_ == "syscall_ret":
-        type_ = ProvenanceVertexData.EventType.USE_SYSCALL
-    elif type_ == "call":
-        type_ = ProvenanceVertexData.EventType.USE_CALL
-    elif type_ == "ccall":
-        type_ = ProvenanceVertexData.EventType.USE_CCALL
-    return (vertex_id, symbol, type_)
-
 def mk_vertex_mem(vertex_id, addr, type_):
     """
     Generate the side-effect data for an expected vertex store,
@@ -315,6 +302,8 @@ def mk_vertex_mem(vertex_id, addr, type_):
         type_ = ProvenanceVertexData.EventType.LOAD
     elif type_ == "store":
         type_ = ProvenanceVertexData.EventType.STORE
+    elif type_ == "delete":
+        type_ = ProvenanceVertexData.EventType.DELETE
     return (vertex_id, addr, type_)
 
 class ProvenanceTraceWriter(MockTraceWriter):
@@ -377,10 +366,16 @@ class ProvenanceTraceWriter(MockTraceWriter):
                 data.is_kernel = entry.pc > 0x7fffffffffffffff
             # fixup t_alloc if not already set
             if data.cap.t_alloc == -1:
-                # if entry is None this must be a root node, so by convention it is 0
+                # if entry is None this must be a root node,
+                # so by convention it is 0
                 data.cap.t_alloc = entry.cycles if entry else 0
             logger.debug("register mock prov vertex %s -> %s", parent, data)
             self.pgm.data[v] = data
+        elif key == "pfree":
+            # set prov vertex t_free
+            v = self._id_to_vertex(val)
+            v_data = self.pgm.data[v]
+            v_data.cap.t_free = entry.cycles if entry else -1
         elif key == "cvertex":
             # side effect that creates a call layer vertex
             v = self.pgm.graph.add_vertex()
@@ -426,8 +421,9 @@ class ProvenanceTraceWriter(MockTraceWriter):
                     self.pgm.edge_operation[edge] = EdgeOperation.RETURN
                     self.pgm.edge_addr[edge] = ret_target
                     self.pgm.edge_time[edge] = entry.cycles
-        elif key == "vertex_mem":
-            # a vertex memory write or read is expected
+        elif key == "vertex_mem" or key == "vertex_mem_overwrite":
+            # a vertex memory write or read is expected or
+            # a vertex memory write overwrites a previous vertex
             # see mk_vertex_mem
             vid, addr, type_ = val
             v = self._id_to_vertex(vid)
@@ -437,11 +433,6 @@ class ProvenanceTraceWriter(MockTraceWriter):
             vid, addr, is_cap, type_ = val
             v = self._id_to_vertex(vid)
             self.pgm.data[v].add_deref(entry.cycles, addr, is_cap, type_)
-        elif key == "vertex_call":
-            # a vertex is expected to be used as a call/return argument
-            vid, sym, type_ = val
-            v = self._id_to_vertex(vid)
-            self.pgm.data[v].add_event(entry.cycles, sym, type_)
         else:
             super()._side_effect(entry, key, val)
 
@@ -550,7 +541,7 @@ class MockGraphBuilder:
         reg = spec.get("reg", None)
         if reg is not None:
             if reg == "pcc":
-                regset._pcc = v
+                regset.reg_nodes[32] = v
             else:
                 regset.reg_nodes[reg] = v
 

@@ -92,12 +92,14 @@ trace_explicit_kcc_kdc = (
     ("daddiu $at, $at, 0x100", {"1": 0x200}),
     ("csetbounds $c1, $c2, $at", { # vertex 5
         "c1": bound_cap,
-        "pvertex": mk_pvertex(bound_cap, "pv4", CheriNodeOrigin.SETBOUNDS)
+        "pvertex": mk_pvertex(bound_cap, "pv4", CheriNodeOrigin.SETBOUNDS),
+        "pfree": "start",
     }),
     ("lui $at, 0x0c", {"1": 0x08}),
     ("candperm $c2, $c2, $at", { # vertex 6
         "c2": perm_cap,
-        "pvertex": mk_pvertex(perm_cap, "pv4", CheriNodeOrigin.ANDPERM)
+        "pvertex": mk_pvertex(perm_cap, "pv4", CheriNodeOrigin.ANDPERM),
+        "pfree": "pv4",
     })
 )
 
@@ -168,7 +170,8 @@ trace_pcc_epcc_tracking = (
         "pvertex": mk_pvertex(
             pct_cap(0x400, 0x0, 0x100, CheriCapPerm.all()),
             parent="kcc", origin=CheriNodeOrigin.SETBOUNDS,
-            vid="v400")
+            vid="v400"),
+        "pfree": "v300",
     }),
     # c31 here should be the pcc, NOT updated with the content of c2
     # after cjr
@@ -180,10 +183,14 @@ trace_pcc_epcc_tracking = (
         "pvertex": mk_pvertex(
             pct_cap(0x0c, 0x0, 0x100, exec_perm),
             parent="pcc", origin=CheriNodeOrigin.SETBOUNDS,
-            vid="v0c")
+            vid="v0c"),
+        "pfree": "v400",
     }),
     # nested interrupt
-    ("ld $2, 0($1)", {"exc": 0}),
+    ("ld $2, 0($1)", {
+        "exc": 0,
+        "pfree": "pcc", # the second exception replaces c31 again
+    }),
     ("cgetpcc $c1", {"c1": kcc}),
     ("lui $at, 0x400", {"1": 0x500}),
     ("csetoffset $c1, $c1, $at", {
@@ -195,7 +202,8 @@ trace_pcc_epcc_tracking = (
         "pvertex": mk_pvertex(
             pct_cap(0x500, 0x0, 0x100, CheriCapPerm.all()),
             parent="kcc", origin=CheriNodeOrigin.SETBOUNDS,
-            vid="v500")
+            vid="v500"),
+        "pfree": "v0c"
     }),
 )
 
@@ -272,7 +280,7 @@ trace_mp_move_and_setbounds = (
     ("csetbounds $c1, $c2, $at", { # vertex 4
         "c1": pct_cap(0x1000, 0x00, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x00, 0x100, perm),
-                              parent="start", origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="start", origin=CheriNodeOrigin.SETBOUNDS),
     }),
 )
 
@@ -298,7 +306,10 @@ trace_mp_cjr_exception_pcc_update = (
                               parent="pcc", origin=CheriNodeOrigin.SETBOUNDS,
                               vid="expected_pcc")
     }),
-    ("cjr $c2", {"exc": 1}),
+    ("cjr $c2", {
+        "exc": 1,
+        "pfree": "pcc",
+    }),
     ("nop", {}),
     # worker set split here
     ("dmfc0 $at, $8", {"1": 0x100}), # badvaddr = target of cjr
@@ -331,7 +342,8 @@ trace_mp_cjr_exception_pcc_unchanged = (
     ("csetbounds $c2, $c2, $at", { # vertex 4
         "c2": pct_cap(0x100, 0x0, 0x100, exec_perm),
         "pvertex": mk_pvertex(pct_cap(0x100, 0x0, 0x100, exec_perm),
-                              parent="pcc", origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="pcc", origin=CheriNodeOrigin.SETBOUNDS,
+                              vid="v100")
     }),
     ("cjr $c2", {"exc": 1}),
     ("nop", {}),
@@ -344,7 +356,8 @@ trace_mp_cjr_exception_pcc_unchanged = (
         "c2": pct_cap(0x100, 0x0, 0x0c, exec_perm),
         "pvertex": mk_pvertex(
             pct_cap(0x100, 0x0, 0x0c, exec_perm),
-            parent="pcc", origin=CheriNodeOrigin.SETBOUNDS)
+            parent="pcc", origin=CheriNodeOrigin.SETBOUNDS),
+        "pfree": "v100",
     }),
     # pad so that the worker set is split at the marked point
     ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),
@@ -383,13 +396,13 @@ trace_cpreg_set = (
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
                               parent="ddc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
-    ("csetbounds $c5, $c2, $at", { # vertex 4
-        "c5": pct_cap(0x2000, 0x0, 0x100, perm),
+    ("csetbounds $c6, $c2, $at", { # vertex 4
+        "c6": pct_cap(0x2000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x100, perm),
-                              parent="epcc", origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="epcc", origin=CheriNodeOrigin.SETBOUNDS),
     }),
-    ("csetbounds $c5, $c3, $at", { # vertex 5
-        "c5": pct_cap(0x3000, 0x0, 0x100, perm),
+    ("csetbounds $c7, $c3, $at", { # vertex 5
+        "c7": pct_cap(0x3000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x3000, 0x0, 0x100, perm),
                               parent="kcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
@@ -424,25 +437,25 @@ trace_cpreg_get = (
     ("lui $at, 0x100", {"1": 0x100}),
     # worker set split here
     ("csetbounds $c6, $c0, $at", { # vertex 4
-        "c3": pct_cap(0x1000, 0x0, 0x100, perm),
+        "c6": pct_cap(0x1000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
                               parent="ddc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
-    ("csetbounds $c6, $c31, $at", { # vertex 5
-        "c6": pct_cap(0x2000, 0x0, 0x100, perm),
+    ("csetbounds $c7, $c31, $at", { # vertex 5
+        "c7": pct_cap(0x2000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x100, perm),
                               parent="epcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
-    ("csetbounds $c6, $c29, $at", { # vertex 6
-        "c6": pct_cap(0x3000, 0x0, 0x100, perm),
+    ("csetbounds $c8, $c29, $at", { # vertex 6
+        "c8": pct_cap(0x3000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x3000, 0x0, 0x100, perm),
                               parent="kcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),
-    ("cgetpcc $c7", {
+    ("cgetpcc $c9", {
         "c7": pct_cap(0x5000, 0x0, 0x1000, perm),
     }),
-    ("csetbounds $c6, $c7, $at", { # vertex 7
-        "c6": pct_cap(0x5000, 0x0, 0x100, perm),
+    ("csetbounds $c10, $c9, $at", { # vertex 7
+        "c10": pct_cap(0x5000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x5000, 0x0, 0x100, perm),
                               parent="pcc", origin=CheriNodeOrigin.SETBOUNDS)
     }),

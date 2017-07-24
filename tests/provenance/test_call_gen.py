@@ -162,6 +162,7 @@ trace_cap_return_0x30000 = (0x30000, (
                 mk_cvertex_visible("cap-fn_c", 0x0c, 10),
                 mk_cvertex_visible("pcc", 0x18, 17),
             ]),
+        "pfree": "cap-fn_a",
     }),
     ("nop", {}),
 ))
@@ -348,6 +349,7 @@ trace_non_cap_call_0xb0000 = (0xb0000, (
     ("cmove $c1, $c2", {
         "c1": fn_b,
         "pvertex": mk_pvertex(fn_b, vid="cap-fn_b"),
+        "pfree": "cap-fn_a",
     }),
     ("cjalr $c1, $c17", {
         "c17": pct_cap(0x0, 0xb000c, 0x100000, perm),
@@ -457,10 +459,11 @@ trace_syscall_except = (0x1000, (
     }),
     ("cmove $c31, $c31", {
         "c31": pct_cap(0x1000, 0x0c, 0xf000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm)),
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm), vid="epcc"),
     }),
     ("cld $at, $zero, 0x10($c2)", {
         "exc": 1,
+        "pfree": "epcc",
     }),
     ("nop", {}),
     ("eret", {}),
@@ -567,7 +570,10 @@ trace_syscall_epcc_update = (0x1000, (
                 mk_cvertex_visible("pcc", 0x0, 31),
             ]),
     }),
-    ("cincoffset $c1, $kdc, $zero", {"c1": kdc_default}),
+    ("cincoffset $c1, $kdc, $zero", {
+        "c1": kdc_default,
+        "pfree": "start",
+    }),
     # simulate return of mmap(0x1000, 0x1000, ...)
     ("lui $at, 0x1000", {"1": 0x1000}),
     ("csetoffset $c1, $c1, $at", {
@@ -590,6 +596,7 @@ trace_syscall_epcc_update = (0x1000, (
     ("eret", {
         "cret": mk_cvertex_ret("mmap", offset=0xf00, retid="v1000"),
         # expect the vertex to be used in a syscall ret (TODO)
+        # XXXXX THIS SHOULD BE WORKING BY NOW!!
         # "vertex_call": mk_vertex_call("v1000", 447, "syscall_ret"),
     }),
 ))
@@ -655,7 +662,8 @@ trace_call_connect_prov_0x10000 = (0x10000, (
                 mk_cvertex_visible("start", 0x1f0, 3, 5),
                 mk_cvertex_visible("start", 0x100, 4),
                 mk_cvertex_visible("cap-fn_a", 0x14, 17),
-            ])
+            ]),
+        "pfree": "link",
     }),
     ("nop", {}),
 ))

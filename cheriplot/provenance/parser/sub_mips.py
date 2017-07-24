@@ -284,19 +284,12 @@ class MergePartialSubgraph(BFSTransform):
         """
         regset = self.curr_regset
         for idx in range(len(self.curr_regset.reg_nodes)):
-            v = self.curr_regset[idx]
+            v = self.curr_regset.reg_nodes[idx]
             if v == None or self.copy_vertex_map[v] < 0:
                 regset.reg_nodes[idx] = None
             else:
                 regset.reg_nodes[idx] = self.copy_vertex_map[v]
-
-        v_pcc = self.curr_regset.pcc
-        if v_pcc == None or self.copy_vertex_map[v_pcc] < 0:
-            regset._pcc = None
-        else:
-            regset._pcc = self.copy_vertex_map[v_pcc]
         logger.debug("Final regset:\n%s", regset.reg_nodes)
-        logger.debug("Final pcc: %s", regset.pcc)
         return regset
 
     def get_final_vmap(self):
@@ -324,6 +317,7 @@ class MergePartialSubgraph(BFSTransform):
         u_data = self.subgraph.vp.data[u]
         v_data = self.graph.vp.data[v]
         self._update_time(u)
+        v_data.cap.t_free = u_data.cap.t_free
         for key, val in u_data.events.items():
             v_data.events[key].extend(val)
 
@@ -412,12 +406,8 @@ class MergePartialSubgraph(BFSTransform):
             logger.debug("Merge trace beginning initial vertex subgraph:%d", u)
             self._merge_trace_beginning(u)
         else:
-            if u in self.curr_regset.initial_reg_nodes:
-                index = self.curr_regset.initial_reg_nodes.index(u)
-                v = self.previous_regset[index]
-            else:
-                index = "pcc"
-                v = self.previous_regset.pcc
+            index = self.curr_regset.initial_reg_nodes.index(u)
+            v = self.previous_regset.reg_nodes[index]
             logger.debug("Merge initial vertex (register %s)", index)
 
             if v is None or v < 0:
@@ -700,8 +690,9 @@ class MergePartialSubgraph(BFSTransform):
             return
         if prev_syscall["pc_eret"] == curr_syscall["eret_addr"]:
             u_data = self.subgraph.vp.data[u]
-            u_data.add_use_syscall(curr_syscall["eret_time"],
-                                   prev_syscall["code"], False)
+            raise NotImplementedError("SYSCALL merge must be reworked")
+            # u_data.add_use_syscall(curr_syscall["eret_time"],
+            #                        prev_syscall["code"], False)
 
     def _merge_callgraph(self, u):
         """
@@ -755,8 +746,7 @@ class MergePartialSubgraph(BFSTransform):
 
         if self.context.step_idx == 0:
             # merge initial and normal vertices but ignore the vertex memory map
-            if (u in self.curr_regset.initial_reg_nodes or
-                u == self.curr_regset.initial_pcc):
+            if u in self.curr_regset.initial_reg_nodes:
                 logger.debug("Merge initial vertex subgraph:%s", u)
                 self._merge_initial_vertex(u)
             else:
@@ -772,8 +762,7 @@ class MergePartialSubgraph(BFSTransform):
             if u == self.context.curr_callgraph["root"]:
                 logger.debug("Merge call graph root subgraph:%s", u)
                 self._merge_callgraph(u)
-            elif (u in self.curr_regset.initial_reg_nodes or
-                u == self.curr_regset.initial_pcc):
+            elif u in self.curr_regset.initial_reg_nodes:
                 logger.debug("Merge initial vertex subgraph:%s", u)
                 self._merge_initial_vertex(u)
             elif u in self.vertex_map.initial_map.values():
@@ -871,14 +860,18 @@ class CapabilityBranchSubparser:
                     # not committed, epcc = pcc_before_jmp
                     # XXX this assumes that nothing as been done with epcc
                     # between the exception and the mfc0 instruction
-                    assert (self.regset[31].out_degree() ==
+                    assert (self.regset.get_reg(31).out_degree() ==
                             len(self._saved_epcc_out_neighbours))
-                    self.regset[31] = self._saved_pcc
+                    # unregister the free-time of the saved_pcc since it was not
+                    # really out of scope.
+                    data = self.pgm.data[self._saved_pcc]
+                    data.cap.t_free = -1
+                    self.regset.set_reg(31, self._saved_pcc, entry.cycles)
             self._saved_addr = None
         elif self._save_first_mfc and inst.op1.gpr_index == 8:
             self._save_first_mfc = False
             self._initial_badvaddr = inst.op0.value
-            self._initial_epcc = self.regset[31]
+            self._initial_epcc = self.regset.get_reg(31)
         return False
 
     def scan_eret(self, inst, entry, regs, last_regs, idx):
@@ -891,7 +884,7 @@ class CapabilityBranchSubparser:
         an exception is found.
         """
         self._save_first_mfc = False
-        self._saved_pcc = self.regset.pcc
+        self._saved_pcc = self.regset.get_pcc()
         self._saved_addr = entry.pc
         self._saved_epcc_out_neighbours = list(branch_target.out_neighbours())
 
@@ -905,11 +898,11 @@ class CapabilityBranchSubparser:
         # discard current pcc and replace it
         if self.regset.has_reg(inst.op0.cap_index):
             # we already have a node for the new PCC
-            new_pcc = self.regset[inst.op0.cap_index]
+            new_pcc = self.regset.get_reg(inst.op0.cap_index)
             if inst.has_exception:
                 self._save_branch_state(entry, new_pcc)
-            self.regset.pcc = new_pcc
-            pcc_data = self.pgm.data[self.regset.pcc]
+            self.regset.set_pcc(new_pcc, entry.cycles)
+            pcc_data = self.pgm.data[self.regset.get_pcc()]
             if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
                 logger.error("Loading PCC without exec permissions? %s %s",
                              inst, pcc_data)
@@ -938,17 +931,17 @@ class CapabilityBranchSubparser:
             old_pcc_node = self.parser.make_root_node(entry, inst.op0.value,
                                                       time=entry.cycles)
         else:
-            old_pcc_node = self.regset.pcc
-        self.regset[cd_idx] = old_pcc_node
+            old_pcc_node = self.regset.get_pcc()
+        self.regset.set_reg(cd_idx, old_pcc_node, entry.cycles)
 
         # discard current pcc and replace it
         if self.regset.has_reg(inst.op1.cap_index):
             # we already have a node for the new PCC
-            new_pcc = self.regset[inst.op1.cap_index]
+            new_pcc = self.regset.get_reg(inst.op1.cap_index)
             if inst.has_exception:
                 self._save_branch_state(entry, new_pcc)
-            self.regset.pcc = new_pcc
-            pcc_data = self.pgm.data[self.regset.pcc]
+            self.regset.set_pcc(new_pcc, entry.cycles)
+            pcc_data = self.pgm.data[self.regset.get_pcc()]
             if not pcc_data.cap.has_perm(CheriCapPerm.EXEC):
                 logger.error("Loading PCC without exec permissions? %s %s",
                              inst, pcc_data)
@@ -1068,10 +1061,10 @@ class SyscallSubparser:
         self.exception_depth += 1
         logger.debug("except {%d}: update epcc %s, update pcc %s",
                      entry.cycles,
-                     self.pgm.data[self.regset.pcc],
-                     self.pgm.data[self.regset[29]])
-        self.regset[31] = self.regset.pcc # saved pcc
-        self.regset.pcc = self.regset[29] # pcc <- kcc
+                     self.pgm.data[self.regset.get_pcc()],
+                     self.pgm.data[self.regset.get_reg(29)])
+        self.regset.set_reg(31, self.regset.get_pcc(), entry.cycles) # saved pcc
+        self.regset.set_pcc(self.regset.get_reg(29), entry.cycles) # pcc <- kcc
         return False
 
     def scan_syscall(self, inst, entry, regs, last_regs, idx):
@@ -1125,7 +1118,9 @@ class SyscallSubparser:
         #     logger.debug("Detected syscall %d capability return: %s",
         #                  self.code, data)
         #     data.add_use_syscall(entry.cycles, self.code, False)
-        self.regset.pcc = self.regset[31] # restore saved pcc
+
+        # restore saved pcc
+        self.regset.set_pcc(self.regset.get_reg(31), entry.cycles)
         return False
 
 
@@ -1171,6 +1166,9 @@ class PointerProvenanceSubparser:
     Parsing logic that builds the provenance graph layer of
     the cheriplot graph.
     """
+
+    capability_size = 32
+    """Size in bytes of a capability."""
 
     def __init__(self, pgm):
 
@@ -1248,10 +1246,11 @@ class PointerProvenanceSubparser:
             # invalid
             node = self.make_root_node(entry, inst.op0.value,
                                        time=entry.cycles)
-            self.regset[regnum] = node
+            self.regset.set_reg(regnum, node, entry.cycles)
             logger.debug("cpreg_get: new node from $c%d %s",
                          regnum, self.pgm.data[node])
-        self.regset[inst.op0.cap_index] = self.regset[regnum]
+        self.regset.set_reg(inst.op0.cap_index, self.regset.get_reg(regnum),
+                            entry.cycles)
 
     def _handle_cpreg_set(self, regnum, inst, entry):
         """
@@ -1270,10 +1269,11 @@ class PointerProvenanceSubparser:
         if not self.regset.has_reg(inst.op1.cap_index, allow_root=True):
             node = self.make_root_node(entry, inst.op0.value,
                                        time=entry.cycles)
-            self.regset[inst.op1.cap_index] = node
+            self.regset.set_reg(inst.op1.cap_index, node, entry.cycles)
             logger.debug("cpreg_set: new node from c<%d> %s",
                          regnum, self.pgm.data[node])
-        self.regset[regnum] = self.regset[inst.op1.cap_index]
+        self.regset.set_reg(regnum, self.regset.get_reg(inst.op1.cap_index),
+                            entry.cycles)
 
     def scan_cgetepcc(self, inst, entry, regs, last_regs, idx):
         self._handle_cpreg_get(31, inst, entry)
@@ -1312,10 +1312,11 @@ class PointerProvenanceSubparser:
             # never seen anything in pcc so we create a new node
             node = self.make_root_node(entry, inst.op0.value,
                                        time=entry.cycles)
-            self.regset.pcc = node
+            self.regset.set_pcc(node, entry.cycles)
             logger.debug("cgetpcc: new node from pcc %s",
                          self.pgm.data[node])
-        self.regset[inst.op0.cap_index] = self.regset.pcc
+        self.regset.set_reg(inst.op0.cap_index, self.regset.get_pcc(),
+                            entry.cycles)
         return False
 
     def scan_cgetpccsetoffset(self, inst, entry, regs, last_regs, idx):
@@ -1333,7 +1334,7 @@ class PointerProvenanceSubparser:
         Operand 1 is the register with the parent node
         """
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.SETBOUNDS)
-        self.regset[inst.op0.cap_index] = node
+        self.regset.set_reg(inst.op0.cap_index, node, entry.cycles)
         return False
 
     def scan_cfromptr(self, inst, entry, regs, last_regs, idx):
@@ -1348,7 +1349,7 @@ class PointerProvenanceSubparser:
         Operand 1 is the register with the parent node
         """
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.FROMPTR)
-        self.regset[inst.op0.cap_index] = node
+        self.regset.set_reg(inst.op0.cap_index, node, entry.cycles)
         return False
 
     def scan_candperm(self, inst, entry, regs, last_regs, idx):
@@ -1361,7 +1362,7 @@ class PointerProvenanceSubparser:
         Operand 1 is the register with the parent node
         """
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.ANDPERM)
-        self.regset[inst.op0.cap_index] = node
+        self.regset.set_reg(inst.op0.cap_index, node, entry.cycles)
         return False
 
     def scan_cap_arith(self, inst, entry, regs, last_regs, idx):
@@ -1380,15 +1381,17 @@ class PointerProvenanceSubparser:
                 src_vertex = False
 
             if src_vertex:
-                self.regset[dst.cap_index] = self.regset[src.cap_index]
+                self.regset.set_reg(dst.cap_index,
+                                    self.regset.get_reg(src.cap_index),
+                                    entry.cycles)
             else:
                 if regs.valid_caps[dst.cap_index]:
                     # a register that was invalid has become valid, create a
                     # root for it.
                     dst_vertex = self.make_root_node(
                         entry, dst.value, pc=entry.pc, time=entry.cycles)
-                    self.regset[src.cap_index] = dst_vertex
-                    self.regset[dst.cap_index] = dst_vertex
+                    self.regset.set_reg(src.cap_index, dst_vertex, entry.cycles)
+                    self.regset.set_reg(dst.cap_index, dst_vertex, entry.cycles)
         return False
 
     def _handle_dereference(self, inst, entry, ptr_reg):
@@ -1396,7 +1399,7 @@ class PointerProvenanceSubparser:
         Store offset at time of dereference of a given capability.
         """
         try:
-            node = self.regset[ptr_reg]
+            node = self.regset.get_reg(ptr_reg)
         except KeyError:
             logger.error("{%d} Dereference unknown capability %s",
                          entry.cycles, inst)
@@ -1464,6 +1467,20 @@ class PointerProvenanceSubparser:
         self._handle_dereference(inst, entry, ptr_reg)
         return False
 
+    def scan_mem_store(self, inst, entry, regs, last_regs, idx):
+        """
+        Called whenever an instruction that is a store is found.
+        Can be a capability or non capability store.
+        Note that this is called after all instruction-specific
+        and capability-specific scan callbacks have been invoked
+        but before the generic scan_all.
+        """
+        if inst.opcode != "csc":
+            # csc stores a new vertex, we do not have access to that
+            # here, so handle that case separately in scan_csc
+            self.mem_overwrite(entry.cycles, entry.memory_address, None)
+        return False
+
     def scan_clc(self, inst, entry, regs, last_regs, idx):
         """
         clc:
@@ -1484,7 +1501,7 @@ class PointerProvenanceSubparser:
         # clear the memory_map and the regset entry.
         if not inst.op0.value.valid:
             logger.debug("{%d} clc load invalid, clear memory vertex map", idx)
-            self.regset[cd] = None
+            self.regset.set_reg(cd, None, entry.cycles)
             if node is not None:
                 self.vertex_map.clear(entry.memory_address)
         else:
@@ -1507,7 +1524,7 @@ class PointerProvenanceSubparser:
                     self.vertex_map.mem_load(entry.memory_address, node)
                 node_data = self.pgm.data[node]
                 node_data.add_mem_load(entry.cycles, entry.memory_address)
-                self.regset[cd] = node
+                self.regset.set_reg(cd, node, entry.cycles)
         return False
 
     scan_clcr = scan_clc
@@ -1537,12 +1554,13 @@ class PointerProvenanceSubparser:
                 # need to create one
                 node = self.make_root_node(entry, inst.op0.value,
                                            time=entry.cycles)
-                self.regset[cd] = node
+                self.regset.set_reg(cd, node, entry.cycles)
                 logger.debug("{%d} Found %s value %s from memory store",
                              idx, inst.op0.name, node)
             else:
-                node = self.regset[cd]
+                node = self.regset.get_reg(cd)
 
+            self.mem_overwrite(entry.cycles, entry.memory_address, node)
             # if there is a node associated with the register that is
             # being stored, save it in the memory_map for the memory location
             # written by csc
@@ -1555,6 +1573,23 @@ class PointerProvenanceSubparser:
 
     scan_cscr = scan_csc
     scan_csci = scan_csc
+
+    def mem_overwrite(self, time, addr, new_vertex):
+        """
+        Register the removal of anything contained at the given address,
+        if the address is not capability-size aligned, it is aligned here.
+        If the vertex removed is not live in other memory locations or in the register set,
+        mark it out of scope.
+        """
+        addr &= ~(self.capability_size - 1)
+        v = self.vertex_map.vertex_at(addr)
+        if v != None and v != new_vertex:
+            v_data = self.pgm.data[v]
+            v_data.add_mem_del(time, addr)
+            if v in self.regset.reg_nodes or v_data.has_active_memory():
+                return
+            else:
+                v_data.cap.t_free = time
 
     def make_root_node(self, entry, cap, time=0, pc=None):
         """
@@ -1612,7 +1647,7 @@ class PointerProvenanceSubparser:
         # try to get a parent node
         op = inst.operands[src_op_index]
         if self.regset.has_reg(op.cap_index, allow_root=False):
-            parent = self.regset[op.cap_index]
+            parent = self.regset.get_reg(op.cap_index)
         else:
             logger.error("Missing parent for %s, src_operand=%d %s, "
                          "dst_operand=%d %s", data,
@@ -1716,7 +1751,7 @@ class CallgraphSubparser:
         have performed any adjustment to the register set and pcc
         and a target vertex always exist.
         """
-        target_vertex = self.regset[inst.op1.cap_index]
+        target_vertex = self.regset.get_reg(inst.op1.cap_index)
         target_cap = inst.op1.value
         link_cap = inst.op0.value
         target_addr = target_cap.base + target_cap.offset
@@ -1839,10 +1874,9 @@ class CallgraphSubparser:
         * Single edge with multiple register indices when the prov-vertex
         is found in multiple registers with the same offset.
         """
-        all_regs = chain(self.regset.reg_nodes, [self.regset.pcc])
         # temporarily hold prov-vertex => edge pairs
         visible_edges = {}
-        for reg_idx, u in enumerate(all_regs):
+        for reg_idx, u in enumerate(self.regset.reg_nodes):
             if u is None or not regs.valid_caps[reg_idx]:
                 continue
             offset = regs.cap_reg[reg_idx].offset
@@ -1900,7 +1934,7 @@ class CallgraphSubparser:
         if ret_addr is not None and ret_addr != addr:
             msg = "Unexpected return address 0x%x, expected 0x%x" % (
                 addr, ret_addr)
-            logger.warning(msg)
+            logger.debug(msg)
             # XXX for now just skip the entry, it may be interesting
             # to look back the call stack in case we jump back more
             # than 1 frame.
@@ -1922,13 +1956,13 @@ class CallgraphSubparser:
         data = self.pgm.data[curr_frame]
         data.t_return = entry.cycles
         data.addr_return = entry.pc
-        if self.regset[3] is not None:
+        if self.regset.get_reg(3) is not None:
             if regs.valid_caps[3]:
                 offset = regs.cap_reg[3].offset
             else:
                 offset = None
             # capability in the return register
-            edge = self.pgm.graph.add_edge(self.regset[3], curr_frame)
+            edge = self.pgm.graph.add_edge(self.regset.get_reg(3), curr_frame)
             self.pgm.edge_time[edge] = entry.cycles
             self.pgm.edge_addr[edge] = offset
             self.pgm.edge_operation[edge] = EdgeOperation.RETURN

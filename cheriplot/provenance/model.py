@@ -37,6 +37,7 @@ from collections import OrderedDict
 
 import numpy as np
 import pandas as pd
+from sortedcontainers import SortedSet
 from cached_property import cached_property
 from graph_tool.all import Graph, GraphView, load_graph
 from cheriplot.core import ProgressTimer
@@ -225,17 +226,8 @@ class ProvenanceVertexData:
         DEREF_IS_CAP = auto()
         """Dereference via this vertex targets a capability."""
 
-        USE_CALL = auto()
-        """Vertex used in a function call."""
-
-        USE_CCALL = auto()
-        """Vertex used in a domain transition."""
-
-        USE_SYSCALL = auto()
-        """Vertex used in a syscall."""
-
-        USE_IS_ARG = auto()
-        """Vertex used as an argument, w/o as a return value."""
+        DELETE = auto()
+        """Vertex removed from a memory location."""
 
         @classmethod
         def memop_mask(cls):
@@ -243,7 +235,7 @@ class ProvenanceVertexData:
             Return a mask of flags used to qualify events that
             represent a memory operation on this capability.
             """
-            return (cls.LOAD | cls.STORE)
+            return (cls.LOAD | cls.STORE | cls.DELETE)
 
         @classmethod
         def deref_mask(cls):
@@ -253,16 +245,6 @@ class ProvenanceVertexData:
             """
             return (cls.DEREF_LOAD | cls.DEREF_STORE |
                     cls.DEREF_CALL | cls.DEREF_IS_CAP)
-
-        @classmethod
-        def use_mask(cls):
-            """
-            Return a mask of flags used to qualify events that
-            represent an use instance of this capability in some
-            kind of function/operation.
-            """
-            return (cls.USE_CALL | cls.USE_CCALL |
-                    cls.USE_SYSCALL | cls.USE_IS_ARG)
 
     @classmethod
     def from_operand(cls, op):
@@ -349,30 +331,32 @@ class ProvenanceVertexData:
             type_ |= ProvenanceVertexData.EventType.DEREF_IS_CAP
         self.add_event(time, addr, type_)
 
-    def add_use(self, time, addr, arg_or_ret, type_):
+    def get_active_memory(self):
         """
-        Append an use event.
-
-        :param time: time of dereference
-        :param addr: address of symbol that uses this capability.
-        In case of a system call this is the syscall code.
-        :param arg_or_ret: True if the capability is used as an argument,
-        False if it is used as a return value.
-        :param type_: type of the use (call, syscall...),
-        see :class:`EventType`
+        Return a list of memory addresses where the vertex is
+        currently stored, based on the event table
         """
-        if arg_or_ret:
-            type_ |= ProvenanceVertexData.EventType.USE_IS_ARG
-        self.add_event(time, addr, type_)
+        sorted_address = SortedSet()
+        for idx, addr in enumerate(self.events["addr"]):
+            evt_type = self.events["type"][idx]
+            if evt_type == ProvenanceVertexData.EventType.STORE:
+                sorted_address.add(addr)
+            elif evt_type == ProvenanceVertexData.EventType.DELETE:
+                sorted_address.discard(addr)
+        return sorted_address
 
-    # shortcuts for use events
-    add_use_call = partialmethod(add_use, type_=EventType.USE_CALL)
-    add_use_ccall = partialmethod(add_use, type_=EventType.USE_CCALL)
-    add_use_syscall = partialmethod(add_use, type_=EventType.USE_SYSCALL)
+    def has_active_memory(self):
+        """
+        Check whether this vertex is currnetly stored in memory.
+        """
+        if ProvenanceVertexData.EventType.STORE in self.events["type"]:
+            return len(self.get_active_memory()) != 0
+        return False
 
     # shortcuts for mem-op events
     add_mem_load = partialmethod(add_event, type_=EventType.LOAD)
     add_mem_store = partialmethod(add_event, type_=EventType.STORE)
+    add_mem_del = partialmethod(add_event, type_=EventType.DELETE)
 
     # shortcuts for dereference events
     add_deref_load = partialmethod(add_deref, type_=EventType.DEREF_LOAD)

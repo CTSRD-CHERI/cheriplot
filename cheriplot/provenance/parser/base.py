@@ -43,7 +43,7 @@ from graph_tool.all import Graph, load_graph
 from cheriplot.core import ProgressTimer, MultiprocessCallbackParser
 
 from cheriplot.provenance.model import (
-    ProvenanceVertexData, ProvenanceGraphManager, CheriNodeOrigin)
+    ProvenanceVertexData, ProvenanceGraphManager, CheriNodeOrigin, CheriCap)
 from cheriplot.provenance.transforms import bfs_transform, BFSTransform
 
 from .error import *
@@ -99,6 +99,13 @@ class VertexMemoryMap:
         """
         del self.vertex_map[addr]
 
+    def vertex_at(self, addr):
+        """Return the vertex currently stored at a given address."""
+        try:
+            return self.vertex_map[addr]
+        except KeyError:
+            return None
+
     def mem_load(self, addr, vertex=None):
         """
         Register a memory load at given address and return
@@ -146,11 +153,10 @@ class RegisterSet:
         self.pgm = pgm
         """The provenance graph manager"""
 
-        self.reg_nodes = list(self.pgm.graph.add_vertex(self.cap_regfile_size))
+        vertices = self.pgm.graph.add_vertex(self.cap_regfile_size + 1)
+        # the + 1 adds pcc to the list
+        self.reg_nodes = list(vertices)
         """Graph node associated with each register."""
-
-        self._pcc = self.pgm.graph.add_vertex()
-        """Current pcc node"""
 
         self.initial_reg_nodes = list(self.reg_nodes)
         """
@@ -160,11 +166,9 @@ class RegisterSet:
         subgraphs.
         """
 
-        self.initial_pcc = self._pcc
-        """Initial pcc vertex."""
-
-        for n in self.reg_nodes + [self._pcc]:
+        for n in self.reg_nodes:
             data = ProvenanceVertexData()
+            data.cap = CheriCap()
             data.origin = CheriNodeOrigin.PARTIAL
             self.pgm.data[n] = data
 
@@ -177,9 +181,8 @@ class RegisterSet:
         state = {
             "reg_nodes": [self.pgm.graph.vertex_index[u] if u != None else None
                           for u in self.reg_nodes],
-            "_pcc": self.pgm.graph.vertex_index[self._pcc] if self._pcc != None else None,
-            "initial_reg_nodes": [self.pgm.graph.vertex_index[u] for u in self.initial_reg_nodes],
-            "initial_pcc": self.pgm.graph.vertex_index[self.initial_pcc],
+            "initial_reg_nodes": [self.pgm.graph.vertex_index[u]
+                                  for u in self.initial_reg_nodes],
             }
         return state
 
@@ -197,9 +200,7 @@ class RegisterSet:
         """
         logger.debug("Unpickling partial result register set")
         self.reg_nodes = data["reg_nodes"]
-        self._pcc = data["_pcc"]
         self.initial_reg_nodes = data["initial_reg_nodes"]
-        self.initial_pcc = data["initial_pcc"]
 
     def _attach_partial_vertex(self, regset_vertex, input_vertex):
         """
@@ -227,30 +228,48 @@ class RegisterSet:
             if curr_data.origin == CheriNodeOrigin.PARTIAL:
                 self.pgm.graph.add_edge(regset_vertex, input_vertex)
 
-    @property
-    def pcc(self):
-        return self._pcc
+    def _handle_out_of_scope(self, regset_vertex, time):
+        """
+        Check if a register-set vertex is removed from the
+        register set completely and if it is not stored in memory
+        anywhere then set the t_free time.
+        """
+        if regset_vertex in self.reg_nodes:
+            return
+        v_data = self.pgm.data[regset_vertex]
+        if not v_data.has_active_memory():
+            v_data.cap.t_free = time
 
-    @pcc.setter
-    def pcc(self, value):
-        self._attach_partial_vertex(self._pcc, value)
-        self._pcc = value
+    def set_reg(self, index, value, time):
+        """
+        Set a register in the register set.
+
+        :param index: index of the register
+        :param value: new vertex to store
+        :param time: time of the vertex store
+        """
+        old_vertex = self.reg_nodes[index]
+        self._attach_partial_vertex(old_vertex, value)
+        self.reg_nodes[index] = value
+        if value != old_vertex:
+            self._handle_out_of_scope(old_vertex, time)
+
+    def get_reg(self, index):
+        """
+        Get the vertex associated with a register
+
+        :param index: the register index
+        """
+        return self.reg_nodes[index]
+
+    def get_pcc(self):
+        return self.get_reg(32)
+
+    def set_pcc(self, value, time):
+        self.set_reg(32, value, time)
 
     def has_pcc(self, allow_root=False):
-        """
-        Check if the register set contains a valid pcc
-
-        :param idx: the register index to check
-        :param allow_root: a root can be created if the register
-        does not have a valid node.
-        """
-        if self.pcc == None:
-            return False
-        if allow_root:
-            data = self.pgm.data[self.pcc]
-            if data.origin == CheriNodeOrigin.PARTIAL:
-                return False
-        return True
+        return self.has_reg(32, allow_root)
 
     def has_reg(self, idx, allow_root=False):
         """
@@ -261,34 +280,14 @@ class RegisterSet:
         :param allow_root: a root can be created if the register
         does not have a valid node.
         """
-        assert idx < self.cap_regfile_size, "Out of bound register set index"
-        if self[idx] == None:
+        # assert idx < self.cap_regfile_size, "Out of bound register set index"
+        if self.reg_nodes[idx] == None:
             return False
         if allow_root:
-            data = self.pgm.data[self[idx]]
+            data = self.pgm.data[self.reg_nodes[idx]]
             if data.origin == CheriNodeOrigin.PARTIAL:
                 return False
         return True
-
-    def __getitem__(self, idx):
-        """
-        Fetch the :class:`cheriplot.core.provenance.GraphNode`
-        currently associated to a capability register with the
-        given register number.
-        """
-        assert idx < self.cap_regfile_size, "Out of bound register set fetch"
-        return self.reg_nodes[idx]
-
-    def __setitem__(self, idx, val):
-        """
-        Fetch the :class:`cheriplot.core.provenance.GraphNode`
-        currently associated to a capability register with the
-        given register number.
-        """
-        assert idx < self.cap_regfile_size,\
-            "Out of bound register set assignment"
-        self._attach_partial_vertex(self.reg_nodes[idx], val)
-        self.reg_nodes[idx] = val
 
     def __str__(self):
         dump = "Register set:\n"

@@ -25,7 +25,11 @@
 # @BERI_LICENSE_HEADER_END@
 #
 
+import logging
+
 import pycheritrace as pct
+
+logger = logging.getLogger(__name__)
 
 class MockTraceWriter:
     """Helper to write mock traces for testing."""

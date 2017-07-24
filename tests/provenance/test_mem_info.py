@@ -90,7 +90,8 @@ trace_mem_st_ld = (
     ("csetbounds $c1, $c2, $at", { # vertex 5
         "c1": pct_cap(0x1000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
-                              parent="ddc", origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="ddc", origin=CheriNodeOrigin.SETBOUNDS,
+                              vid="ddc_setbounds")
     }),
     # reload vertex 0 from 0x100
     ("clc $c1, $zero, 0x0($c2)", {
@@ -98,13 +99,14 @@ trace_mem_st_ld = (
         "load": True,
         "mem": 0x100,
         "vertex_mem": mk_vertex_mem("start", 0x100, "load"),
-        "vertex_deref": mk_vertex_deref("ddc", 0x100, True, "load")
+        "vertex_deref": mk_vertex_deref("ddc", 0x100, True, "load"),
+        "pfree": "ddc_setbounds",
     }),
     # create ([0x100]) -> (v6) that should be (v0) -> (v6)
     ("csetbounds $c1, $c1, $at", { # vertex 6
         "c1": pct_cap(0x1000, 0x0, 0x100, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x100, perm),
-                              parent="start", origin=CheriNodeOrigin.SETBOUNDS)
+                              parent="start", origin=CheriNodeOrigin.SETBOUNDS),
     }),
 )
 
@@ -119,15 +121,15 @@ trace_mem_2st_ld = (
         "c2": ddc,
         "pvertex": mk_pvertex(ddc, vid="ddc")
     }),
-    ("lui $at, 0x100", {"1": 0x150}),
-    ("csetoffset $c2, $c2, $at", {"c2": pct_cap(0x0, 0x150, 0x10000, perm)}),
-    # store v0 at 0x150
+    ("lui $at, 0x200", {"1": 0x200}),
+    ("csetoffset $c2, $c2, $at", {"c2": pct_cap(0x0, 0x200, 0x10000, perm)}),
+    # store v0 at 0x200
     ("csc $c1, $zero, 0x0($c2)", {
         "c1": start_cap,
         "store": True,
-        "mem": 0x150,
-        "vertex_mem": mk_vertex_mem("start", 0x150, "store"),
-        "vertex_deref": mk_vertex_deref("ddc", 0x150, True, "store")
+        "mem": 0x200,
+        "vertex_mem": mk_vertex_mem("start", 0x200, "store"),
+        "vertex_deref": mk_vertex_deref("ddc", 0x200, True, "store")
     }),
     # worker set split here
     # create new cap in c1
@@ -137,23 +139,25 @@ trace_mem_2st_ld = (
                               parent="ddc", origin=CheriNodeOrigin.SETBOUNDS,
                               vid="v1000")
     }),
-    # store v5 at 0x150
+    # store v5 at 0x200
     ("csc $c1, $zero, 0x0($c2)", {
         "c1": start_cap,
         "store": True,
-        "mem": 0x150,
-        "vertex_mem": mk_vertex_mem("v1000", 0x150, "store"),
-        "vertex_deref": mk_vertex_deref("ddc", 0x150, True, "store")
+        "mem": 0x200,
+        "vertex_mem": mk_vertex_mem("v1000", 0x200, "store"),
+        "vertex_deref": mk_vertex_deref("ddc", 0x200, True, "store"),
+        "vertex_mem_overwrite": mk_vertex_mem("start", 0x200, "delete"),
+        "pfree": "start",
     }),
     # clobber c1
     ("cmove $c1, $c2", {"c1": pct_cap(0x0, 0x150, 0x10000, perm)}),
-    # load v5 from 0x150
+    # load v5 from 0x200
     ("clc $c1, $zero, 0x0($c2)", {
         "c1": pct_cap(0x1000, 0x0, 0x150, perm),
         "load": True,
-        "mem": 0x150,
-        "vertex_mem": mk_vertex_mem("v1000", 0x150, "load"),
-        "vertex_deref": mk_vertex_deref("ddc", 0x150, True, "load")
+        "mem": 0x200,
+        "vertex_mem": mk_vertex_mem("v1000", 0x200, "load"),
+        "vertex_deref": mk_vertex_deref("ddc", 0x200, True, "load")
     }),
     # derive loaded cap and make sure that the node parent is v5
     ("lui $at, 0x100", {"1": 0x100}),
@@ -296,7 +300,45 @@ trace_mem_mp_vertex_map = (
     ("nop", {}), ("nop", {}), ("nop", {}), ("nop", {}),
 )
 
-@pytest.mark.timeout(4)
+# Test memory info
+trace_mem_overwrite = (
+    ("cmove $c2, $c2", {
+        "c2": pct_cap(0x2000, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x2000, 0x0, 0x1000, perm), vid="v2000")
+    }),
+    ("cmove $c3, $c3", {
+        "c3": pct_cap(0x3000, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x3000, 0x0, 0x1000, perm), vid="v3000")
+    }),
+    ("csc $c2, $zero, 0x0($c1)", {
+        "store": True,
+        "mem": 0x1000,
+        "vertex_deref": mk_vertex_deref("start", 0x1000, True, "store"),
+        "vertex_mem": mk_vertex_mem("v2000", 0x1000, "store"),
+    }),
+    ("lui $at, 0x1000", {"1": 0x1000}),
+    ("lui $v0, 0x0", {"2": 0x0}),
+    ("sb $v0, 0x0($at)", {
+        "store": True,
+        "mem": 0x1000,
+        "vertex_mem_overwrite": mk_vertex_mem("v2000", 0x1000, "delete"),
+    }),
+    ("csc $c2, $zero, 0x0($c1)", {
+        "store": True,
+        "mem": 0x1000,
+        "vertex_deref": mk_vertex_deref("start", 0x1000, True, "store"),
+        "vertex_mem": mk_vertex_mem("v2000", 0x1000, "store"),
+    }),
+    ("csc $c3, $zero, 0x0($c1)", {
+        "store": True,
+        "mem": 0x1000,
+        "vertex_deref": mk_vertex_deref("start", 0x1000, True, "store"),
+        "vertex_mem": mk_vertex_mem("v3000", 0x1000, "store"),
+        "vertex_mem_overwrite": mk_vertex_mem("v2000", 0x1000, "delete"),
+    }),
+)
+
+@pytest.mark.timeout(5)
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
     (trace_mem_init, trace_mem_st_ld),
@@ -305,6 +347,7 @@ trace_mem_mp_vertex_map = (
     (trace_mem_init, trace_mem_st_ld_invalid),
     (trace_mem_init, trace_mem_mp_deref_merge,),
     (trace_mem_init, trace_mem_mp_vertex_map,),
+    (trace_mem_init, trace_mem_overwrite,),
 ])
 def test_mem_tracking(trace, threads):
     """Test provenance parser with the simplest trace possible."""
