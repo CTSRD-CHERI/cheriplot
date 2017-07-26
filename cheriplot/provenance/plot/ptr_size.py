@@ -301,7 +301,7 @@ class PtrBoundCdf:
     """
 
     def __init__(self, pgm):
-        self.graph = pgm.graph
+        self.graph = pgm.prov_view()
         """The provenance graph."""
 
         self.size_cdf = None
@@ -408,9 +408,12 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
             parser = CheriMipsModelParser(cache=True, trace_path=path)
             parser.parse()
             pgm = parser.get_model()
-            flat_transform(pgm, [MaskNullAndKernelVertices(pgm)])
-            flat_transform(pgm, [MergeCFromPtr(pgm)])
-            flat_transform(pgm, [MaskCFromPtr(pgm)])
+            filters = (FilterNullAndKernelVertices(pgm) +
+                       MergeCfromptr(pgm) +
+                       FilterCfromptr(pgm))
+            filtered_graph = filters(pgm.graph)
+            vfilt, _ = filtered_graph.get_vertex_filter()
+            pgm.graph.set_vertex_filter(vfilt)
             extra_pgm.append(pgm)
         datasets = [PtrBoundCdf(pgm) for pgm in extra_pgm]
         datasets += [PtrBoundCdf(self.pgm)]

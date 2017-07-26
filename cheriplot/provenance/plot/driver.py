@@ -46,5 +46,5 @@ class VMMapPlotDriver(TaskDriver):
         """
         super().__init__(**kwargs)
         self._pgm = pgm
-        self._provenance_graph = pgm.graph
+        self._provenance_graph = pgm.prov_view()
         self._vmmap_parser = VMMapFileParser(config=self.config.vmmap)

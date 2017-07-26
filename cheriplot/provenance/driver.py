@@ -81,12 +81,6 @@ class ProvenancePlotDriver(BaseTraceTaskDriver):
         filtered_graph = filters(pgm.graph)
         vfilt, _ = filtered_graph.get_vertex_filter()
         pgm.graph.set_vertex_filter(vfilt)
-        # with ProgressTimer("Mask NULL and kernel capabilities", logger):
-        #     flat_transform(pgm, [MaskNullAndKernelVertices(pgm)])
-        # with ProgressTimer("Merge cfromptr + csetbounds", logger):
-        #     flat_transform(pgm, [MergeCFromPtr(pgm)])
-        # with ProgressTimer("Mask remaining cfromptr", logger):
-        #     flat_transform(pgm, [MaskCFromPtr(pgm)])
 
         sub = self.config.subcommand_class(pgm, config=self.config)
         sub.run()
