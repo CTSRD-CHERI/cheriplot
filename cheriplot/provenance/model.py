@@ -500,8 +500,9 @@ class ProvenanceGraphManager:
         """
         pgm = cls(source)
         with ProgressTimer("Load cached graph", logger):
-            self.graph = load_graph(cache_file)
-        self._init_props()
+            pgm.graph = load_graph(source)
+        pgm._init_props()
+        return pgm
 
     def __init__(self, outfile):
         """
