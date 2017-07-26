@@ -41,8 +41,9 @@ from cheriplot.core import (
     ProgressTimer, ProgressPrinter, ExternalLegendTopPlotBuilder,
     BasePlotBuilder, PatchBuilder, LabelManager, AutoText, TaskDriver,
     Option, Argument)
+from cheriplot.provenance.visit import (
+    FilterNullAndKernelVertices, FilterCfromptr, MergeCfromptr)
 from cheriplot.provenance.parser import CheriMipsModelParser
-from cheriplot.provenance.transforms import *
 from cheriplot.provenance.plot import VMMapPlotDriver
 
 logger = logging.getLogger(__name__)

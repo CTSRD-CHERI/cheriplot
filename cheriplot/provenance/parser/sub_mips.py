@@ -32,21 +32,18 @@ import logging
 from collections import deque
 from contextlib import suppress
 from itertools import chain
-from functools import reduce
-from operator import or_
 
 from cheriplot.core.parser import CheriMipsCallbacksManager
 from cheriplot.provenance.model import (
     CheriNodeOrigin, CheriCapPerm, ProvenanceVertexData,
     CheriCap, CallVertexData, EdgeOperation)
-from cheriplot.provenance.transforms import bfs_transform, BFSTransform
+from cheriplot.provenance.visit import BFSGraphVisit
 from cheriplot.provenance.parser.base import (
     CheriplotModelParser, RegisterSet, VertexMemoryMap)
 
 from .error import *
 
 logger = logging.getLogger(__name__)
-
 
 class MergePartialSubgraphContext:
     """
@@ -123,14 +120,13 @@ class MergePartialSubgraphContext:
         self.curr_callgraph = result["sub_callgraph"]
         self.curr_cycles_start = result["cycles_start"]
         self._merge_graph_properties()
-        transform = MergePartialSubgraph(self)
-        bfs_transform(result["pgm"].graph, [transform])
-        transform.finalize()
+        transform = MergePartialSubgraph(self.pgm, self)
+        transform(result["pgm"].graph)
         self.prev_cycles_end = result["cycles_end"]
         self.step_idx += 1
 
 
-class MergePartialSubgraph(BFSTransform):
+class MergePartialSubgraph(BFSGraphVisit):
     """
     Merge a partial subgraph into the main graph.
 
@@ -142,8 +138,10 @@ class MergePartialSubgraph(BFSTransform):
     should be merged.
     """
 
-    def __init__(self, context):
+    def __init__(self, pgm, context):
+        super().__init__(pgm)
         self.context = context
+        """Merge context."""
 
         if self.subgraph:
             self.copy_vertex_map = self.subgraph.new_vertex_property(
@@ -214,7 +212,7 @@ class MergePartialSubgraph(BFSTransform):
         """
         return self.context.prev_vmap
 
-    def finalize(self):
+    def finalize(self, graph_view):
         """
         Finalize the context for this merge step
         """
@@ -223,6 +221,7 @@ class MergePartialSubgraph(BFSTransform):
         self.context.prev_pcc_fixup = self.get_final_pcc_fixup()
         self.context.prev_syscall = self.get_final_syscall()
         self.context.prev_callgraph = self.get_final_callgraph()
+        return graph_view
 
     def get_final_callgraph(self):
         """
