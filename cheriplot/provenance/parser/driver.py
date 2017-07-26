@@ -31,25 +31,31 @@ graph from a trace input.
 
 import logging
 
-from cheriplot.core import SubCommand, BaseTraceTaskDriver, ProgressTimer, Option
+from cheriplot.core import (
+    BaseToolTaskDriver, BaseTraceTaskDriver, Option, Argument, NestedConfig)
+from cheriplot.vmmap import VMMapFileParser
+from cheriplot.dbg.symbols import SymReader
 from cheriplot.provenance.parser import CheriMipsModelParser
 from cheriplot.provenance.model import ProvenanceGraphManager
+from cheriplot.provenance.visit import ResolveSymbolsGraphVisit
 
 logger = logging.getLogger(__name__)
-
-__all__ = ("GraphBuildDriver",)
-
 
 class GraphParserDriver(BaseTraceTaskDriver):
     """
     Task driver that generates a cheriplot graph from a trace file.
 
     Available parameters are:
-    
-    - :class:`BaseTraceTaskDriver` parameters
-    - threads: the number of threads to use (default 1)
-    - outfile: the output trace file (default <trace_file_name>_graph.gt
+
+    * :class:`BaseTraceTaskDriver` parameters
+    * threads: the number of threads to use (default 1)
+    * outfile: the output trace file (default <trace_file_name>_graph.gt
     """
+    description = """
+    Trace parse tool.
+    This tool generates a cheriplot graph from a CHERI trace.
+    """
+
     threads = Option(
         type=int,
         default=1,
@@ -76,6 +82,56 @@ class GraphParserDriver(BaseTraceTaskDriver):
     def run(self):
         self._parser.parse()
         # get the parsed provenance graph model
-        self.pgm.save(name=self.config.display_name)        
+        self.pgm.save(name=self.config.display_name)
         # force free the parser to reclaim memory
         del self._parser
+
+
+class SymbolResolutionDriver(BaseToolTaskDriver):
+    """
+    Task driver that fetches symbol names from binary and source files.
+
+    This step requires different input data:
+
+    * Output from procstat-like commands in csv or tab-separated format,
+      this is required to extract the base address of the sections of
+      a binary in memory.
+    * Binary ELF files containing the debug symbols.
+    * Kernel syscalls.master file to map syscall numbers to a name/signature.
+    """
+    description = """
+    Resolve call symbols in a cheriplot graph.
+    This is a postprocessing tool that extracts debug information from
+    ELF files, sources and runtime information to add symbol names and
+    call signatures to the cheriplot graph.
+
+    The tool is incremental, it can be run multiple times on the graph.
+    """
+
+    graph = Argument(help="Path to the cheriplot graph.")
+    vmmap = NestedConfig(VMMapFileParser)
+    elfpath = Option(
+        nargs="+",
+        default=[],
+        help="Paths where to look for ELF files with symbols")
+    syscalls = Option(
+        default=None,
+        help="Path to the syscalls.master file")
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.pgm = ProvenanceGraphManager.load(self.config.graph)
+        """Loaded graph manager."""
+
+        self.vmmap = VMMapFileParser(config=self.config.vmmap)
+        """Memory map file parser."""
+
+        # self.syscalls = BSDSyscallMasterParser(self.config.syscalls)
+        # """Parser for the syscalls.master file."""
+
+    def run(self):
+        self.vmmap.parse()
+        # self.syscalls.parse()
+        visitor = ResolveSymbolsGraphVisit(self.pgm)
+        visitor(self.pgm.graph)
+        self.pgm.save()

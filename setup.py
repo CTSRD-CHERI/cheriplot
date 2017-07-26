@@ -8,6 +8,8 @@ setup(name="cheriplot",
       entry_points={
           "console_scripts": [
               "cheriplot-provenance = tools.provenance:main",
+              "cheriplot-graphproc = tools.graphproc:main",
+              "cheriplot-symparse = tools.symparse:main",
               "cheriplot-tracedump = tools.pytracedump:main",
               "cheriplot-tracecmp = tools.pytracecmp:main",
               "cheriplot-treedump = tools.treedump:main",

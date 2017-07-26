@@ -448,6 +448,7 @@ class BaseAddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
     Plot that shows the capability size in the address space
     vs the time of allocation (i.e. when the capability is created).
     """
+
     title = "Capabilities derivation time vs capability position"
     x_label = "Virtual Address"
     y_label = "Time (million of cycles)"
@@ -494,6 +495,15 @@ class AddressMapPlotDriver(BaseAddressMapPlotDriver):
     Plot that shows the capability size in the address space
     vs the time of allocation (i.e. when the capability is created).
     """
+    description = """
+    Generate address-map plot.
+
+    The address-map plot shows the location and size of capabilities in
+    the address-space over time.
+    The Y axis shows elapsed time in cycles or committed instructions.
+    The X axis is a non-linear representation of the address space.
+    Capabilities are color coded according to the permission bits.
+    """
     title = "Capabilities derivation time vs capability position"
     patch_builder_class = ColorCodePatchBuilder
 
@@ -503,6 +513,15 @@ class AddressMapDerefPlotDriver(BaseAddressMapPlotDriver):
     Plot that shows the capability size in the address space
     vs the time of dereference (i.e. when the capability is dereferenced
     for a load or a store).
+    """
+    description = """
+    Generate address-map plot with dereference information.
+
+    The address-map plot shows the location and size of capabilities in
+    the address-space at the time of dereference.
+    The Y axis shows elapsed time in cycles or committed instructions.
+    The X axis is a non-linear representation of the address space.
+    Capabilities are color coded according to the permission bits.
     """
     title = "Capabilities deallocation time vs capability position"
     patch_builder_class = DerefPatchBuilder

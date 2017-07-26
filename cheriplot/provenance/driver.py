@@ -27,60 +27,48 @@
 
 import logging
 
-from cheriplot.core import SubCommand, BaseTraceTaskDriver, ProgressTimer, Option
+from cheriplot.core import SubCommand, BaseToolTaskDriver, Argument
 from cheriplot.provenance.plot import (
     AddressMapPlotDriver, AddressMapDerefPlotDriver, PtrSizeDerefDriver,
     PtrSizeBoundDriver, PtrSizeCdfDriver)
-from cheriplot.provenance.parser import CheriMipsModelParser
+from cheriplot.provenance.model import ProvenanceGraphManager
 from cheriplot.provenance.stats import ProvenanceStatsDriver
-from cheriplot.provenance.transforms import *
 from cheriplot.provenance.visit import (
     FilterNullAndKernelVertices, FilterCfromptr, MergeCfromptr)
 
 logger = logging.getLogger(__name__)
 
-__all__ = ("ProvenancePlotDriver",)
-
-class ProvenancePlotDriver(BaseTraceTaskDriver):
+class GraphAnalysisDriver(BaseToolTaskDriver):
     """
     Main task driver that registers all the other plot driver tools and gives them
     the provenance graph as input.
     """
+    description = """
+    Graph processing and plotting tool.
+    This tool processes a cheriplot graph to produce plots and statistics.
+    """
+
+    graph = Argument(help="Path to the cheriplot graph.")
     addrmap = SubCommand(AddressMapPlotDriver)
     addrmap_deref = SubCommand(AddressMapDerefPlotDriver)
     ptrsize_cdf = SubCommand(PtrSizeCdfDriver)
     ptrsize_bound = SubCommand(PtrSizeBoundDriver)
     ptrsize_deref = SubCommand(PtrSizeDerefDriver)
     stats = SubCommand(ProvenanceStatsDriver)
-    threads = Option(
-        type=int,
-        default=1,
-        help="Run the tool with the given number of workers")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._parser = CheriMipsModelParser(cache=self.config.cache,
-                                            trace_path=self.config.trace,
-                                            threads=self.config.threads)
+        self.pgm = ProvenanceGraphManager.load(self.config.graph)
+        """Loaded graph manager."""
 
     def run(self):
-        # XXX should probably change the way we encapsulte stuff here,
-        # this should be a simple task driver and each subcommand should inherit
-        # from a base driver that provides common arguments so that multiple
-        # traces can be handled more consistently.
-        self._parser.parse()
-        # get the parsed provenance graph model
-        pgm = self._parser.get_model()
-        # free the parser to reclaim memory
-        del self._parser
-
         # do the filtering of the graph here
-        filters = (FilterNullAndKernelVertices(pgm) +
-                   MergeCfromptr(pgm) +
-                   FilterCfromptr(pgm))
-        filtered_graph = filters(pgm.graph)
+        filters = (FilterNullAndKernelVertices(self.pgm) +
+                   MergeCfromptr(self.pgm) +
+                   FilterCfromptr(self.pgm))
+        filtered_graph = filters(self.pgm.graph)
         vfilt, _ = filtered_graph.get_vertex_filter()
-        pgm.graph.set_vertex_filter(vfilt)
+        self.pgm.graph.set_vertex_filter(vfilt)
 
-        sub = self.config.subcommand_class(pgm, config=self.config)
+        sub = self.config.subcommand_class(self.pgm, config=self.config)
         sub.run()

@@ -280,10 +280,11 @@ class SubCommand(DriverConfigEntry):
         nested_ns = NestingNamespace()
         setattr(ns, self.name, nested_ns)
         subparser = parser.add_subparsers()
+        self.kwargs["help"] = self.kwargs.get("help", self.nested.description)
         subcommand = subparser.add_parser(self.name, *self.args, **self.kwargs)
         # build a default value holding the subcommand class so that we do not
         # have to search for the subcommand that has been provided
-        subcommand_class_arg = "%ssubcommand_class" % prefix
+        subcommand_class_arg = "{}subcommand_class".format(prefix)
         def wrap_subcommand(*args, **kwargs):
             kwargs["config"] = getattr(kwargs["config"], self.name,
                                        kwargs.get("config", None))
@@ -291,12 +292,12 @@ class SubCommand(DriverConfigEntry):
         subcommand.set_defaults(**{subcommand_class_arg: wrap_subcommand})
         # make sure subparser namespace is created even with subcommands with
         # no arguments/options
-        prefix += "%s." % self.name
+        prefix += "{}.".format(self.name)
         model = self.nested.get_config_model()
         return model.make_config(subcommand, prefix=prefix, ns=nested_ns)
 
     def __str__(self):
-        return "<%s %s>" % (self.name, self.nested.get_config_model())
+        return "<{0} {1}>".format(self.name, self.nested.get_config_model())
 
 
 class DriverConfig(ProxyConfig):

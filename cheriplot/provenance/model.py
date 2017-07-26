@@ -539,6 +539,7 @@ class ProvenanceGraphManager:
         self.graph.ep["addr"] = prop_edge_address
         self.graph.ep["regs"] = prop_edge_regs
         self.graph.gp["stack"] = prop_initial_stack
+        self.graph.gp["name"] = prop_graph_name
 
         self._init_props()
 
