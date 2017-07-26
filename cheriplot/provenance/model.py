@@ -490,45 +490,55 @@ class ProvenanceGraphManager:
       * stack (object): initial stack :class:`CheriCap` object
     """
 
-    def __init__(self, source, cache_file=None):
+    @classmethod
+    def load(cls, source):
         """
-        Create a graph manager. A new graph is generated
-        if the cache file is not specified or does not exist.
+        Create a graph manager for an existing graph.
+        The graph is loaded from the given source file.
 
         :param source: source file path
-        :param cache_file: file where the graph is cached, if it exists the
-        graph is loaded from the file. Default None.
         """
-        self.source_file = source
-        self.cache_file = cache_file
+        pgm = cls(source)
+        with ProgressTimer("Load cached graph", logger):
+            self.graph = load_graph(cache_file)
+        self._init_props()
 
-        if cache_file and os.path.exists(cache_file):
-            with ProgressTimer("Load cached graph", logger):
-                self.graph = load_graph(cache_file)
-        else:
-            self.graph = Graph()
-            # CHERI capability properties
-            # XXX unless graph-tool support uint64_t vertex properties
-            # it makes no sense to split the content of the ProvenanceVertexData
-            # class in multiple properites.
-            prop_initial_stack = self.graph.new_graph_property("object")
-            prop_data = self.graph.new_vertex_property("object")
-            # edge properties
-            prop_edge_op = self.graph.new_edge_property("int", val=0)
-            prop_edge_regs = self.graph.new_edge_property("vector<int>")
-            prop_edge_time = self.graph.new_edge_property("object")
-            prop_edge_address = self.graph.new_edge_property("object")
-            # layers
-            layer_prov = self.graph.new_vertex_property("bool", val=False)
-            layer_call = self.graph.new_vertex_property("bool", val=False)
-            self.graph.vp["data"] = prop_data
-            self.graph.vp["layer_prov"] = layer_prov
-            self.graph.vp["layer_call"] = layer_call
-            self.graph.ep["operation"] = prop_edge_op
-            self.graph.ep["time"] = prop_edge_time
-            self.graph.ep["addr"] = prop_edge_address
-            self.graph.ep["regs"] = prop_edge_regs
-            self.graph.gp["stack"] = prop_initial_stack
+    def __init__(self, outfile):
+        """
+        Create the graph manager with an empty graph.
+
+        :param outfile: The output file path
+        """
+        self.outfile = outfile
+        """Output graph file."""
+
+        self.graph = Graph()
+        """The graph instance."""
+
+        # XXX unless graph-tool support uint64_t vertex properties
+        # it makes no sense to split the content of the ProvenanceVertexData
+        # class in multiple properites.
+
+        # graph properties
+        prop_graph_name = self.graph.new_graph_property("string")
+        prop_initial_stack = self.graph.new_graph_property("object")
+        # vertex properties
+        prop_data = self.graph.new_vertex_property("object")
+        layer_prov = self.graph.new_vertex_property("bool", val=False)
+        layer_call = self.graph.new_vertex_property("bool", val=False)
+        # edge properties
+        prop_edge_op = self.graph.new_edge_property("int", val=0)
+        prop_edge_regs = self.graph.new_edge_property("vector<int>")
+        prop_edge_time = self.graph.new_edge_property("object")
+        prop_edge_address = self.graph.new_edge_property("object")
+        self.graph.vp["data"] = prop_data
+        self.graph.vp["layer_prov"] = layer_prov
+        self.graph.vp["layer_call"] = layer_call
+        self.graph.ep["operation"] = prop_edge_op
+        self.graph.ep["time"] = prop_edge_time
+        self.graph.ep["addr"] = prop_edge_address
+        self.graph.ep["regs"] = prop_edge_regs
+        self.graph.gp["stack"] = prop_initial_stack
 
         self._init_props()
 
@@ -565,28 +575,28 @@ class ProvenanceGraphManager:
 
     @property
     def name(self):
-        """Return the display name of the dataset"""
-        base = os.path.basename(self.source_file)
-        ext_start = base.rfind(".")
-        if ext_start > 0:
-            return base[:ext_start]
-        return base
+        """
+        Return the display name of the dataset.
+        The name is defined in a graph property or
+        is the base name of the output file.
+        """
+        if self.graph.gp.name is None:
+            base = os.path.basename(self.outfile)
+            ext_start = base.rfind(".")
+            if ext_start > 0:
+                return base[:ext_start]
+            return base
+        else:
+            return self.graph.gp.name
 
-    @property
-    def is_cached(self):
-        return self.cache_file != None
+    def save(self, outfile=None, name=None):
+        """
+        Save the graph to a file.
 
-    @property
-    def cache_exists(self):
-        return os.path.exists(self.cache_file)
-
-    def load(self, cache_file):
-        with ProgressTimer("Load cached graph", logger):
-            self.graph = load_graph(cache_file)
-        self.cache_file = cache_file
-        self._init_props()
-
-    def save(self, dest=None):
-        if dest is None:
-            dest = self.cache_file
+        :param dest: output file path, default to the manager outfile
+        :param name: a name given to the dataset for display (e.g. legends)
+        """
+        dest = outfile or self.outfile
+        if name is not None:
+            self.graph.gp.name = name
         self.graph.save(dest)

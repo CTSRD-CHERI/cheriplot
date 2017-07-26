@@ -37,7 +37,7 @@ import logging
 import os
 
 from enum import IntEnum
-from functools import reduce
+from functools import partial
 from graph_tool.all import Graph, load_graph
 
 from cheriplot.core import ProgressTimer, MultiprocessCallbackParser
@@ -305,28 +305,16 @@ class CheriplotModelParser(MultiprocessCallbackParser):
     """
 
     subgraph_merge_context_class = None
-    """
-    Subgraph merge strategy, this is architecture-specific.
-    """
+    """Subgraph merge strategy class, this is architecture-specific."""
 
-    def __init__(self, cache=False, **kwargs):
+    def __init__(self, pgm, **kwargs):
         super().__init__(**kwargs)
 
-        self.cache = cache
-        """Are we using a cached dataset."""
+        self.pgm = ProvenanceGraphManager(None)
+        """Local graph manager, holds the intermediate subgraph."""
 
-        self.pgm = None
-        """Provenance graph manager, proxy access to the provenance graph."""
-
-        self._init_graph()
-
-    def _init_graph(self):
-        """Initialize the graph model manager."""
-        if self.cache:
-            cache_file = self.path + "_provenance.gt"
-            self.pgm = ProvenanceGraphManager(self.path, cache_file)
-        else:
-            self.pgm = ProvenanceGraphManager(self.path)
+        self.final_pgm = pgm
+        """Result graph manager, this is where the final graph is produced."""
 
     def parse(self, start=None, end=None, direction=0):
         """
@@ -337,14 +325,10 @@ class CheriplotModelParser(MultiprocessCallbackParser):
         See :meth:`MultiprocessCallbackParser.parse`.
         """
         with ProgressTimer("Parse provenance graph", logger):
-            if self.cache and not self.pgm.cache_exists:
-                super().parse(start, end, direction)
-                self.pgm.save()
-            elif not self.cache:
-                super().parse(start, end, direction)
+            super().parse(start, end, direction)
 
-    def get_model(self):
-        return self.pgm
+    def mp_worker(self):
+        return partial(self.__class__, self.pgm, is_worker=True, **self.kwargs)
 
     def mp_result(self):
         """
@@ -361,7 +345,7 @@ class CheriplotModelParser(MultiprocessCallbackParser):
         state = {
             "cycles_start": self.cycles_start,
             "cycles_end": self.cycles_end,
-            "pgm": self.get_model(),
+            "pgm": self.pgm,
         }
         return state
 
@@ -373,13 +357,13 @@ class CheriplotModelParser(MultiprocessCallbackParser):
         assuming that the results are in-order w.r.t.
         the trace entries indexes that were used.
         """
-        if self.mp.threads == 1:
-            # need to merge partial vertices from the beginning of
-            # the trace anyway, reinit the graph manager with an
-            # empty one, the previous is in the results list
-            # XXX this is potentially wasteful for the 1-thread case
-            self._init_graph()
-        merge_ctx = self.subgraph_merge_context_class(self.pgm)
+        # if self.mp.threads == 1:
+        #     # need to merge partial vertices from the beginning of
+        #     # the trace anyway, reinit the graph manager with an
+        #     # empty one, the previous is in the results list
+        #     # XXX this is potentially wasteful for the 1-thread case
+        #     self._init_graph()
+        merge_ctx = self.subgraph_merge_context_class(self.final_pgm)
         for idx, result in enumerate(results):
             with ProgressTimer("Merge partial worker result [%d/%d]" % (
                     idx + 1, len(results)), logger):

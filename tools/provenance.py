@@ -26,10 +26,10 @@
 #
 
 from cheriplot.core import run_driver_tool
-from cheriplot.provenance import ProvenancePlotDriver
+from cheriplot.provenance import GraphParserDriver
 
 def main():
-    run_driver_tool(ProvenancePlotDriver)
+    run_driver_tool(GraphParserDriver)
 
 if __name__ == "__main__":
     main()

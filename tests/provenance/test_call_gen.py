@@ -13,6 +13,7 @@ from cheriplot.provenance.model import (
     CheriNodeOrigin, CheriCapPerm, EdgeOperation)
 
 from cheriplot.core.test import pct_cap
+from tests.provenance.fixtures import pgm
 from tests.provenance.helper import (
     assert_graph_equal, mk_pvertex, mk_cvertex, mk_cvertex_ret, mk_vertex_deref,
     mk_cvertex_visible, ProvenanceTraceWriter)
@@ -696,7 +697,7 @@ trace_call_connect_prov_0x20000 = (0x20000, (
     (trace_call_connect_prov_0x1000, trace_call_connect_prov_0x10000,
      trace_call_connect_prov_0x20000),
 ])
-def test_callgen(traces, threads):
+def test_callgen(pgm, traces, threads):
     """Test provenance parser with the simplest trace possible."""
 
     with tempfile.NamedTemporaryFile() as tmp:
@@ -706,10 +707,9 @@ def test_callgen(traces, threads):
             w.write_trace(model, pc=base)
 
         # get parsed graph
-        parser = CheriMipsModelParser(trace_path=tmp.name, threads=threads)
+        parser = CheriMipsModelParser(pgm, trace_path=tmp.name, threads=threads)
         parser.parse()
         # check the provenance graph model
-        pgm = parser.get_model()
         assert_graph_equal(w.pgm.graph, pgm.graph)
 
 @pytest.mark.timeout(10)
@@ -717,7 +717,7 @@ def test_callgen(traces, threads):
 @pytest.mark.parametrize("test_data", [
     ((trace_syscall_err_missing_epcc,), UnexpectedOperationError),
 ])
-def test_callgen_errors(test_data, threads):
+def test_callgen_errors(pgm, test_data, threads):
     """Test provenance parser with the simplest trace possible."""
 
     with tempfile.NamedTemporaryFile() as tmp:
@@ -728,6 +728,6 @@ def test_callgen_errors(test_data, threads):
             w.write_trace(model, pc=base)
 
         # get parsed graph
-        parser = CheriMipsModelParser(trace_path=tmp.name, threads=threads)
+        parser = CheriMipsModelParser(pgm, trace_path=tmp.name, threads=threads)
         with pytest.raises(error):
             parser.parse()

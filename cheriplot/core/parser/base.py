@@ -39,7 +39,7 @@ import sys
 from cached_property import cached_property
 from collections import defaultdict
 from enum import Enum
-from functools import reduce
+from functools import reduce, partial
 from itertools import chain
 from multiprocessing import Pool, Value, Manager, Lock, Condition
 
@@ -588,18 +588,6 @@ class MultiprocessCallbackParser(CallbackTraceParser):
             """Async results."""
 
 
-    class ParserBuilder:
-        """
-        Wrapper that builds the parser in the worker processes.
-        This is required since Swig objects are not pickle-able.
-        """
-        def __init__(self, klass, kwargs):
-            self.klass = klass
-            self.kwargs = kwargs
-
-        def __call__(self):
-            return self.klass(is_worker=True, **self.kwargs)
-
     @staticmethod
     def _run_worker(parser_builder, parse_args):
         """
@@ -630,6 +618,13 @@ class MultiprocessCallbackParser(CallbackTraceParser):
         if not self.is_worker or threads == 1:
             self.mp = self.MultiprocessState(threads)
             self.kwargs = kwargs
+
+    def mp_worker(self):
+        """
+        Return a pickleable callable to build the worker
+        process parser instance.
+        """
+        return partial(self.__class__, is_worker=True, **self.kwargs)
 
     def mp_result(self):
         """
@@ -677,7 +672,7 @@ class MultiprocessCallbackParser(CallbackTraceParser):
         self.mp.pool = Pool(processes=self.mp.threads)
         # run the workers
         for start_idx, end_idx in zip(start_indexes, end_indexes):
-            builder = self.ParserBuilder(self.__class__, dict(self.kwargs))
+            builder = self.mp_worker()
             # make sure that start and end are python integers otherwise
             # cheritrace bindings will complain about numpy.int
             parse_args = (int(start_idx), int(end_idx), int(direction))

@@ -2011,8 +2011,8 @@ class CheriMipsModelParser(CheriplotModelParser):
     callback_manager_class = CheriMipsCallbacksManager
     subgraph_merge_context_class = MergePartialSubgraphContext
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, pgm, **kwargs):
+        super().__init__(pgm, **kwargs)
 
         if self.is_worker:
             self._provenance = PointerProvenanceSubparser(self.pgm)

@@ -86,8 +86,6 @@ class BaseTraceTaskDriver(BaseToolTaskDriver):
     trace file, output file and caching policy
     """
     trace = Argument(help="Path to cvtrace file")
-    cache = Option(action="store_true",
-                   help="Enable caching of intermediary datasets")
 
 
 def run_driver_tool(task, argv=None):

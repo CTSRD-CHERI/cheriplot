@@ -11,6 +11,7 @@ from cheriplot.provenance.parser import (
 from cheriplot.provenance.model import CheriNodeOrigin, CheriCapPerm
 
 from cheriplot.core.test import pct_cap
+from tests.provenance.fixtures import pgm
 from tests.provenance.helper import (
     assert_graph_equal, mk_pvertex, mk_cvertex, ProvenanceTraceWriter)
 
@@ -539,7 +540,7 @@ trace_invalid_derive_from_unknown = (
     (trace_cap_propagate_setoffset,),
     (trace_cap_propagate_incoffset,),
 ])
-def test_nodegen_simple(trace, threads):
+def test_nodegen_simple(pgm, trace, threads):
     """Test provenance parser with the simplest trace possible."""
 
     with tempfile.NamedTemporaryFile() as tmp:
@@ -552,10 +553,8 @@ def test_nodegen_simple(trace, threads):
             w.write_trace(t)
 
         # get parsed graph
-        parser = CheriMipsModelParser(trace_path=tmp.name, threads=threads)
+        parser = CheriMipsModelParser(pgm, trace_path=tmp.name, threads=threads)
         parser.parse()
-        # check the provenance graph model
-        pgm = parser.get_model()
         assert_graph_equal(w.pgm.graph, pgm.graph)
 
 @pytest.mark.timeout(4)
@@ -563,7 +562,7 @@ def test_nodegen_simple(trace, threads):
 @pytest.mark.parametrize("trace,exc_type", [
     (trace_invalid_derive_from_unknown, MissingParentError),
 ])
-def test_nodegen_errors(trace, exc_type, threads):
+def test_nodegen_errors(pgm, trace, exc_type, threads):
     """
     Test expected failure conditions where 
     the parser should throw an error.
@@ -575,6 +574,6 @@ def test_nodegen_errors(trace, exc_type, threads):
         w.write_trace(trace, pc=0x1000)
 
         # get parsed graph
-        parser = CheriMipsModelParser(trace_path=tmp.name, threads=threads)
+        parser = CheriMipsModelParser(pgm, trace_path=tmp.name, threads=threads)
         with pytest.raises(exc_type) as excinfo:
             parser.parse()

@@ -17,6 +17,7 @@ from cheriplot.provenance.parser import (
 from cheriplot.provenance.model import CheriNodeOrigin, CheriCapPerm
 
 from cheriplot.core.test import pct_cap
+from tests.provenance.fixtures import pgm
 from tests.provenance.helper import (
     assert_graph_equal, mk_pvertex, mk_vertex_mem, mk_vertex_deref, mk_cvertex,
     ProvenanceTraceWriter)
@@ -500,7 +501,7 @@ trace_mem_mp_in_scope = (
     (trace_mem_mp_out_of_scope,),
     (trace_mem_mp_in_scope,),
 ])
-def test_mem_tracking(trace, threads):
+def test_mem_tracking(pgm, trace, threads):
     """Test provenance parser with the simplest trace possible."""
 
     with tempfile.NamedTemporaryFile() as tmp:
@@ -513,10 +514,9 @@ def test_mem_tracking(trace, threads):
             w.write_trace(t)
 
         # get parsed graph
-        parser = CheriMipsModelParser(trace_path=tmp.name, threads=threads)
+        parser = CheriMipsModelParser(pgm, trace_path=tmp.name, threads=threads)
         parser.parse()
         # check the provenance graph model
-        pgm = parser.get_model()
         assert_graph_equal(w.pgm.graph, pgm.graph)
 
 @pytest.mark.skip(reason="Need to decide what to do in those cases now")
@@ -528,7 +528,7 @@ def test_mem_tracking(trace, threads):
     ((trace_mem_init, trace_mem_deref_unknown_reg),
      DereferenceUnknownCapabilityError),
 ])
-def test_mem_errors(trace, exc_type, threads):
+def test_mem_errors(pgm, trace, exc_type, threads):
     """
     Test expected failure conditions where 
     the parser should throw an error.
@@ -544,6 +544,6 @@ def test_mem_errors(trace, exc_type, threads):
             w.write_trace(t)
 
         # get parsed graph
-        parser = CheriMipsModelParser(trace_path=tmp.name, threads=threads)
+        parser = CheriMipsModelParser(pgm, trace_path=tmp.name, threads=threads)
         with pytest.raises(exc_type) as excinfo:
             parser.parse()
