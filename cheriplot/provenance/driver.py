@@ -34,6 +34,8 @@ from cheriplot.provenance.plot import (
 from cheriplot.provenance.parser import CheriMipsModelParser
 from cheriplot.provenance.stats import ProvenanceStatsDriver
 from cheriplot.provenance.transforms import *
+from cheriplot.provenance.visit import (
+    FilterNullAndKernelVertices, FilterCfromptr, MergeCfromptr)
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +75,18 @@ class ProvenancePlotDriver(BaseTraceTaskDriver):
         del self._parser
 
         # do the filtering of the graph here
-        with ProgressTimer("Mask NULL and kernel capabilities", logger):
-            flat_transform(pgm, [MaskNullAndKernelVertices(pgm)])
-        with ProgressTimer("Merge cfromptr + csetbounds", logger):
-            flat_transform(pgm, [MergeCFromPtr(pgm)])
-        with ProgressTimer("Mask remaining cfromptr", logger):
-            flat_transform(pgm, [MaskCFromPtr(pgm)])
+        filters = (FilterNullAndKernelVertices(pgm) +
+                   MergeCfromptr(pgm) +
+                   FilterCfromptr(pgm))
+        filtered_graph = filters(pgm.graph)
+        vfilt, _ = filtered_graph.get_vertex_filter()
+        pgm.graph.set_vertex_filter(vfilt)
+        # with ProgressTimer("Mask NULL and kernel capabilities", logger):
+        #     flat_transform(pgm, [MaskNullAndKernelVertices(pgm)])
+        # with ProgressTimer("Merge cfromptr + csetbounds", logger):
+        #     flat_transform(pgm, [MergeCFromPtr(pgm)])
+        # with ProgressTimer("Mask remaining cfromptr", logger):
+        #     flat_transform(pgm, [MaskCFromPtr(pgm)])
 
         sub = self.config.subcommand_class(pgm, config=self.config)
         sub.run()

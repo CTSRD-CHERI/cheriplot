@@ -31,22 +31,26 @@ import pandas as pd
 from functools import reduce
 
 from cheriplot.core import SubCommand, TaskDriver, ProgressTimer, CumulativeTimer
-from cheriplot.provenance.transforms import BFSTransform, bfs_transform
-from cheriplot.provenance.model import CheriNodeOrigin, ProvenanceVertexData
+from cheriplot.provenance.model import (
+    CheriNodeOrigin, ProvenanceVertexData, EdgeOperation)
+from cheriplot.provenance.visit import BFSGraphVisit
 
 logger = logging.getLogger(__name__)
 
-class MmapStatsVisitor(BFSTransform):
+class MmapStatsVisitor(BFSGraphVisit):
     """
     Visitor that gather informations about the vertices in the graph
     """
 
     def __init__(self, pgm):
-        self.pgm = pgm
+        super().__init__(pgm)
         self.graph = pgm.graph
         self.stats = {
             # number of successors of syscall-returned capabilities
             "syscall_derived": 0,
+            # number of capabilities returned by syscalls
+            # (in c3 when the syscall returns)
+            "syscall_return": 0,
             # number of times a capability is dereferenced for store
             "deref_store": 0,
             # number of times a capability is dereferenced for load
@@ -78,11 +82,24 @@ class MmapStatsVisitor(BFSTransform):
 
     def _get_syscall_stats(self, u, events):
         if not self.syscall_derived[u]:
-            # this is relatively costly to compute so try to avoid it
-            syscall_is_ret = (
-                (events["type"] & ProvenanceVertexData.EventType.USE_SYSCALL != 0) &
-                (events["type"] & ProvenanceVertexData.EventType.USE_IS_ARG == 0)).any()
-            if not syscall_is_ret:
+            # get unfiltered vertex so that we can access call-layer
+            # vertices
+            uu = self.pgm.graph.vertex(u)
+            for w in uu.out_neighbours():
+                e = self.pgm.graph.edge(uu, w)
+                if self.pgm.edge_operation[e] == EdgeOperation.RETURN:
+                    # check if the call-layer vertex is created by a SYSCALL
+                    # for this we need the edge from the call-parent
+                    call_view = self.pgm.call_view()
+                    call_vertex = call_view.vertex(e.target())
+                    call_parents = list(call_vertex.in_neighbours())
+                    assert len(call_parents) <= 1
+                    if len(call_parents):
+                        edge = self.pgm.graph.edge(call_parents[0], call_vertex)
+                        if self.pgm.edge_operation[edge] == EdgeOperation.SYSCALL:
+                            self.syscall_derived[u] = True
+                    break
+            if not self.syscall_derived[u]:
                 return
         # the vertex is used in a syscall return
         self.stats["syscall_derived"] += 1
@@ -130,8 +147,7 @@ class ProvenanceStatsDriver(TaskDriver):
 
     def run(self):
         mmap_stats = MmapStatsVisitor(self.pgm)
-        with ProgressTimer("Gather stats", logger):
-            bfs_transform(self.pgm.graph, [mmap_stats])
+        mmap_stats(self.pgm.prov_view())
 
         stats = pd.DataFrame(mmap_stats.stats, index=[0])
         print(stats)

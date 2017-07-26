@@ -34,6 +34,7 @@ import logging
 from enum import IntEnum, IntFlag, auto
 from functools import partialmethod
 from collections import OrderedDict
+from contextlib import suppress
 
 import numpy as np
 import pandas as pd
@@ -96,6 +97,21 @@ class CheriCap:
 
     MAX_ADDR = 0xffffffffffffffff
     MAX_OTYPE = 0x00ffffff
+
+    @classmethod
+    def from_copy(cls, other):
+        """Create a copy of a CheriCap."""
+        cap = cls()
+        cap.base = other.base
+        cap.length = other.length
+        cap.offset = other.offset
+        cap.permissions = other.permissions
+        cap.objtype = other.objtype
+        cap.valid = other.valid
+        cap.sealed = other.sealed
+        cap.t_alloc = other.t_alloc
+        cap.t_free = other.t_free
+        return cap
 
     def __init__(self, pct_cap=None):
         """
@@ -287,6 +303,8 @@ class ProvenanceVertexData:
         Is this node coming from a trace entry executed in kernel space?
         """
 
+        self._active_memory = {}
+
     @cached_property
     def event_tbl(self):
         """
@@ -312,10 +330,13 @@ class ProvenanceVertexData:
         self.events["addr"].append(addr)
         self.events["type"].append(type_)
         # invalidate cached property
-        try:
+        with suppress(KeyError):
             del self.__dict__["event_tbl"]
-        except KeyError:
-            pass
+        if type_ == ProvenanceVertexData.EventType.STORE:
+            self._active_memory[addr] = len(self.events["time"]) - 1
+        elif type_ == ProvenanceVertexData.EventType.DELETE:
+            with suppress(KeyError):
+                del self._active_memory[addr]
 
     def add_deref(self, time, addr, cap, type_):
         """
@@ -334,24 +355,17 @@ class ProvenanceVertexData:
     def get_active_memory(self):
         """
         Return a list of memory addresses where the vertex is
-        currently stored, based on the event table
+        currently stored, based on the event table.
+        Note: this relies on temporal ordering of entries in the event
+        table, no sorting is done.
         """
-        sorted_address = SortedSet()
-        for idx, addr in enumerate(self.events["addr"]):
-            evt_type = self.events["type"][idx]
-            if evt_type == ProvenanceVertexData.EventType.STORE:
-                sorted_address.add(addr)
-            elif evt_type == ProvenanceVertexData.EventType.DELETE:
-                sorted_address.discard(addr)
-        return sorted_address
+        return self._active_memory.keys()
 
     def has_active_memory(self):
         """
         Check whether this vertex is currnetly stored in memory.
         """
-        if ProvenanceVertexData.EventType.STORE in self.events["type"]:
-            return len(self.get_active_memory()) != 0
-        return False
+        return len(self._active_memory) > 0
 
     # shortcuts for mem-op events
     add_mem_load = partialmethod(add_event, type_=EventType.LOAD)
@@ -389,6 +403,12 @@ class CallVertexData:
 
         self.addr_return = None
         """Address of the return instruction."""
+
+        self.stack_frame_base = None
+        """Base address of the function call stack frame."""
+
+        self.stack_frame_size = 0
+        """Size of the function call stack frame."""
 
     def __str__(self):
         if self.address is None:
@@ -524,8 +544,14 @@ class ProvenanceGraphManager:
         self.edge_time = self.graph.ep.time
         self.edge_addr = self.graph.ep.addr
         self.edge_regs = self.graph.ep.regs
-        self.prov_view = GraphView(self.graph, vfilt=self.graph.vp.layer_prov)
-        self.call_view = GraphView(self.graph, vfilt=self.graph.vp.layer_call)
+
+    def prov_view(self):
+        """Provenance graph layer."""
+        return GraphView(self.graph, vfilt=self.graph.vp.layer_prov)
+
+    def call_view(self):
+        """Call graph layer."""
+        return GraphView(self.graph, vfilt=self.graph.vp.layer_call)
 
     @property
     def stack(self):

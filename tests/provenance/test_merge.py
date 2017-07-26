@@ -11,25 +11,12 @@ from cheriplot.provenance.parser.base import RegisterSet, VertexMemoryMap
 from cheriplot.provenance.parser.sub_mips import MergePartialSubgraphContext
 from cheriplot.provenance.model import (
     CheriNodeOrigin, CheriCapPerm, ProvenanceVertexData,
-    ProvenanceGraphManager, CheriCap, EdgeOperation)
+    ProvenanceGraphManager, EdgeOperation)
 
 from tests.provenance.helper import (
-    assert_graph_equal, MockGraphBuilder)
+    assert_graph_equal, MockGraphBuilder, model_cap)
 
 logging.basicConfig(level=logging.DEBUG)
-
-def model_cap(base, offset, length, perm, otype=0x0, t=0):
-    cap = CheriCap()
-    cap.base = base
-    cap.offset = offset
-    cap.length = length
-    cap.permissions = perm
-    cap.objtype = otype
-    cap.valid = True
-    cap.sealed = False
-    cap.t_alloc = t
-    cap.t_free = -1
-    return cap
 
 @pytest.fixture
 def worker_result_base():

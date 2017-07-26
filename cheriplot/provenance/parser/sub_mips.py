@@ -1706,6 +1706,9 @@ class CallgraphSubparser:
         self._in_syscall = False
         """Signal whether we are in a syscall."""
 
+        self._landing_addr = None
+        """Landing address of the current call."""
+
         self.pgm.layer_call[self.root] = True
         self.pgm.data[self.root] = CallVertexData(None)
         self.call_stack.append((self.root, None))
@@ -1739,6 +1742,18 @@ class CallgraphSubparser:
         indirect_code = regs.gpr[3] # $a0
         is_indirect = (code == 0 or code == 198)
         return indirect_code if is_indirect else code
+
+    def scan_addiu(self, inst, entry, regs, last_regs, idx):
+        """
+        Get the current call frame size when the size is
+        subtracted from $sp in the prologue
+        at $pc matching the call landing address
+        """
+        if (entry.pc == self._landing_addr and
+            inst.op0.gpr_index == 29):
+            data = self.pgm.data[self.current_frame]
+            data.stack_frame_size += abs(inst.op2.value)
+        return False
 
     def scan_cjalr(self, inst, entry, regs, last_regs, idx):
         """
@@ -1846,9 +1861,18 @@ class CallgraphSubparser:
         the call target address
         :param op: operation performed (EdgeOperation), e.g. CALL, SYSCALL
         """
+        self._landing_addr = callee_addr
         vertex = self.pgm.graph.add_vertex()
         self.pgm.layer_call[vertex] = True
-        self.pgm.data[vertex] = CallVertexData(callee_addr)
+        call_data = CallVertexData(callee_addr)
+        # c11 = stack capability
+        # $29 = sp (-1 because $zero is not stored)
+        if regs.valid_caps[11] and regs.valid_gprs[28]:
+            stack_cap = regs.cap_reg[11]
+            stack_ptr = regs.gpr[28]
+            call_data.stack_frame_base = (stack_cap.base + stack_cap.offset +
+                                          stack_ptr)
+        self.pgm.data[vertex] = call_data
         assert len(self.call_stack) > 0, "Empty call_stack is invalid."
         parent, _ = self.call_stack[-1]
         edge = self.pgm.graph.add_edge(parent, vertex)

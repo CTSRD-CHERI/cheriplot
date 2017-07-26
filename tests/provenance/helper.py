@@ -437,6 +437,24 @@ class ProvenanceTraceWriter(MockTraceWriter):
             super()._side_effect(entry, key, val)
 
 
+def model_cap(base, offset, length, perm, otype=0x0, t=0):
+    """
+    Shorthand factory for CheriCap mock values to use in
+    the MockGraphBuilder.
+    """
+    cap = CheriCap()
+    cap.base = base
+    cap.offset = offset
+    cap.length = length
+    cap.permissions = perm
+    cap.objtype = otype
+    cap.valid = True
+    cap.sealed = False
+    cap.t_alloc = t
+    cap.t_free = -1
+    return cap
+
+
 class MockGraphBuilder:
     """
     Factory that generates the expected graph and result partial graph
@@ -551,68 +569,102 @@ class MockGraphBuilder:
         if addr is not None:
             vmap.mem_store(addr, v)
 
+    def _process_entry(self, subgraph, mock_result, mock_node_id_map, entry):
+        """
+        Process a mock graph entry.
+
+        :param subgraph: target mock subgraph to use as input for a test
+        :param mock_result: mock intermediate subgraph merge data or None
+        :param mock_node_id_map: map of subgraph nodes to model IDs
+        :param entry: the model entry
+        """
+        entry_type = entry[0]
+        if entry_type == "prov_node":
+            # provenance vertex
+            spec = entry[1]
+            only = spec.pop("only", None)
+            if only is None or only == "subgraph":
+                v = self.build_prov_node(subgraph, mock_node_id_map, spec)
+                if mock_result:
+                    self.set_final_regset(mock_result["regset"], v, spec)
+                    self.set_final_vmap(mock_result["mem_vertex_map"], v, spec)
+            if only is None or only == "expect":
+                self.build_prov_node(self.expect, self.expect_node_id, spec)
+        elif entry_type == "prov_edge":
+            # provenance edge
+            src, dst, spec = entry[1:]
+            only = spec.pop("only", None)
+            if only is None or only == "subgraph":
+                if mock_result:
+                    # if we are building a mock result use the appropriate method
+                    self.build_subgraph_prov_edge(mock_result, mock_node_id_map,
+                                                  src, dst, spec)
+                else:
+                    self.build_expect_prov_edge(subgraph, mock_node_id_map,
+                                                src, dst, spec)
+            if only is None or only == "expect":
+                self.build_expect_prov_edge(self.expect, self.expect_node_id,
+                                            src, dst, spec)
+        elif entry_type == "partial":
+            # modify partial vertex
+            spec = entry[1]
+            v = mock_node_id_map[spec["id"]]
+            vdata = subgraph.data[v]
+            # the only thing that can be changed of the partial is
+            # the event table
+            evt = spec.get("evt", None)
+            if evt is not None:
+                vdata.events = evt
+        elif entry_type == "call_node":
+            # call layer vertex
+            spec = entry[1]
+            only = spec.pop("only", None)
+            if only is None or only == "subgraph":
+                # call node is the root (there should only be one)
+                call_root = spec.pop("root", False)
+                # call node is the last (there should only be one)
+                call_last = spec.pop("last", False)
+                v = self.build_call_node(subgraph, mock_node_id_map, spec)
+                if call_root and mock_result:
+                    mock_result["sub_callgraph"]["root"] = v
+                if call_last and mock_result:
+                    mock_result["sub_callgraph"]["last_frame"] = v
+            if only is None or only == "expect":
+                self.build_call_node(self.expect, self.expect_node_id, spec)
+        elif entry_type == "call_edge":
+            # call layer edge
+            src, dst, spec = entry[1:]
+            only = spec.get("only", None)
+            if only is None or only == "subgraph":
+                self.build_call_edge(subgraph, mock_node_id_map,
+                                     src, dst, spec)
+            if only is None or only == "expect":
+                self.build_call_edge(self.expect, self.expect_node_id,
+                                     src, dst, spec)
+
+    def build_graph(self, subgraph, model):
+        """
+        Generate an input and expected graphs from a gml-like
+        graph specification.
+        This is similar to the build method but it operates
+        directly on a pgm instead of the merge step intermediary data.
+
+        :param subgraph: graph manager for the input graph
+        :param model: graph specification
+        """
+        mock_node_id_map = self.make_subgraph_node_id_map(subgraph)
+        for entry in model:
+            self._process_entry(subgraph, None, mock_node_id_map, entry)
+
     def build(self, mock_result, model):
         """
         Generate the expected and test input graphs
-        from a gml-like graph specification
+        from a gml-like graph specification.
+
+        :param mock_result: the intermediate graph merge step data to fill
+        :param model: the graph specification
         """
         subgraph = mock_result["pgm"]
         mock_node_id_map = self.make_subgraph_node_id_map(subgraph)
-        for item in model:
-            item_type = item[0]
-            if item_type == "prov_node":
-                # provenance vertex
-                spec = item[1]
-                only = spec.pop("only", None)
-                if only is None or only == "subgraph":
-                    v = self.build_prov_node(subgraph, mock_node_id_map, spec)
-                    self.set_final_regset(mock_result["regset"], v, spec)
-                    self.set_final_vmap(mock_result["mem_vertex_map"], v, spec)
-                if only is None or only == "expect":
-                    self.build_prov_node(self.expect, self.expect_node_id, spec)
-            elif item_type == "prov_edge":
-                # provenance edge
-                src, dst, spec = item[1:]
-                only = spec.pop("only", None)
-                if only is None or only == "subgraph":
-                    self.build_subgraph_prov_edge(mock_result, mock_node_id_map,
-                                                  src, dst, spec)
-                if only is None or only == "expect":
-                    self.build_expect_prov_edge(self.expect, self.expect_node_id,
-                                                src, dst, spec)
-            elif item_type == "partial":
-                # modify partial vertex
-                spec = item[1]
-                v = mock_node_id_map[spec["id"]]
-                vdata = subgraph.data[v]
-                # the only thing that can be changed of the partial is
-                # the event table
-                evt = spec.get("evt", None)
-                if evt is not None:
-                    vdata.events = evt
-            elif item_type == "call_node":
-                # call layer vertex
-                spec = item[1]
-                only = spec.pop("only", None)
-                if only is None or only == "subgraph":
-                    # call node is the root (there should only be one)
-                    call_root = spec.pop("root", False)
-                    # call node is the last (there should only be one)
-                    call_last = spec.pop("last", False)
-                    v = self.build_call_node(subgraph, mock_node_id_map, spec)
-                    if call_root:
-                        mock_result["sub_callgraph"]["root"] = v
-                    if call_last:
-                        mock_result["sub_callgraph"]["last_frame"] = v
-                if only is None or only == "expect":
-                    self.build_call_node(self.expect, self.expect_node_id, spec)
-            elif item_type == "call_edge":
-                # call layer edge
-                src, dst, spec = item[1:]
-                only = spec.get("only", None)
-                if only is None or only == "subgraph":
-                    self.build_call_edge(subgraph, mock_node_id_map,
-                                         src, dst, spec)
-                if only is None or only == "expect":
-                    self.build_call_edge(self.expect, self.expect_node_id,
-                                         src, dst, spec)
+        for entry in model:
+            self._process_entry(subgraph, mock_result, mock_node_id_map, entry)
