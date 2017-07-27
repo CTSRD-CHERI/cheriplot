@@ -26,15 +26,17 @@
 #
 
 import logging
+from contextlib import suppress
 
-from cheriplot.core import SubCommand, BaseToolTaskDriver, Argument
+from cheriplot.core import SubCommand, BaseToolTaskDriver, Argument, Option
 from cheriplot.provenance.plot import (
     AddressMapPlotDriver, AddressMapDerefPlotDriver, PtrSizeDerefDriver,
     PtrSizeBoundDriver, PtrSizeCdfDriver)
 from cheriplot.provenance.model import ProvenanceGraphManager
 from cheriplot.provenance.stats import ProvenanceStatsDriver
 from cheriplot.provenance.visit import (
-    FilterNullAndKernelVertices, FilterCfromptr, MergeCfromptr)
+    FilterNullAndKernelVertices, FilterCfromptr, MergeCfromptr,
+    ProvGraphTimeSlice)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,12 @@ class GraphAnalysisDriver(BaseToolTaskDriver):
     """
 
     graph = Argument(help="Path to the cheriplot graph.")
+    tslice = Option(
+        nargs=2,
+        type=int,
+        metavar=("start", "end"),
+        help="Filter the input graph, only consider vertices in the "
+        "given time slice")
     addrmap = SubCommand(AddressMapPlotDriver)
     addrmap_deref = SubCommand(AddressMapDerefPlotDriver)
     ptrsize_cdf = SubCommand(PtrSizeCdfDriver)
@@ -66,6 +74,9 @@ class GraphAnalysisDriver(BaseToolTaskDriver):
         filters = (FilterNullAndKernelVertices(self.pgm) +
                    MergeCfromptr(self.pgm) +
                    FilterCfromptr(self.pgm))
+        with suppress(AttributeError):
+            start, end = self.config.tslice
+            filters += ProvGraphTimeSlice(self.pgm, start, end)
         filtered_graph = filters(self.pgm.graph)
         vfilt, _ = filtered_graph.get_vertex_filter()
         self.pgm.graph.set_vertex_filter(vfilt)

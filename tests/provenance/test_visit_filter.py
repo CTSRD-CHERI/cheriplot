@@ -10,7 +10,8 @@ from cheriplot.provenance.model import (
     CheriNodeOrigin, CheriCapPerm, EdgeOperation, ProvenanceGraphManager)
 
 from cheriplot.provenance.visit import (
-    FilterNullAndKernelVertices, FilterCfromptr, MergeCfromptr, BFSGraphVisit)
+    FilterNullAndKernelVertices, FilterCfromptr, MergeCfromptr, BFSGraphVisit,
+    ProvGraphTimeSlice)
 
 from tests.provenance.helper import (
     assert_graph_equal, MockGraphBuilder, model_cap)
@@ -202,11 +203,60 @@ graph_merge_cfromptr = (
     ("prov_edge", "CD", "E", {"only": "expect"}),
 )
 
+# test the vertex time filtering visit
+# A(filtered) -> B
+#             -> C -> D
+#             -> E(filtered)
+graph_filter_vertex_time = (
+    ("call_node", {
+        "only": "subgraph",
+        "id": "call-root",
+        "addr": None,
+    }),
+    ("prov_node", {
+        "only": "subgraph",
+        "id": "A",
+        "origin": CheriNodeOrigin.ROOT,
+        "cap": model_cap(0x0, 0x0, 0x10000, rw_perm, t=0),
+        "pc": 0x1000,
+    }),
+    ("prov_node", {
+        "id": "B",
+        "origin": CheriNodeOrigin.SETBOUNDS,
+        "cap": model_cap(0x5000, 0x0, 0x5000, rw_perm, t=100),
+        "pc": 0x2000
+    }),
+    ("prov_node", {
+        "id": "C",
+        "origin": CheriNodeOrigin.FROMPTR,
+        "cap": model_cap(0x6000, 0x0, 0x100, rw_perm, t=150),
+        "pc": 0xf0000
+    }),
+    ("prov_node", {
+        "id": "D",
+        "origin": CheriNodeOrigin.SETBOUNDS,
+        "cap": model_cap(0x6000, 0x0, 0x10, rw_perm, t=160),
+        "pc": 0x2000
+    }),
+    ("prov_node", {
+        "only": "subgraph",
+        "id": "E",
+        "origin": CheriNodeOrigin.SETBOUNDS,
+        "cap": model_cap(0x9000, 0x0, 0x1000, rw_perm, t=400),
+        "pc": 0x2000
+    }),
+    ("prov_edge", "A", "B", {}),
+    ("prov_edge", "A", "E", {}),
+    ("prov_edge", "A", "C", {}),
+    ("prov_edge", "C", "D", {}),
+)
+
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("mock_model, visitor_class, error", [
     (graph_filter_null_kernel, FilterNullAndKernelVertices, None),
     (graph_filter_cfromptr, FilterCfromptr, None),
     (graph_merge_cfromptr, MergeCfromptr, None),
+    (graph_filter_vertex_time, lambda pgm: ProvGraphTimeSlice(pgm, 100, 200), None),
 ])
 def test_filter(mock_model, visitor_class, error):
     """
