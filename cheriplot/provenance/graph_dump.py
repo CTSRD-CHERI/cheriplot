@@ -28,14 +28,14 @@
 import logging
 
 from io import StringIO
-from functools import reduce
 from itertools import repeat
-from graph_tool.all import load_graph, bfs_iterator, dfs_iterator
 
 from cheriplot.core import (
     BaseToolTaskDriver, Argument, Option, option_range_validator,
     any_int_validator)
-from cheriplot.provenance.model import CheriNodeOrigin, ProvenanceVertexData
+from cheriplot.provenance.model import (
+    CheriNodeOrigin, ProvenanceVertexData, ProvenanceGraphManager,
+    EdgeOperation)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,12 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     range_format_help = "Accept a range in the form <start>-<end>, -<end>, "\
                         "<start>- or <single_value>"
 
-    graph_file = Argument(help="Path to the provenance graph file")
+    graph = Argument(help="Path to the provenance graph file")
+    layer = Option(
+        help="Graph layer to dump.",
+        choices=("prov", "call", "all"),
+        default="all",
+    )
     origin = Option(
         help="Find vertices with specific origin.",
         choices=("root", "csetbounds", "cfromptr", "ptrbounds",
@@ -98,15 +103,15 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        self.graph = load_graph(self.config.graph_file)
-        """The graph to dump."""
+        self.pgm = ProvenanceGraphManager.load(self.config.graph)
+        """Manager for the graph to dump."""
 
         self.match_origin = None
         """Search for nodes with this origin"""
 
         self._check_origin_arg(self.config.origin)
 
-        self.filters = [
+        self.prov_filters = [
             self._match_origin,
             self._match_pc,
             self._match_mem,
@@ -117,6 +122,7 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             self._match_alloc,
             self._match_len
         ]
+        self.call_filters = []
 
     def _check_origin_arg(self, match_origin):
         if match_origin == None:
@@ -156,18 +162,18 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             result = False
         return result
 
-    def _match_origin(self, vdata):
+    def _match_origin(self, edge, vdata):
         if self.match_origin:
             return vdata.origin == self.match_origin
         return None
 
-    def _match_pc(self, vdata):
+    def _match_pc(self, edge, vdata):
         if self.config.pc:
             start, end = self.config.pc
             return self._check_limits(start, end, vdata.pc)
         return None
 
-    def _match_mem(self, vdata):
+    def _match_mem(self, edge, vdata):
         if self.config.mem:
             start, end = self.config.mem
             result = False
@@ -178,7 +184,7 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             return result
         return None
 
-    def _match_deref(self, vdata):
+    def _match_deref(self, edge, vdata):
         if self.config.deref:
             start, end = self.config.deref
             result = False
@@ -189,90 +195,142 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             return result
         return None
 
-    def _match_syscall(self, vdata):
+    def _match_syscall(self, edge, vdata):
         if self.config.syscall:
             raise NotImplementedError("Syscalls not currently stored")
         return None
 
-    def _match_perms(self, vdata):
+    def _match_perms(self, edge, vdata):
         if self.config.perms:
             return vdata.cap.has_perm(self.config.perms)
         return None
 
-    def _match_otype(self, vdata):
+    def _match_otype(self, edge, vdata):
         if self.config.otype:
             return vdata.cap.objtype == self.config.otype
         return None
 
-    def _match_alloc(self, vdata):
+    def _match_alloc(self, edge, vdata):
         if self.config.time:
             start, end = self.config.time
             return self._check_limits(start, end, vdata.cap.t_alloc)
         return None
 
-    def _match_len(self, vdata):
+    def _match_len(self, edge, vdata):
         if self.config.size:
             start, end = self.config.size
             return self._check_limits(start, end, vdata.cap.length)
         return None
 
-    def _dump_vertex(self, vdata):
+    def _dump_prov_vertex(self, edge, v):
+        vdata = self.pgm.data[v]
         str_vertex = StringIO()
-        str_vertex.write("%s " % vdata)
+        str_vertex.write("(provenance) {} ".format(vdata))
         events = vdata.event_tbl
         n_load = (events["type"] & ProvenanceVertexData.EventType.DEREF_LOAD).sum()
         n_store = (events["type"] & ProvenanceVertexData.EventType.DEREF_STORE).sum()
-        str_vertex.write("deref-load: %d deref-store: %d " % (n_load, n_store))
+        str_vertex.write(
+            "deref-load: {:d} deref-store: {:d} ".format(n_load, n_store))
         n_loaded = (events["type"] & ProvenanceVertexData.EventType.LOAD).sum()
         n_stored = (events["type"] & ProvenanceVertexData.EventType.STORE).sum()
-        str_vertex.write("load: %d store: %d" % (n_loaded, n_stored))
+        str_vertex.write("load: {:d} store: {:d}".format(n_loaded, n_stored))
         if self.config.full_info:
             str_vertex.write("\n")
             frame_str = vdata.event_tbl.to_string(formatters={
                 "addr": "0x{0:x}".format,
                 "type": lambda t: str(ProvenanceVertexData.EventType(t))
             })
-            str_vertex.write("Event table:\n%s\n" % frame_str)
+            str_vertex.write("Event table:\n{}\n".format(frame_str))
         return str_vertex.getvalue()
 
-    def run(self):
-        for v in self.graph.vertices():
-            vdata = self.graph.vp.data[v]
+    def _dump_call_vertex(self, edge, v):
+        vdata = self.pgm.data[v]
+        str_vertex = StringIO()
+        if edge is not None:
+            eop = EdgeOperation(self.pgm.edge_operation[edge])
+            eaddr = self.pgm.edge_addr[edge]
+            etime = self.pgm.edge_time[edge]
+        else:
+            eop = None
+            eaddr = etime = 0
+        str_vertex.write("(call) op:{!s} 0x{:x} {:d} {!s}\n".format(
+            eop, eaddr, etime, vdata))
+        return str_vertex.getvalue()
+
+    def _dump_vertex(self, edge, v):
+        if self.pgm.layer_prov[v]:
+            return self._dump_prov_vertex(edge, v)
+        elif self.pgm.layer_call[v]:
+            return self._dump_call_vertex(edge, v)
+        else:
+            logger.warning("dump_vertex: invalid layer %s", self.pgm.data[v])
+
+    def _dump_predecessors(self, view, v):
+        if not self.config.predecessors or v is None:
+            return
+        predecessors = []
+        current = v
+        while True:
+            parent, edge = self._get_parent(view, current)
+            predecessors.insert(0, (current, edge))
+            if parent is None:
+                break
+            current = parent
+        for pred, edge in predecessors:
+            print("+- {}".format(self._dump_vertex(edge, pred)))
+            print("^")
+
+    def _dump_successors(self, v):
+        if not self.config.successors:
+            return
+        vertices = list(zip(repeat(1), repeat(v), v.out_neighbours()))
+        # list of tuples (depth, vertex)
+        while len(vertices):
+            depth, parent, s = vertices.pop(0)
+            edge = self.pgm.graph.edge(parent, s)
+            successors = list(
+                zip(repeat(depth + 1), repeat(s), s.out_neighbours()))
+            successors.extend(vertices)
+            vertices = successors
+            space = "  " * depth
+            print("{}+- {}".format(space, self._dump_vertex(edge, s)))
+
+    def _get_parent(self, view, v):
+        """
+        Get the parent vertex in the given layer and the connecting
+        edge.
+        """
+        parents = list(v.in_neighbours())
+        if len(parents) == 0:
+            return None, None
+        return parents[0], view.edge(parents[0], v)
+
+    def _dump_layer(self, view):
+        for v in view.vertices():
+            vdata = self.pgm.data[v]
+            parent, edge = self._get_parent(view, v)
             # initial match value, if match_any is true
             # we OR the match results so start with false
             # else we AND them, so start with true
             match = not self.config.match_any
-            for checker in self.filters:
-                result = checker(vdata)
+            if self.pgm.layer_prov[v]:
+                filters = self.prov_filters
+            elif self.pgm.layer_call[v]:
+                filters = self.call_filters
+            else:
+                logger.warning("dump_layer: invalid layer %s", vdata)
+
+            for checker in filters:
+                result = checker(edge, vdata)
                 match = self._update_match_result(match, result)
             if match:
-                if self.config.predecessors:
-                    predecessors = [v]
-                    while True:
-                        try:
-                            p = next(predecessors[0].in_neighbours())
-                            predecessors.insert(0, p)
-                        except StopIteration:
-                            break
-                    for p in predecessors:
-                        pdata = self.graph.vp.data[p]
-                        print("+- %s" % self._dump_vertex(pdata))
-                        print("^")
-                else:
-                    print("+- %s" % self._dump_vertex(vdata))
-                if self.config.successors:
-                    # list of tuples (depth, vertex)
-                    vertices = list(zip(repeat(1), v.out_neighbours()))
-                    while len(vertices):
-                        depth, s = vertices.pop(0)
-                        successors = list(zip(repeat(depth + 1),
-                                              s.out_neighbours()))
-                        successors.extend(vertices)
-                        vertices = successors
-                        space = "  " * depth
-                        sdata = self.graph.vp.data[s]
-                        print("%s+- %s" % (
-                            space,
-                            self._dump_vertex(sdata, indent=space))
-                        )
+                self._dump_predecessors(view, parent)
+                print("+- {}".format(self._dump_vertex(edge, v)))
+                self._dump_successors(v)
                 print("######")
+
+    def run(self):
+        if self.config.layer == "all" or self.config.layer == "prov":
+            self._dump_layer(self.pgm.prov_view())
+        if self.config.layer == "all" or self.config.layer == "call":
+            self._dump_layer(self.pgm.call_view())
