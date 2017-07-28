@@ -526,6 +526,20 @@ trace_invalid_derive_from_unknown = (
         "c2": ptr_cap})
 )
 
+# csetoffset invalid cap root
+# Try to create a root from an invalid capability in csetoffset
+trace_invalid_root_from_arith = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None)
+    }),
+    ("csetoffset $c13, $c13, $5", {
+        "c13": pct_cap(0x0, 0xffffffffffffff9c, 0x0, 0, valid=False),
+    }),
+    ("cmove $c14, $c14", {
+        "c13": pct_cap(0x0, 0xdeadbeef, 0x0, 0, valid=False),
+    }),
+)
+
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
@@ -539,6 +553,7 @@ trace_invalid_derive_from_unknown = (
     (trace_cpreg_get,),
     (trace_cap_propagate_setoffset,),
     (trace_cap_propagate_incoffset,),
+    (trace_invalid_root_from_arith,),
 ])
 def test_nodegen_simple(pgm, trace, threads):
     """Test provenance parser with the simplest trace possible."""

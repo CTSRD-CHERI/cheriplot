@@ -1380,17 +1380,23 @@ class PointerProvenanceSubparser:
                 src_vertex = False
 
             if src_vertex:
+                # XXX this is a good place to add a safety-check
+                # to validate the fact that the vertex in the regset
+                # matches the values in the trace entry.
                 self.regset.set_reg(dst.cap_index,
                                     self.regset.get_reg(src.cap_index),
                                     entry.cycles)
             else:
-                if regs.valid_caps[dst.cap_index]:
-                    # a register that was invalid has become valid, create a
-                    # root for it.
-                    dst_vertex = self.make_root_node(
-                        entry, dst.value, pc=entry.pc, time=entry.cycles)
-                    self.regset.set_reg(src.cap_index, dst_vertex, entry.cycles)
-                    self.regset.set_reg(dst.cap_index, dst_vertex, entry.cycles)
+                if dst.value.valid:
+                    if regs.valid_caps[dst.cap_index]:
+                        # a register that was invalid has become valid, create a
+                        # root for it.
+                        dst_vertex = self.make_root_node(
+                            entry, dst.value, pc=entry.pc, time=entry.cycles)
+                        self.regset.set_reg(src.cap_index, dst_vertex, entry.cycles)
+                        self.regset.set_reg(dst.cap_index, dst_vertex, entry.cycles)
+                else:
+                    self.regset.set_reg(dst.cap_index, None, entry.cycles)
         return False
 
     def _handle_dereference(self, inst, entry, ptr_reg):
@@ -1834,7 +1840,8 @@ class CallgraphSubparser:
         and capture syscall return values.
         """
         self.exception_depth -= 1
-        if self._in_syscall and self.exception_depth == 0:
+        if (self._in_syscall and self.exception_depth == 0 and
+            not inst.has_exception):
             epcc_valid = regs.valid_caps[31]
             if not epcc_valid:
                 msg = "eret without valid epcc register"
@@ -1954,6 +1961,9 @@ class CallgraphSubparser:
         do not return.
         """
         prev_vertex, ret_addr = self.call_stack[-1]
+        if ret_addr is None and self._in_syscall:
+            # if we are in a syscall, this is not a return
+            return
         if ret_addr is not None and ret_addr != addr:
             msg = "Unexpected return address 0x%x, expected 0x%x" % (
                 addr, ret_addr)

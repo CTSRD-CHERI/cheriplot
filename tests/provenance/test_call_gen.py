@@ -672,6 +672,56 @@ trace_call_connect_prov_0x20000 = (0x20000, (
     ("nop", {}),
 ))
 
+# test syscall/call nested
+# jr/cjr in a syscall must not cause syscall return
+trace_syscall_eret_return_confusion = (0x1000, (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("lui $v0, 450", {"2": 450}),
+    ("syscall", {
+        "exc": 8,
+        "cvertex": mk_cvertex(450, op=EdgeOperation.SYSCALL,
+                              parent="call-root", vid="syscall")
+    }),
+    ("nop", {}),
+    ("lui $26, 0xdead", {"26": 0xdead}),
+    ("jr $26", {}),
+    ("nop", {}),
+    ("cmove $c31, $c31", {
+        "c31": pct_cap(0x1000, 0x0c, 0xf000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm), vid="epcc"),
+    }),
+    ("eret", {
+        "cret": mk_cvertex_ret("syscall")
+    })
+))
+
+# test syscall nested return with exception on eret
+trace_syscall_nested_eret_exc = (0x1000, (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("lui $v0, 450", {"2": 450}),
+    ("syscall", {
+        "exc": 8,
+        "cvertex": mk_cvertex(450, op=EdgeOperation.SYSCALL,
+                              parent="call-root", vid="syscall")
+    }),
+    ("nop", {}),
+    ("cmove $c31, $c31", {
+        "c31": pct_cap(0x1000, 0x0c, 0xf000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm), vid="epcc"),
+    }),
+    ("eret", {
+        "exc": 2,
+    }),
+    ("nop", {}),
+    ("eret", {
+        "cret": mk_cvertex_ret("syscall")
+    })
+))
+
 @pytest.mark.timeout(10)
 @pytest.mark.parametrize("threads", [1,])
 @pytest.mark.parametrize("traces", [
@@ -696,6 +746,8 @@ trace_call_connect_prov_0x20000 = (0x20000, (
     (trace_syscall_epcc_update,),
     (trace_call_connect_prov_0x1000, trace_call_connect_prov_0x10000,
      trace_call_connect_prov_0x20000),
+    (trace_syscall_eret_return_confusion,),
+    (trace_syscall_nested_eret_exc,),
 ])
 def test_callgen(pgm, traces, threads):
     """Test provenance parser with the simplest trace possible."""
