@@ -116,24 +116,31 @@ class SymReader:
 
     def find_symbol(self, addr):
         """
-        Return the symbol and file where the address is found,
+        Return the symbol where the address is found,
         if possible.
+        """
+        entry = self.find_address(address)
+        if entry:
+            return entry[0]
+        return None
+
+    def find_address(self, addr):
+        """
+        Return the symbol and file where the address is found.
         """
         match = self.find_file(addr)
         if match is None:
             return None
         base, elf_file, symtab = match
         for sym in symtab.iter_symbols():
-            if sym["st_value"] + base == addr:
-                return sym.name
+            if sym["st_value"] == addr:
+                return sym.name, elf_file.stream.name
         return None
 
     def find_function(self, addr):
         """
         Return the symbol and file of the function containing the
         given address, if possible.
-        
-        XXX useless
         """
         match = self.find_file(addr)
         if match is None:

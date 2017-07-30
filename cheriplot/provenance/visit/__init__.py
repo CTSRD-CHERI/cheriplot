@@ -3,6 +3,7 @@ This module implements the various algorithms that walk the graph to filter, upd
 """
 from .base import *
 from .vertex_merge import (
-    MaskBFSVisit, FilterNullAndKernelVertices, FilterCfromptr, MergeCfromptr)
+    MaskBFSVisit, FilterNullVertices, FilterKernelVertices, FilterCfromptr,
+    MergeCfromptr)
 from .symbols import ResolveSymbolsGraphVisit
 from .slice import ProvGraphTimeSlice
