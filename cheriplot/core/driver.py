@@ -133,6 +133,11 @@ class DriverConfigEntry:
     def dest(self):
         return self.kwargs.get("dest", self.name)
 
+    @property
+    def display_name(self):
+        """Return the option/argument name used for argument construction"""
+        return self.name.replace("_", "-")
+
     def make_config(self, parser, prefix="", keys=None, ns=None):
         """
         Add this configuration entry to an argparse argument parser
@@ -191,7 +196,7 @@ class Option(DriverConfigEntry):
             kwargs["dest"] = prefix + self.dest
         else:
             kwargs = self.kwargs
-        args = ("--%s" % self.name,) + self.args
+        args = ("--{}".format(self.display_name),) + self.args
         parser.add_argument(*args, **kwargs)
 
 
