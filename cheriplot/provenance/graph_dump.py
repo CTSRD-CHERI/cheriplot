@@ -30,6 +30,8 @@ import logging
 from io import StringIO
 from itertools import repeat
 
+import numpy as np
+
 from cheriplot.core import (
     BaseToolTaskDriver, Argument, Option, option_range_validator,
     any_int_validator)
@@ -52,12 +54,12 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     layer = Option(
         help="Graph layer to dump.",
         choices=("prov", "call", "all"),
-        default="all",
-    )
+        default="all")
+    # provenance layer filters
     origin = Option(
         help="Find vertices with specific origin.",
         choices=("root", "csetbounds", "cfromptr", "ptrbounds",
-                 "candperm", "partial"),
+                 "candperm", "partial", "call", "syscall"),
         default=None)
     pc = Option(
         type=option_range_validator,
@@ -66,6 +68,10 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     time = Option(
         type=option_range_validator,
         help="Find all vertices created at given time. " + range_format_help)
+    lifetime = Option(
+        type=option_range_validator,
+        help="Find all vertices with a lifetime (t_free - t_alloc) "
+        "in the given range. " + range_format_help)
     mem = Option(
         type=option_range_validator,
         help="Show all vertices stored at a memory address. " + range_format_help)
@@ -75,9 +81,6 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     size = Option(
         type=option_range_validator,
         help="Show vertices with given length. " + range_format_help)
-    syscall = Option(
-        type=int,
-        help="Show all syscall vertices for given code")
     perms = Option(
         type=any_int_validator,
         help="Find vertices with given permission bits set.")
@@ -97,8 +100,10 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
         help="Show the successors of a matching capability.")
     full_info = Option(
         action="store_true",
-        help="Show the full vertex information"
-    )
+        help="Show the full vertex information")
+    # call layer filters
+    target = Option(
+        help="Show calls to the given target address or symbol name.")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -116,13 +121,15 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             self._match_pc,
             self._match_mem,
             self._match_deref,
-            self._match_syscall,
             self._match_perms,
             self._match_otype,
             self._match_alloc,
-            self._match_len
+            self._match_len,
+            self._match_lifetime,
         ]
-        self.call_filters = []
+        self.call_filters = [
+            self._match_call_type,
+        ]
 
     def _check_origin_arg(self, match_origin):
         if match_origin == None:
@@ -139,6 +146,10 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             self.match_origin = CheriNodeOrigin.ANDPERM
         elif match_origin == "partial":
             self.match_origin = CheriNodeOrigin.PARTIAL
+        elif match_origin == "call":
+            self.match_origin = EdgeOperation.CALL
+        elif match_origin == "syscall":
+            self.match_origin = EdgeOperation.SYSCALL
         else:
             raise ValueError("Invalid match_origin parameter")
 
@@ -155,12 +166,23 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             return match and value
 
     def _check_limits(self, start, end, value):
-        result = True
-        if start != None and start > value:
-            result = False
-        if end != None and end < value:
-            result = False
-        return result
+        if start is None:
+            start = 0
+        if end is None:
+            end = np.inf
+        if start <= value and value <= end:
+            return True
+        return False
+
+    def _match_lifetime(self, edge, vdata):
+        if self.config.lifetime:
+            start, end = self.config.lifetime
+            if vdata.cap.t_free >= 0:
+                lifetime = vdata.cap.t_free - v_data.cap.t_alloc
+            else:
+                lifetime = np.inf
+            return self._check_limits(start, end, lifetime)
+        return None
 
     def _match_origin(self, edge, vdata):
         if self.match_origin:
@@ -195,11 +217,6 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             return result
         return None
 
-    def _match_syscall(self, edge, vdata):
-        if self.config.syscall:
-            raise NotImplementedError("Syscalls not currently stored")
-        return None
-
     def _match_perms(self, edge, vdata):
         if self.config.perms:
             return vdata.cap.has_perm(self.config.perms)
@@ -220,6 +237,12 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
         if self.config.size:
             start, end = self.config.size
             return self._check_limits(start, end, vdata.cap.length)
+        return None
+
+    def _match_call_type(self, edge, vdata):
+        if self.config.origin and edge is not None:
+            eop = self.pgm.edge_operation[edge]
+            return eop == self.match_origin
         return None
 
     def _dump_prov_vertex(self, edge, v):
@@ -253,8 +276,9 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
         else:
             eop = None
             eaddr = etime = 0
-        str_vertex.write("(call) op:{!s} 0x{:x} {:d} {!s}\n".format(
-            eop, eaddr, etime, vdata))
+        str_vertex.write(
+            "(call) op:{!s} caller:0x{:x} t_call:{:d} {!s}\n".format(
+                eop, eaddr, etime, vdata))
         return str_vertex.getvalue()
 
     def _dump_vertex(self, edge, v):
