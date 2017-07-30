@@ -39,6 +39,8 @@ class PatchBuilder:
     """
     The patch generator build the matplotlib patches for each
     dataset item
+
+    XXX can make these graph transforms
     """
 
     def __init__(self, **kwargs):
@@ -55,15 +57,12 @@ class PatchBuilder:
         """
         self.style = style
 
-    def inspect(self, data):
+    def load(self, dataset):
         """
-        Inspect a data item and update internal
-        set of patches.
+        Load a dataset to be used as source for the patches.
 
-        This is intended to be overridden by subclasses.
-
-        :param data: a item of the dataset to be processed
-        :type data: object
+        :param dataset: dataset object
+        :type dataset: object
         """
         return
 

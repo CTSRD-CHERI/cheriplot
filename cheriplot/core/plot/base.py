@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 __all__ = ("BasePlotBuilder", "ASAxesPlotBuilder", "ASAxesPlotBuilderNoTitle",
            "ExternalLegendTopPlotBuilder")
 
+# XXX
+from memory_profiler import profile
+
 class BasePlotBuilder:
 
     title = ""
@@ -152,7 +155,7 @@ class BasePlotBuilder:
         """
         Return the kwargs for the axes.set_title call. This
         can be used to control the text properties of the title.
-        
+
         :return: kwargs dict for :meth:`Axes.set_title`
         """
         if self._style["font"]:
@@ -221,6 +224,7 @@ class BasePlotBuilder:
                     self._patch_builders)
         return reduce(lambda p,a: "%s\n%s" % (a, p), pairs, "")
 
+    @profile
     def make_patches(self):
         """
         Build the patches from all the registered patch builders
@@ -230,35 +234,62 @@ class BasePlotBuilder:
         at the expense of performance by passing a reduced set of
         patch_builders to this method.
         """
+        # XXX experimental replace start
         logger.debug("Make patches:\n%s", self._dbg_repr_patch_builders())
         for idx, (dataset, builders) in enumerate(self._patch_builders):
-            with ProgressTimer("Make patches for dataset [%d/%d]" % (
+            with ProgressTimer("Inspect dataset [%d/%d]" % (
                     idx + 1, len(self._patch_builders)), logger):
                 for item in dataset:
                     for b in builders:
                         b.inspect(item)
-        builders = chain(*map(itemgetter(1), self._patch_builders))
+        builders = list(chain(*map(itemgetter(1), self._patch_builders)))
         bboxes = []
-        for b in builders:
-            # grab all the patches from the builders
-            b.get_patches(self.ax)
-            # grab the viewport from the builders
-            bboxes.append(b.get_bbox())
-            # grab the legend from the builders
-            self._legend_handles.extend(b.get_legend())
-            # grab the x and y ticks
-            xticks = b.get_xticks()
-            xlabels = b.get_xlabels()
-            yticks = b.get_yticks()
-            ylabels = b.get_ylabels()
-            if xlabels is None:
-                xlabels = repeat(None)
-            if ylabels is None:
-                ylabels = repeat(None)
+        for idx, b in enumerate(builders):
+            with ProgressTimer("Make patches [%d/%d]" % (
+                    idx + 1, len(builders)), logger):
+                # grab all the patches from the builders
+                b.get_patches(self.ax)
+            with ProgressTimer("Fetch plot elements [%d/%d]" % (
+                    idx + 1, len(builders)), logger):
+                # grab the viewport from the builders
+                bboxes.append(b.get_bbox())
+                # grab the legend from the builders
+                self._legend_handles.extend(b.get_legend())
+                # grab the x and y ticks
+                xticks = b.get_xticks()
+                xlabels = b.get_xlabels()
+                yticks = b.get_yticks()
+                ylabels = b.get_ylabels()
+                if xlabels is None:
+                    xlabels = repeat(None)
+                if ylabels is None:
+                    ylabels = repeat(None)
             self._xticks.update(zip(xticks, xlabels))
             self._yticks.update(zip(yticks, ylabels))
-            # self._xticks = self._xticks.union(zip(xticks, xlabels))
-            # self._yticks = self._yticks.union(zip(yticks, ylabels))
+        # XXX integrated load / experimental
+        # bboxes = []
+        # for idx, (dataset, builders) in enumerate(self._patch_builders):
+        #         with ProgressTimer("Build patches [%d/%d]" % (
+        #                 idx + 1, len(self._patch_builders)), logger):
+        #             for b in builders:
+        #                 b.load(dataset)
+        #                 b.get_patches(self.ax)
+        #                 # grab the viewport from the builders
+        #                 bboxes.append(b.get_bbox())
+        #                 # grab the legend from the builders
+        #                 self._legend_handles.extend(b.get_legend())
+        #                 # grab the x and y ticks
+        #                 xticks = b.get_xticks()
+        #                 xlabels = b.get_xlabels()
+        #                 yticks = b.get_yticks()
+        #                 ylabels = b.get_ylabels()
+        #                 if xlabels is None:
+        #                     xlabels = repeat(None)
+        #                 if ylabels is None:
+        #                     ylabels = repeat(None)
+        #                 self._xticks.update(zip(xticks, xlabels))
+        #                 self._yticks.update(zip(yticks, ylabels))
+        # XXX experimental end
         self._view_box = Bbox.union(bboxes)
         logger.debug("Plot viewport %s", self._view_box)
         logger.debug("Num ticks: x:%d y:%d", len(self._xticks),
@@ -306,7 +337,9 @@ class BasePlotBuilder:
         :type show: bool
         """
         with ProgressTimer("Plot builder processing", logger):
-            self.make_patches()
+            with ProgressTimer("DEBUG TIMING make_patches", logger):
+                self.make_patches()
+            # assert False, "DEBUG PROFILING STOP"
             self.make_plot()
             if out_file:
                 self.fig.savefig(out_file, **self._get_savefig_kwargs())
