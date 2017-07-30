@@ -143,12 +143,14 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         """
         keep_size = np.sum(intervals[keep_idx,1] - intervals[keep_idx,0])
         # the last omit interval always goes to Inf
-        omit_size = np.sum(intervals[omit_idx[:-2],1] - intervals[omit_idx[:-2],0])
+        omit_size = np.sum(intervals[omit_idx[:-1],1] - intervals[omit_idx[:-1],0])
         if omit_size != 0:
             # we want the omitted ranges to take up 5% of the keep ranges
             # in size
             # scale = <percent_of_keep_size_to_take> * sum(keep) / sum(omit)
             self.omit_scale = 0.05 * keep_size / omit_size
+        logger.debug("Omit scale 5%%: total-keep:%d total-omit:%d scale:%s",
+                     keep_size, omit_size, self.omit_scale)
 
     def _gen_piecewise_fn(self, intervals, keep, omit):
         """

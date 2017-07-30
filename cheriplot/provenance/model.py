@@ -95,7 +95,6 @@ class CheriCap:
     Hold the data of a CHERI capability.
     """
 
-    MAX_ADDR = 0xffffffffffffffff
     MAX_OTYPE = 0x00ffffff
 
     @classmethod
@@ -153,7 +152,7 @@ class CheriCap:
     def bound(self):
         """Convenience property to get base + length."""
         if (self.base is not None and self.length is not None):
-            return (self.base + self.length) % self.MAX_ADDR
+            return self.base + self.length
         return None
 
     def __str__(self):
@@ -412,18 +411,25 @@ class CallVertexData:
 
     def __str__(self):
         if self.address is None:
-            return "(unknown/root)"
-        if self.addr_return is not None:
-            addr_ret = "0x%x" % self.addr_return
+            addr = "(unknown/root)"
         else:
+            addr = "0x{:x}".format(self.address)
+        if self.addr_return is None:
             addr_ret = None
-        if self.t_return is not None:
-            t_ret = "%d" % self.t_return
         else:
+            addr_ret = "0x{:x}".format(self.addr_return)
+        if self.t_return is None:
             t_ret = None
-        dump = "call 0x%x, ret:%s @ t=%s" % (self.address, addr_ret, t_ret)
+        else:
+            t_ret = "{:d}".format(self.t_return)
+        if self.symbol is None:
+            symbol = ""
+        else:
+            symbol = "({}){}".format(self.symbol_file, self.symbol)
+        dump = "call {} target:{}, ret:{} @ t_ret={}".format(
+            symbol, addr, addr_ret, t_ret)
         if self.symbol is not None:
-            dump += " (%s)" % self.symbol
+            dump += " ({})".format(self.symbol)
         return dump
 
     def __eq__(self, other):

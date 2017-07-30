@@ -57,20 +57,31 @@ class MaskBFSVisit(BFSGraphVisit):
         return GraphView(graph_view, vfilt=self.vertex_mask)
 
 
-class FilterNullAndKernelVertices(MaskBFSVisit):
+class FilterNullVertices(MaskBFSVisit):
     """
-    Generate a graph_view that masks all kernel vertices and NULL capabilities.
+    Generate a graph_view that masks all NULL capabilities.
     """
 
-    description = "Mask NULL and Kernel vertices"
+    description = "Mask NULL capabilities"
 
     def examine_vertex(self, u):
         if self.pgm.layer_prov[u]:
             data = self.pgm.data[u]
-            if ((data.pc != 0 and data.is_kernel) or
-                (data.cap.length == 0 and data.cap.base == 0)):
+            if data.cap.length == 0 and data.cap.base == 0:
                 self.vertex_mask[u] = False
 
+class FilterKernelVertices(MaskBFSVisit):
+    """
+    Generate a graph_view that masks all kernel vertices and NULL capabilities.
+    """
+
+    description = "Mask Kernel capabilities"
+
+    def examine_vertex(self, u):
+        if self.pgm.layer_prov[u]:
+            data = self.pgm.data[u]
+            if data.pc != 0 and data.is_kernel:
+                self.vertex_mask[u] = False
 
 class FilterCfromptr(MaskBFSVisit):
     """

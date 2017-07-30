@@ -27,10 +27,12 @@
 
 import numpy as np
 import logging
+from collections import defaultdict
+from functools import partial
+from itertools import repeat
+from operator import itemgetter
 
 from sortedcontainers import SortedDict
-from collections import defaultdict
-from operator import itemgetter
 
 from matplotlib.collections import LineCollection, PatchCollection
 from matplotlib.transforms import Bbox, blended_transform_factory
@@ -201,7 +203,6 @@ class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
     def inspect(self, vertex):
         """Inspect a graph vertex and create the patches for it."""
         data = self._pgm.vp.data[vertex]
-        assert data.cap.bound >= data.cap.base # XXX should be in the parsers
         self._add_bbox(data.cap.base, data.cap.bound, data.cap.t_alloc)
 
         coords = ((data.cap.base, data.cap.t_alloc),
@@ -273,34 +274,29 @@ class DerefPatchBuilder(BaseColorCodePatchBuilder):
         the values?
         """
         data = self._pgm.vp.data[vertex]
+        load = data.event_tbl["type"] == ProvenanceVertexData.EventType.DEREF_LOAD
+        store = data.event_tbl["type"] == ProvenanceVertexData.EventType.DEREF_STORE
+        deref = load | store
+        if not deref.any():
+            # no dereferences, skip
+            return
         # mark this address range as interesting
-        self._add_range(data.cap.base, data.cap.bound)
+        base = data.cap.base
+        bound = data.cap.bound
+        self._add_range(base, bound)
+        register_clickable = partial(self._clickable_element, vertex)
+        data.event_tbl[deref]["time"].apply(register_clickable)
 
-        min_time = np.inf
-        max_time = 0
-        assert False, "XXX this is broken, refactor me!!"
-        columns = itemgetter("time", "addr", "type")(data.deref)
-        for time, addr, type_ in zip(*columns):
-            min_time = min(min_time, time)
-            max_time = max(max_time, time)
-            coords = ((data.cap.base, time), (data.cap.bound, time))
-            if type_ == data.DerefType.DEREF_LOAD:
-                self._collection_map["load"].append(coords)
-                # off = patches.Circle((addr, data_y))
-                # self._deref_load.append(off)
-                pass
-            elif type_ == data.DerefType.DEREF_STORE:
-                self._collection_map["store"].append(coords)
-                # off = patches.Circle((addr, data_y))
-                # self._deref_store.append(off)
-                pass
-            elif type_ == data.DerefType.DEREF_CALL:
-                logger.warning("Plot call dereferences not yet supported")
-            self._clickable_element(vertex, time)
+        # extract Y limits and set the bounding box
+        min_time = data.event_tbl[deref]["time"].min()
+        max_time = data.event_tbl[deref]["time"].max()
+        self._add_bbox(base, bound, min_time)
+        self._add_bbox(base, bound, max_time)
 
-        if len(columns[0]):
-            self._add_bbox(data.cap.base, data.cap.bound, min_time)
-            self._add_bbox(data.cap.base, data.cap.bound, max_time)
+        # create all the line coordinates
+        self._collection_map["load"].extend(
+            zip(zip(repeat(base), data.event_tbl[deref]["time"]),
+                zip(repeat(bound), data.event_tbl[deref]["time"])))
 
     def load(self, dataset):
         """XXX experimental"""

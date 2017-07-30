@@ -149,7 +149,6 @@ class LabelManager:
         trans = self.labels[0].get_transform()
         inv = trans.inverted()
 
-        logger.debug("Adjust label positions %s", self.labels)
         bboxes = self._get_bboxes(renderer)
         align_fixup = np.fromiter(
             map(self._get_align_delta, self.labels, bboxes), dtype=float)

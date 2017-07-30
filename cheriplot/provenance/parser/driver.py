@@ -126,12 +126,15 @@ class SymbolResolutionDriver(BaseToolTaskDriver):
         self.vmmap = VMMapFileParser(config=self.config.vmmap)
         """Memory map file parser."""
 
+        self.vmmap.parse()
+        self.symreader = SymReader(vmmap=self.vmmap, path=self.config.elfpath)
+        """Symbol reader"""
+
         # self.syscalls = BSDSyscallMasterParser(self.config.syscalls)
         # """Parser for the syscalls.master file."""
 
     def run(self):
-        self.vmmap.parse()
         # self.syscalls.parse()
-        visitor = ResolveSymbolsGraphVisit(self.pgm)
+        visitor = ResolveSymbolsGraphVisit(self.pgm, self.symreader, None)
         visitor(self.pgm.graph)
         self.pgm.save()

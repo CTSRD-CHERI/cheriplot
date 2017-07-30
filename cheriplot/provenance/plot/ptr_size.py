@@ -42,7 +42,7 @@ from cheriplot.core import (
     BasePlotBuilder, PatchBuilder, LabelManager, AutoText, TaskDriver,
     Option, Argument)
 from cheriplot.provenance.visit import (
-    FilterNullAndKernelVertices, FilterCfromptr, MergeCfromptr)
+    FilterNullVertices, FilterKernelVertices, FilterCfromptr, MergeCfromptr)
 from cheriplot.provenance.parser import CheriMipsModelParser
 from cheriplot.provenance.plot import VMMapPlotDriver
 
@@ -409,9 +409,8 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
             parser = CheriMipsModelParser(cache=True, trace_path=path)
             parser.parse()
             pgm = parser.get_model()
-            filters = (FilterNullAndKernelVertices(pgm) +
-                       MergeCfromptr(pgm) +
-                       FilterCfromptr(pgm))
+            filters = (FilterNullVertices(pgm) + FilterKernelVertices(pgm) +
+                       MergeCfromptr(pgm) + FilterCfromptr(pgm))
             filtered_graph = filters(pgm.graph)
             vfilt, _ = filtered_graph.get_vertex_filter()
             pgm.graph.set_vertex_filter(vfilt)
