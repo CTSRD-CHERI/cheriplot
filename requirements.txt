@@ -33,3 +33,4 @@ virtualenv==15.1.0
 cached-property==1.3.0
 pytest-timeout==1.2.0
 exrex==0.10.4
+pyprof2calltree==1.4.1

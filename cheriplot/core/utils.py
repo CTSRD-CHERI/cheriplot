@@ -30,9 +30,12 @@ import sys
 import io
 import cProfile
 import pstats
+import tracemalloc
+import linecache
+
+from collections import defaultdict
 from datetime import datetime, timedelta
 
-from memory_profiler import profile
 from pyprof2calltree import visualize
 
 logger = logging.getLogger(__name__)
@@ -143,6 +146,17 @@ class CumulativeTimer:
         logger.debug("Cumulative timer probe %s elapsed %s", self.name, self.elapsed)
 
 
+class LineMap:
+
+    def __init__(self):
+        self.filemap = defaultdict(0)
+
+    def extend(self, diff):
+        for stat in diff:
+            file_line = str(stat.traceback)
+            fname, lineno = file_line.split(":")
+            self.filemap[(fname, lineno)] += 0
+
 class Profiler:
     """
     Helper context manager that enables and disables profiling for portions of
@@ -153,6 +167,9 @@ class Profiler:
     without having to change the code. When profiling is disabled the
     profiler should have very low impact on performance.
     """
+
+    _mem_profiling = 0
+    """Count of memory profiling requests."""
 
     _profilers = {}
 
@@ -172,23 +189,49 @@ class Profiler:
         except KeyError:
             self.name = name
             self._profiler = cProfile.Profile()
+            self._mem_snapshot = None
+            self._mem_diff_map = LineMap()
             self._profile_time = False
             self._profile_mem = False
             self._profilers[name] = self.__dict__
 
+    def _mprof_enable(self):
+        """Enable memory profiler."""
+        if self._mem_profiling == 0:
+            tracemalloc.start()
+            self._mem_snapshot = tracemalloc.take_snapshot()
+        self._mem_profiling += 1
+
+    def _mprof_disable(self):
+        """Disable memory profiler"""
+        self._mem_profiling -= 1
+        if self._mem_profiling == 0:
+            end = tracemalloc.take_snapshot()
+            tracemalloc.stop()
+            self._mem_diff_map.extend(
+                end.compare_to(self._mem_snapshot, "lineno"))
+
     def __enter__(self):
         if self._profile_time:
             self._profiler.enable()
+        if self._profile_mem:
+            self._mprof_enable()
 
     def __exit__(self, type, value, traceback):
         self._profiler.disable()
+        self._mprof_disable()
 
     def __call__(self, target):
+        # XXX TODO
         return target
 
-    def enable(self, time=False, memory=False):
-        self._profile_time = time
-        self._profile_mem = memory
+    def enable_time(self):
+        self._profile_time = True
+        self._profile_mem = False
+
+    def enable_mem(self):
+        self._profile_time = False
+        self._profile_mem = True
 
     def disable(self):
         self._profile_time = False
