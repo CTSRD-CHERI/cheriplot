@@ -337,9 +337,7 @@ class BasePlotBuilder:
         :type show: bool
         """
         with ProgressTimer("Plot builder processing", logger):
-            with ProgressTimer("DEBUG TIMING make_patches", logger):
-                self.make_patches()
-            # assert False, "DEBUG PROFILING STOP"
+            self.make_patches()
             self.make_plot()
             if out_file:
                 self.fig.savefig(out_file, **self._get_savefig_kwargs())

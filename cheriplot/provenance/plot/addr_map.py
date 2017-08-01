@@ -483,7 +483,7 @@ class BaseAddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
         self.register_patch_builder(self._provenance_graph.vertices(), cap_builder)
         # self.register_patch_builder(self._provenance_graph, cap_builder)
         self.register_patch_builder(vmmap, VMMapPatchBuilder(self.ax))
-        self.process(out_file=self.config.outfile)
+        self.process(out_file=self._outfile)
 
 
 class AddressMapPlotDriver(BaseAddressMapPlotDriver):

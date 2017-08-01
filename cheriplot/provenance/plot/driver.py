@@ -48,3 +48,5 @@ class VMMapPlotDriver(TaskDriver):
         self._pgm = pgm
         self._provenance_graph = pgm.prov_view()
         self._vmmap_parser = VMMapFileParser(config=self.config.vmmap)
+        default_outfile = "{}_%s.png".format(self.__class__.__name__.lower())
+        self._outfile = self.config.outfile or default_outfile
