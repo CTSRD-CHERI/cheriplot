@@ -437,7 +437,7 @@ class ProvenanceTraceWriter(MockTraceWriter):
             super()._side_effect(entry, key, val)
 
 
-def model_cap(base, offset, length, perm, otype=0x0, t=0):
+def model_cap(base, offset, length, perm, otype=0x0, t=0, valid=True):
     """
     Shorthand factory for CheriCap mock values to use in
     the MockGraphBuilder.
@@ -448,7 +448,7 @@ def model_cap(base, offset, length, perm, otype=0x0, t=0):
     cap.length = length
     cap.permissions = perm
     cap.objtype = otype
-    cap.valid = True
+    cap.valid = valid
     cap.sealed = False
     cap.t_alloc = t
     cap.t_free = -1

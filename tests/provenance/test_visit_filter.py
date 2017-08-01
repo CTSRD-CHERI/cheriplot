@@ -10,8 +10,8 @@ from cheriplot.provenance.model import (
     CheriNodeOrigin, CheriCapPerm, EdgeOperation, ProvenanceGraphManager)
 
 from cheriplot.provenance.visit import (
-    FilterNullAndKernelVertices, FilterCfromptr, MergeCfromptr, BFSGraphVisit,
-    ProvGraphTimeSlice)
+    FilterNullVertices, FilterKernelVertices, FilterCfromptr, MergeCfromptr,
+    BFSGraphVisit, ProvGraphTimeSlice)
 
 from tests.provenance.helper import (
     assert_graph_equal, MockGraphBuilder, model_cap)
@@ -47,12 +47,12 @@ def test_chain_visit():
 
 rw_perm = CheriCapPerm.LOAD | CheriCapPerm.STORE
 
-# test the NULL and kernel vertex filter
+# test the kernel vertex filter
 # A(kern) -> B(kern) -> C
-#         -> D -> E(null)
+#         -> D -> E
 # F -> G
 # call-root
-graph_filter_null_kernel = (
+graph_filter_kernel = (
     ("prov_node", {
         "only": "subgraph",
         "id": "A",
@@ -82,10 +82,9 @@ graph_filter_null_kernel = (
         "pc": 0xf5000
     }),
     ("prov_node", {
-        "only": "subgraph",
         "id": "E",
         "origin": CheriNodeOrigin.SETBOUNDS,
-        "cap": model_cap(0x0, 0x0, 0x0, rw_perm, t=25),
+        "cap": model_cap(0x1000, 0x0, 0x1000, rw_perm, t=25),
         "pc": 0xf7000
     }),
     ("prov_edge", "A", "B", {}),
@@ -105,6 +104,62 @@ graph_filter_null_kernel = (
         "pc": 0xff100
     }),
     ("prov_edge", "F", "G", {}),
+    ("call_node", {
+        "id": "call-root",
+        "addr": None,
+    }),
+)
+
+# test the NULL vertex filter
+# A -> B(null)
+#   -> C -> D(null)
+# E -> F
+# call-root
+graph_filter_null = (
+    ("prov_node", {
+        "id": "A",
+        "origin": CheriNodeOrigin.ROOT,
+        "cap": model_cap(0x0, 0x0, 0x10000, rw_perm, t=0),
+        "is_kernel": True,
+        "pc": 0x1000,
+    }),
+    ("prov_node", {
+        "only": "subgraph",
+        "id": "B",
+        "origin": CheriNodeOrigin.SETBOUNDS,
+        "cap": model_cap(0x5000, 0x0, 0x0, rw_perm, t=5),
+        "is_kernel": True,
+        "pc": 0x2000
+    }),
+    ("prov_node", {
+        "id": "C",
+        "origin": CheriNodeOrigin.SETBOUNDS,
+        "cap": model_cap(0x6000, 0x0, 0x100, rw_perm, t=10),
+        "pc": 0xf0000
+    }),
+    ("prov_node", {
+        "only": "subgraph",
+        "id": "D",
+        "origin": CheriNodeOrigin.SETBOUNDS,
+        "cap": model_cap(0x0, 0x4000, 0x5000, rw_perm, t=20, valid=False),
+        "pc": 0xf5000
+    }),
+    ("prov_edge", "A", "B", {}),
+    ("prov_edge", "A", "C", {}),
+    ("prov_edge", "C", "D", {}),
+    ("prov_node", {
+        "id": "E",
+        "origin": CheriNodeOrigin.ROOT,
+        "cap": model_cap(0x20000, 0x0, 0x1000, rw_perm, t=60),
+        "pc": 0xff000,
+    }),
+    ("prov_node", {
+        "id": "F",
+        "origin": CheriNodeOrigin.SETBOUNDS,
+        "cap": model_cap(0x20000, 0x0, 0x100, rw_perm, t=65),
+        "pc": 0xff100
+    }),
+    ("prov_edge", "E", "F", {}),
     ("call_node", {
         "id": "call-root",
         "addr": None,
@@ -253,7 +308,8 @@ graph_filter_vertex_time = (
 
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("mock_model, visitor_class, error", [
-    (graph_filter_null_kernel, FilterNullAndKernelVertices, None),
+    (graph_filter_kernel, FilterKernelVertices, None),
+    (graph_filter_null, FilterNullVertices, None),
     (graph_filter_cfromptr, FilterCfromptr, None),
     (graph_merge_cfromptr, MergeCfromptr, None),
     (graph_filter_vertex_time, lambda pgm: ProvGraphTimeSlice(pgm, 100, 200), None),
