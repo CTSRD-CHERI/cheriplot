@@ -127,7 +127,7 @@ graph_filter_null = (
         "only": "subgraph",
         "id": "B",
         "origin": CheriNodeOrigin.SETBOUNDS,
-        "cap": model_cap(0x5000, 0x0, 0x0, rw_perm, t=5),
+        "cap": model_cap(0x0, 0x0, 0x0, rw_perm, t=5),
         "is_kernel": True,
         "pc": 0x2000
     }),

@@ -67,7 +67,8 @@ class FilterNullVertices(MaskBFSVisit):
     def examine_vertex(self, u):
         if self.pgm.layer_prov[u]:
             data = self.pgm.data[u]
-            if data.cap.length == 0 and data.cap.base == 0:
+            if ((data.cap.length == 0 and data.cap.base == 0) or
+                not data.cap.valid):
                 self.vertex_mask[u] = False
 
 class FilterKernelVertices(MaskBFSVisit):
