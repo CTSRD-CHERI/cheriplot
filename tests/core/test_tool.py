@@ -24,7 +24,7 @@ def test_driver_tool():
         def run(self):
             pass
 
-    run_driver_tool(TaskA, ["--a_foo", "10", "arg_bar_A"])
+    run_driver_tool(TaskA, ["--a-foo", "10", "arg_bar_A"])
 
 @pytest.mark.timeout(2)
 @mock.patch("cheriplot.core.tool.input")
@@ -61,9 +61,9 @@ def test_interactive_tool_wrap_simple_task(mock_input):
             # change mock return value to exit the interactive loop
             mock_input.return_value = "quit"
 
-    mock_input.return_value = "--a_foo 100 arg_bar_changed"
+    mock_input.return_value = "--a-foo 100 arg_bar_changed"
 
-    run_driver_tool(Interactive, ["-i", "--a_foo", "10", "arg_bar_A"])
+    run_driver_tool(Interactive, ["-i", "--a-foo", "10", "arg_bar_A"])
 
     assert called["interactive_init"]
     assert called["interactive_run"]
@@ -106,9 +106,9 @@ def test_interactive_tool_wrap_multiple_opts(mock_input):
             assert self.config.other_opt == "other"
             mock_input.return_value = "quit"
 
-    mock_input.return_value = "--a_foo 100 --other_opt other bar_changed"
+    mock_input.return_value = "--a-foo 100 --other-opt other bar_changed"
 
-    run_driver_tool(Interactive, ["-i", "--a_foo", "10", "bar_start"])
+    run_driver_tool(Interactive, ["-i", "--a-foo", "10", "bar_start"])
 
     assert called["interactive_init"]
     assert called["interactive_run"]
@@ -169,9 +169,9 @@ def test_interactive_tool_wrap_subcommand(mock_input):
             assert self.config.other_opt == "other"
             mock_input.return_value = "quit"
 
-    mock_input.return_value = "--other_opt other subcmd --a_foo 100 bar_changed"
+    mock_input.return_value = "--other-opt other subcmd --a-foo 100 bar_changed"
 
-    run_driver_tool(Interactive, ["-i", "subcmd", "--a_foo", "10", "bar_start"])
+    run_driver_tool(Interactive, ["-i", "subcmd", "--a-foo", "10", "bar_start"])
 
     assert called["interactive_init"]
     assert called["interactive_run"]

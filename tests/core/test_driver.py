@@ -76,14 +76,14 @@ def test_reuse_config(simple_driver):
     # multiple calls should yield the same result
     default = simple_driver.make_config(parser)
     parser.add_argument.assert_any_call("my_arg")
-    parser.add_argument.assert_any_call("--my_opt")
+    parser.add_argument.assert_any_call("--my-opt")
     assert len(default.__dict__) == 2
     assert default.my_arg == None
     assert default.my_opt == None
     parser.reset_mock()
     default = simple_driver.make_config(parser)
     parser.add_argument.assert_any_call("my_arg")
-    parser.add_argument.assert_any_call("--my_opt")
+    parser.add_argument.assert_any_call("--my-opt")
     assert len(default.__dict__) == 2
     assert default.my_arg == None
     assert default.my_opt == None
@@ -107,19 +107,19 @@ def test_full_config(full_driver):
 
     default = full_driver.make_config(parser)
     # check the argument parser
-    parser.add_argument.assert_any_call("--my_int_opt", help="myIntOpt", type=int)
+    parser.add_argument.assert_any_call("--my-int-opt", help="myIntOpt", type=int)
     parser.add_argument.assert_any_call("my_arg", help="myArg")
     parser.add_argument.assert_any_call("my_default_arg", default="arg_default")
-    parser.add_argument.assert_any_call("--my_default_opt", default="opt_default")
-    parser.add_argument.assert_any_call("--my_nested", help="myNested",
+    parser.add_argument.assert_any_call("--my-default-opt", default="opt_default")
+    parser.add_argument.assert_any_call("--my-nested", help="myNested",
                                         dest="nested.my_nested")
-    parser.add_argument.assert_any_call("--my_nested_with_dest",
+    parser.add_argument.assert_any_call("--my-nested-with-dest",
                                         dest="nested.override_nested")
     parser.add_argument.assert_any_call("nested.my_nested_arg")
     subparser = parser.add_subparsers.return_value
-    subparser.add_parser.assert_called_once_with("subcmd")
+    subparser.add_parser.assert_called_once_with("subcmd", help="")
     new_parser = subparser.add_parser.return_value
-    new_parser.add_argument.assert_any_call("--my_sub", help="mySubOpt",
+    new_parser.add_argument.assert_any_call("--my-sub", help="mySubOpt",
                                             dest="subcmd.my_sub")
     # check defaults
     assert len(default.__dict__) == 7
@@ -140,12 +140,12 @@ def test_interop(full_driver, parser):
 
     # check that we can call the argparse parser
     # ordering of the arguments should be respected
-    args = parser.parse_args(["--my_int_opt", "10",
-                              "--my_nested", "nested_opt_value",
-                              "--my_nested_with_dest", "nested_with_dest_value",
-                              "--proxy_opt", "proxy_opt_value",
+    args = parser.parse_args(["--my-int-opt", "10",
+                              "--my-nested", "nested_opt_value",
+                              "--my-nested-with-dest", "nested_with_dest_value",
+                              "--proxy-opt", "proxy_opt_value",
                               "arg_value", "default_arg", "nested_arg_value",
-                              "subcmd", "--my_sub", "sub_opt_value"])
+                              "subcmd", "--my-sub", "sub_opt_value"])
     assert args.my_int_opt == 10
     assert args.my_default_opt == "opt_default"
     assert args.nested.my_nested == "nested_opt_value"
