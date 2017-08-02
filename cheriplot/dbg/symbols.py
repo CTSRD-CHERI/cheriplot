@@ -119,7 +119,7 @@ class SymReader:
         Return the symbol where the address is found,
         if possible.
         """
-        entry = self.find_address(address)
+        entry = self.find_address(addr)
         if entry:
             return entry[0]
         return None
