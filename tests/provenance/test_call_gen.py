@@ -639,14 +639,14 @@ trace_call_connect_prov_0x1000 = (0x1000, (
 trace_call_connect_prov_0x10000 = (0x10000, (
     ("lui $at, 0x100", {"1": 0x100}),
     ("cincoffset $c4, $c3, $at", {
-        "c4": pct_cap(0x1000, 0x100, 0x1000, perm),
+        "c4": pct_cap(0x1000, 0x100, 0x1000, perm_rw),
     }),
     ("lui $at, 0x1f0", {"1": 0x1f0}),
     ("cincoffset $c3, $c3, $at", {
-        "c3": pct_cap(0x1000, 0x1f0, 0x1000, perm),
+        "c3": pct_cap(0x1000, 0x1f0, 0x1000, perm_rw),
     }),
     ("cmove $c5, $c3", {
-        "c5": pct_cap(0x1000, 0x1f0, 0x1000, perm),
+        "c5": pct_cap(0x1000, 0x1f0, 0x1000, perm_rw),
     }),
     ("cjalr $c2, $c17", {
         "c17": pct_cap(0x10000, 0x14, 0xf000, perm),
