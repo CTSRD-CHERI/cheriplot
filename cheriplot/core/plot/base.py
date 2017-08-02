@@ -45,7 +45,7 @@ __all__ = ("BasePlotBuilder", "ASAxesPlotBuilder", "ASAxesPlotBuilderNoTitle",
            "ExternalLegendTopPlotBuilder")
 
 # XXX
-from memory_profiler import profile
+#from memory_profiler import profile
 
 class BasePlotBuilder:
 
@@ -224,7 +224,7 @@ class BasePlotBuilder:
                     self._patch_builders)
         return reduce(lambda p,a: "%s\n%s" % (a, p), pairs, "")
 
-    @profile
+#    @profile
     def make_patches(self):
         """
         Build the patches from all the registered patch builders
