@@ -635,7 +635,56 @@ trace_arith_in_delay_slot = (
     }),
 )
 
-@pytest.mark.timeout(4)
+# register value changes after a tracing pause
+trace_pause_recover = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("cmove $c10, $c10", {
+        "c10": pct_cap(0x0, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0x1000, perm), vid="v0"),
+    }),
+    ("cmove $c2, $c2", {
+        "c2": pct_cap(0x5000, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x5000, 0x0, 0x1000, perm), vid="v1"),
+    }),
+    ("cmove $c3, $c3", {
+        "c3": pct_cap(0xff000, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0xff000, 0x0, 0x1000, perm), vid="v4"),
+    }),
+    ("cmove $c4, $c4", {
+        "c3": pct_cap(0xf000, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0xf000, 0x0, 0x1000, perm), vid="v5"),
+    }),
+    # trace pause and resume here
+    ("lui $zero, 0xdead", {"0": 0xdead}),
+    # the content of c10 changed, make root
+    ("lui $at, 0xf000", {"1": 0xf000}),
+    ("cincoffset $c11, $c10, $at", {
+        "c11": pct_cap(0x100, 0xf000, 0x2000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x100, 0xf000, 0x2000, perm), vid="v2"),
+        "pfree": "v0",
+    }),
+    ("csc $c2, $zero, 0x0($c11)", {
+        "c2": pct_cap(0x7000, 0xf000, 0x10000, perm),
+        "store": True,
+        "mem": 0xf100,
+        "pvertex": mk_pvertex(pct_cap(0x7000, 0xf000, 0x10000, perm), vid="v3"),
+        "vertex_mem": mk_vertex_mem("v3", 0xf100, "store"),
+        "vertex_deref": mk_vertex_deref("v2", 0xf100, True, "store"),
+        "pfree": "v1",
+    }),
+    ("csc $c4, $zero, 0x100($c11)", {
+        "c4": pct_cap(0xff000, 0x1000, 0x1000, perm),
+        "store": True,
+        "mem": 0xf200,
+        "vertex_mem": mk_vertex_mem("v4", 0xf200, "store"),
+        "vertex_deref": mk_vertex_deref("v2", 0xf200, True, "store"),
+        "pfree": "v5",
+    }),
+)
+
+@pytest.mark.timeout(10)
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
     (trace_init, trace_mp_move_and_setbounds),
@@ -650,7 +699,8 @@ trace_arith_in_delay_slot = (
     (trace_cap_propagate_incoffset,),
     (trace_invalid_root_from_arith,),
     (trace_invalid_op_with_exception,),
-    (trace_arith_in_delay_slot,)
+    (trace_arith_in_delay_slot,),
+    (trace_pause_recover,),
 ])
 def test_nodegen_simple(pgm, trace, threads):
     """Test provenance parser with the simplest trace possible."""

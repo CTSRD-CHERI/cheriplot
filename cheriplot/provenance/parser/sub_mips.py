@@ -895,7 +895,7 @@ class CapabilityBranchSubparser:
         be set to the correct pcc.
         """
         # discard current pcc and replace it
-        if self.regset.has_reg(inst.op0.cap_index):
+        if self.regset.has_reg(inst.op0.cap_index, inst.op0.value, entry.cycles):
             # we already have a node for the new PCC
             new_pcc = self.regset.get_reg(inst.op0.cap_index)
             if inst.has_exception:
@@ -925,7 +925,8 @@ class CapabilityBranchSubparser:
         """
         # save current pcc
         cd_idx = inst.op0.cap_index
-        if not self.regset.has_pcc(allow_root=True):
+        if not self.regset.has_pcc(inst.op0.value, entry.cycles,
+                                   allow_root=True):
             # create a root node for PCC that is in cd
             old_pcc_node = self.parser.make_root_node(entry, inst.op0.value,
                                                       time=entry.cycles)
@@ -934,7 +935,7 @@ class CapabilityBranchSubparser:
         self.regset.set_reg(cd_idx, old_pcc_node, entry.cycles)
 
         # discard current pcc and replace it
-        if self.regset.has_reg(inst.op1.cap_index):
+        if self.regset.has_reg(inst.op1.cap_index, inst.op1.value, entry.cycles):
             # we already have a node for the new PCC
             new_pcc = self.regset.get_reg(inst.op1.cap_index)
             if inst.has_exception:
@@ -1207,14 +1208,11 @@ class PointerProvenanceSubparser:
         }
         return state
 
-    def _has_exception(self, entry, code=None):
-        """
-        Check if an exception occurred in the given trace entry
-        """
-        if code is not None:
-            return entry.exception == code
-        else:
-            return entry.exception != 31
+    def scan_lui(self, inst, entry, regs, last_regs, idx):
+        if inst.op0.gpr_index == 0 and inst.op1.value == 0xdead:
+            logger.debug("{%d} Tracing paused", entry.cycles)
+            self.regset.handle_pause()
+        return False
 
     def scan_cclearregs(self, inst, entry, regs, last_regs, idx):
         """
@@ -1240,7 +1238,8 @@ class PointerProvenanceSubparser:
         :parm entry: trace entry
         :type entry: :class:`pycheritrace.trace_entry`
         """
-        if not self.regset.has_reg(regnum, allow_root=True):
+        if not self.regset.has_reg(regnum, inst.op0.value, entry.cycles,
+                                   allow_root=True):
             # no node was ever created for the register, it contained something
             # invalid
             node = self.make_root_node(entry, inst.op0.value,
@@ -1248,6 +1247,14 @@ class PointerProvenanceSubparser:
             self.regset.set_reg(regnum, node, entry.cycles)
             logger.debug("cpreg_get: new node from $c%d %s",
                          regnum, self.pgm.data[node])
+        # XXX consistency checks
+        src_data = self.pgm.data[self.regset.get_reg(regnum)]
+        src = inst.op0.value
+        assert src_data.cap.base == src.base, inst
+        assert src_data.cap.length == src.length, inst
+        assert (src_data.cap.permissions == \
+                CheriCapPerm(src.permissions)),\
+                "{} {}".format(src_data, inst)
         self.regset.set_reg(inst.op0.cap_index, self.regset.get_reg(regnum),
                             entry.cycles)
 
@@ -1265,7 +1272,8 @@ class PointerProvenanceSubparser:
         :parm entry: trace entry
         :type entry: :class:`pycheritrace.trace_entry`
         """
-        if not self.regset.has_reg(inst.op1.cap_index, allow_root=True):
+        if not self.regset.has_reg(inst.op1.cap_index, inst.op1.value,
+                                   entry.cycles, allow_root=True):
             node = self.make_root_node(entry, inst.op0.value,
                                        time=entry.cycles)
             self.regset.set_reg(inst.op1.cap_index, node, entry.cycles)
@@ -1307,7 +1315,8 @@ class PointerProvenanceSubparser:
         return False
 
     def scan_cgetpcc(self, inst, entry, regs, last_regs, idx):
-        if not self.regset.has_pcc(allow_root=True):
+        if not self.regset.has_pcc(inst.op0.value, entry.cycles,
+                                   allow_root=True):
             # never seen anything in pcc so we create a new node
             node = self.make_root_node(entry, inst.op0.value,
                                        time=entry.cycles)
@@ -1377,7 +1386,10 @@ class PointerProvenanceSubparser:
 
         if dst and dst.is_capability:
             if src and src.is_capability:
-                src_vertex = self.regset.has_reg(src.cap_index, allow_root=True)
+                # use dst.value because it is the only one guaranteed
+                # to be up to date with the current trace entry.
+                src_vertex = self.regset.has_reg(src.cap_index, dst.value,
+                                                 entry.cycles, allow_root=True)
             else:
                 src_vertex = False
 
@@ -1439,7 +1451,7 @@ class PointerProvenanceSubparser:
             node_data.add_deref_store(entry.cycles, entry.memory_address,
                                       is_cap)
         else:
-            if not self._has_exception(entry):
+            if not inst.has_exception:
                 logger.error("Dereference is neither a load or a store %s", inst)
                 raise RuntimeError("Dereference is neither a load nor a store")
 
@@ -1527,7 +1539,7 @@ class PointerProvenanceSubparser:
             curr_cd = CheriCap(regs.cap_reg[cd])
             logger.debug("{%d} clc op0 valid old_cd %s curr_cd %s",
                          idx, old_cd, curr_cd)
-            if old_cd != curr_cd or not self._has_exception(entry):
+            if old_cd != curr_cd or not inst.has_exception:
                 # the destination register was updated so the
                 # instruction did commit
 
@@ -1573,7 +1585,8 @@ class PointerProvenanceSubparser:
         if inst.op0.value.valid and not inst.has_exception:
             # if this is not a data access
 
-            if not self.regset.has_reg(cd, allow_root=True):
+            if not self.regset.has_reg(cd, inst.op0.value, entry.cycles,
+                                       allow_root=True):
                 # XXX may decide to disable and have an exception here
                 # need to create one
                 node = self.make_root_node(entry, inst.op0.value,
@@ -1670,7 +1683,8 @@ class PointerProvenanceSubparser:
         data.origin = origin
         # try to get a parent node
         op = inst.operands[src_op_index]
-        if self.regset.has_reg(op.cap_index, allow_root=False):
+        if self.regset.has_reg(op.cap_index, op.value, entry.cycles,
+                               allow_root=False):
             parent = self.regset.get_reg(op.cap_index)
         else:
             logger.error("Missing parent for %s, src_operand=%d %s, "

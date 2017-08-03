@@ -158,6 +158,8 @@ class RegisterSet:
         subgraphs.
         """
 
+        self._pause_recovered = [True] * len(self.reg_nodes)
+
         for n in self.reg_nodes:
             data = ProvenanceVertexData()
             data.cap = CheriCap()
@@ -226,7 +228,7 @@ class RegisterSet:
         register set completely and if it is not stored in memory
         anywhere then set the t_free time.
         """
-        if regset_vertex in self.reg_nodes:
+        if regset_vertex in self.reg_nodes or regset_vertex is None:
             return
         v_data = self.pgm.data[regset_vertex]
         if not v_data.has_active_memory():
@@ -260,26 +262,81 @@ class RegisterSet:
     def set_pcc(self, value, time):
         self.set_reg(32, value, time)
 
-    def has_pcc(self, allow_root=False):
-        return self.has_reg(32, allow_root)
+    def has_pcc(self, expected, time, allow_root=False):
+        return self.has_reg(32, expected, time, allow_root)
 
-    def has_reg(self, idx, allow_root=False):
+    def has_reg(self, idx, expected, time, allow_root=False):
         """
         Check if the register set contains a valid entry for
         the given register index
 
         :param idx: the register index to check
+        :param expected: the expected cheritrace capability value
+        in the trace, the registers should be compatible with
+        the current content of the regset.
         :param allow_root: a root can be created if the register
         does not have a valid node.
         """
-        # assert idx < self.cap_regfile_size, "Out of bound register set index"
-        if self.reg_nodes[idx] == None:
+        if self.reg_nodes[idx] is None:
             return False
         if allow_root:
             data = self.pgm.data[self.reg_nodes[idx]]
             if data.origin == CheriNodeOrigin.PARTIAL:
                 return False
+        if not self._pause_recovered[idx]:
+            logger.debug("Resume register %d %s", idx, CheriCap(expected))
+            self._recover_paused_reg(idx, expected, time)
+            return self.reg_nodes[idx] is not None
         return True
+
+    def _is_cap_compatible(self, data, cap):
+        """
+        Check if a provenance vertex data entry is compatible
+        with a cheritrace capability_regiseter.
+
+        :param data: ProvenanceVertexData to check
+        :param cap: cheritrace capability_register
+        :return: bool
+        """
+        if (data.cap.base == cap.base and
+            data.cap.length == cap.length and
+            data.cap.permissions == cap.permissions and
+            data.cap.objtype == cap.type & CheriCap.MAX_OTYPE and
+            data.cap.valid == cap.valid and
+            data.cap.sealed == cap.unsealed):
+            return True
+        return False
+
+    def _recover_paused_reg(self, idx, expected, time):
+        """
+        Try to recover a vertex after a tracing pause.
+
+        :param idx: index of the register, the current registerset
+        content for the index is expected to be a valid vertex.
+        :param expected: expected value found in the trace.
+        """
+        data = self.pgm.data[self.reg_nodes[idx]]
+        self._pause_recovered[idx] = True
+        if self._is_cap_compatible(data, expected):
+            # everything is ok
+            return
+        # lookup a compatible capability in the register set and replace
+        # the target register with that.
+        for reg_idx, vertex in enumerate(self.reg_nodes):
+            if vertex is None or reg_idx == idx:
+                continue
+            vdata = self.pgm.data[vertex]
+            if self._is_cap_compatible(vdata, expected):
+                self.set_reg(idx, vertex, time)
+                return
+        self.set_reg(idx, None, time)
+
+    def handle_pause(self):
+        """
+        The trace scanning is paused so the registers that we
+        find afterwards may change without notice.
+        """
+        self._pause_recovered = [False] * len(self.reg_nodes)
 
     def __str__(self):
         dump = "Register set:\n"
