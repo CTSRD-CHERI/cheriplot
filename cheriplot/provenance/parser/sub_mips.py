@@ -1370,6 +1370,8 @@ class PointerProvenanceSubparser:
         the mapping from capability register to the provenance
         tree node associated to the capability in it.
         """
+        if inst.has_exception and not inst.in_delay_slot:
+            return False
         dst = inst.op0
         src = inst.op1
 
@@ -1383,6 +1385,14 @@ class PointerProvenanceSubparser:
                 # XXX this is a good place to add a safety-check
                 # to validate the fact that the vertex in the regset
                 # matches the values in the trace entry.
+                reg_src = self.regset.get_reg(src.cap_index)
+                if reg_src is not None:
+                    src_data = self.pgm.data[reg_src]
+                    assert src_data.cap.base == src.value.base, inst
+                    assert src_data.cap.length == src.value.length, inst
+                    assert (src_data.cap.permissions == \
+                            CheriCapPerm(src.value.permissions)),\
+                            "{} {}".format(src_data, inst)
                 self.regset.set_reg(dst.cap_index,
                                     self.regset.get_reg(src.cap_index),
                                     entry.cycles)
@@ -1403,6 +1413,8 @@ class PointerProvenanceSubparser:
         """
         Store offset at time of dereference of a given capability.
         """
+        if inst.has_exception:
+            return
         try:
             node = self.regset.get_reg(ptr_reg)
         except KeyError:
@@ -1504,7 +1516,7 @@ class PointerProvenanceSubparser:
         # new node can be created from the valid capability.
         # Otherwise something has changed the memory location so we
         # clear the memory_map and the regset entry.
-        if not inst.op0.value.valid:
+        if not inst.op0.value.valid and not inst.has_exception:
             logger.debug("{%d} clc load invalid, clear memory vertex map", idx)
             self.regset.set_reg(cd, None, entry.cycles)
             if node is not None:
@@ -1513,7 +1525,8 @@ class PointerProvenanceSubparser:
             # check if the load instruction has committed
             old_cd = CheriCap(last_regs.cap_reg[cd])
             curr_cd = CheriCap(regs.cap_reg[cd])
-            logger.debug("{%d} clc op0 valid old_cd %s curr_cd %s", idx, old_cd, curr_cd)
+            logger.debug("{%d} clc op0 valid old_cd %s curr_cd %s",
+                         idx, old_cd, curr_cd)
             if old_cd != curr_cd or not self._has_exception(entry):
                 # the destination register was updated so the
                 # instruction did commit
@@ -1528,6 +1541,12 @@ class PointerProvenanceSubparser:
                                  idx, inst.op0.name, node_data)
                     self.vertex_map.mem_load(entry.memory_address, node)
                 node_data = self.pgm.data[node]
+                # XXX check that the loaded cap matches with the expected value
+                assert node_data.cap.base == inst.op0.value.base, inst
+                assert node_data.cap.length == inst.op0.value.length, inst
+                assert (node_data.cap.permissions == \
+                        CheriCapPerm(inst.op0.value.permissions)),\
+                        "{} {}".format(node_data, inst)
                 node_data.add_mem_load(entry.cycles, entry.memory_address)
                 self.regset.set_reg(cd, node, entry.cycles)
         return False
@@ -1551,7 +1570,7 @@ class PointerProvenanceSubparser:
         """
         cd = inst.op0.cap_index
 
-        if inst.op0.value.valid:
+        if inst.op0.value.valid and not inst.has_exception:
             # if this is not a data access
 
             if not self.regset.has_reg(cd, allow_root=True):

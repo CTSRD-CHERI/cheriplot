@@ -13,7 +13,8 @@ from cheriplot.provenance.model import CheriNodeOrigin, CheriCapPerm
 from cheriplot.core.test import pct_cap
 from tests.provenance.fixtures import pgm
 from tests.provenance.helper import (
-    assert_graph_equal, mk_pvertex, mk_cvertex, ProvenanceTraceWriter)
+    assert_graph_equal, mk_pvertex, mk_cvertex, ProvenanceTraceWriter,
+    mk_vertex_mem, mk_vertex_deref, mk_cvertex_visible)
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -540,6 +541,100 @@ trace_invalid_root_from_arith = (
     }),
 )
 
+# attempt to create vertices with instruction with exceptions
+trace_invalid_op_with_exception = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None)
+    }),
+    ("cmove $c10, $c10", {
+        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
+        "exc": 2,
+    }),
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("cincoffset $c10, $c4, $at", {
+        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
+        "exc": 2,
+    }),
+    ("csetoffset $c10, $c5, $at", {
+        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
+        "exc": 2,
+    }),
+    ("clc $c10, $zero, 0x0($c4)", {
+        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
+        "load": True,
+        "mem": 0xdead,
+        "exc": 2,
+    }),
+    ("csc $c10, $zero, 0x10($c4)", {
+        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
+        "store": True,
+        "mem": 0xbeef,
+        "exc": 2,
+    }),
+    ("cmove $c10, $c10", {
+        "c10": pct_cap(0x0, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0x1000, perm), vid="v0"),
+    }),
+    ("cmove $c3, $c3", {
+        "c3": pct_cap(0x0, 0x0, 0x0, perm, valid=False),
+    }),
+    ("csc $c10, $zero, 0x0($c10)", {
+        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
+        "store": True,
+        "mem": 0xdeadbeef,
+        "vertex_mem": mk_vertex_mem("v0", 0xdeadbeef, "store"),
+        "vertex_deref": mk_vertex_deref("v0", 0xdeadbeef, True, "store"),
+    }),
+    ("csc $c3, $zero, 0x0($c10)", {
+        "c3": pct_cap(0x0, 0x0, 0x0, perm, valid=False),
+        "store": True,
+        "mem": 0xdeadbeef,
+        "exc": 2,
+    }),
+    ("clc $c3, $zero, 0x0($c10)", {
+        "c3": pct_cap(0x0, 0x0, 0x0, perm, valid=False),
+        "load": True,
+        "mem": 0xdeadbeef,
+        "exc": 2,
+    })
+)
+
+# exceptions in the delay slot where the instruction commits
+# should still cause the register set update
+trace_arith_in_delay_slot = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("cmove $c12, $c12", {
+        "c12": pct_cap(0x0, 0xf00, 0xffffffff, exec_perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0xf00, 0xffffffff, exec_perm),
+                              vid="target"),
+    }),
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("cjalr $c12, $c17", {
+        "c17": pct_cap(0x0, 0xbadcafe, 0xffffffff, exec_perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0xbadcafe, 0xffffffff, exec_perm),
+                              vid="link"),
+        "cvertex": mk_cvertex(0xf00, parent="call-root", visible=[
+            mk_cvertex_visible("target", 0xf00, 12),
+            mk_cvertex_visible("link", 0xbadcafe, 17),
+        ]),
+    }),
+    # delay slot operation
+    ("cincoffset $c1, $c12, $at", {
+        "c1": pct_cap(0x0, 0x1000, 0xffffffff, exec_perm),
+        "exc": 2,
+    }),
+    # check that c1 has been updated
+    ("csetbounds $c2, $c1, $at", {
+        "c2": pct_cap(0x0, 0x1000, 0x100, exec_perm),
+        "pvertex": mk_pvertex(
+            pct_cap(0x0, 0x1000, 0x100, exec_perm),
+            parent="target",
+            origin=CheriNodeOrigin.SETBOUNDS),
+    }),
+)
+
 @pytest.mark.timeout(4)
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
@@ -554,6 +649,8 @@ trace_invalid_root_from_arith = (
     (trace_cap_propagate_setoffset,),
     (trace_cap_propagate_incoffset,),
     (trace_invalid_root_from_arith,),
+    (trace_invalid_op_with_exception,),
+    (trace_arith_in_delay_slot,)
 ])
 def test_nodegen_simple(pgm, trace, threads):
     """Test provenance parser with the simplest trace possible."""

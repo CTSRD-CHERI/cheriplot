@@ -181,10 +181,10 @@ class Operand:
                     # regset
                     value = "reg_invalid"
                 else:
-                    value = "[b:0x%x, o:0x%x, l:0x%x, v:%d, s:%d]" % (
+                    value = "[b:0x%x, o:0x%x, l:0x%x, p:%x, v:%d, s:%d]" % (
                         self.value.base, self.value.offset,
-                        self.value.length, self.value.valid,
-                        self.value.unsealed)
+                        self.value.length, self.value.permissions,
+                        self.value.valid, self.value.unsealed)
             else:
                 value = self.value
             return "<Op $%s = %s>" % (self.name, value)
@@ -198,7 +198,7 @@ class Instruction:
     information in addition to the pycheritrace disassembler.
     """
 
-    def __init__(self, inst, entry, regset, prev_regset):
+    def __init__(self, inst, entry, regset, prev_regset, prev_inst):
         """
         Construct instruction from pycheritrace instruction.
 
@@ -210,12 +210,17 @@ class Instruction:
         :param prev_regset: register set before the execution
         of the instruction
         :type prev_regset: :class:`pycheritrace.register_set`
+        :param prev_inst: previous instruction info
+        :type prev_inst: :class:`pycheritrace.instruction_info`
         """
         self._regset = regset
         """Register set used for the destination register."""
 
         self._prev_regset = prev_regset
         """Register set used for the source register(s)."""
+
+        self._prev_inst = prev_inst
+        """Previous disassembled instruction."""
 
         self.inst = inst
         """Disassembled instruction."""
@@ -266,6 +271,13 @@ class Instruction:
     cd = op0
     cb = op1
     rt = op2
+
+    @property
+    def in_delay_slot(self):
+        """This instruction is inside a delay slot?"""
+        if self._prev_inst is None:
+            return False
+        return self._prev_inst.has_delay_slot
 
     @property
     def has_exception(self):
@@ -476,6 +488,9 @@ class CallbackTraceParser(TraceParser):
         self.cycles_end = None
         """Cycles count of the last entry"""
 
+        self._last_instr = None
+        """The previous instruction."""
+
 
     def _add_subparser(self, sub):
         self._subparsers.append(sub)
@@ -538,9 +553,11 @@ class CallbackTraceParser(TraceParser):
             try:
                 if self._last_regs is None:
                     self._last_regs = regs
-                inst = Instruction(disasm, entry, regs, self._last_regs)
+                inst = Instruction(disasm, entry, regs, self._last_regs, self._last_instr)
+                self._last_instr = disasm
             except Exception as e:
                 self._parse_exception(entry, regs, disasm, idx)
+                self._last_instr = disasm
                 return False
 
             ret = False
@@ -688,6 +705,8 @@ class MultiprocessCallbackParser(CallbackTraceParser):
         results = []
         for r in self.mp.results:
             results.append(r.get())
+        # free memory
+        del self.mp.results
 
         # we don't need the pool anymore, kill anything that may
         # be still there
