@@ -684,6 +684,38 @@ trace_pause_recover = (
     }),
 )
 
+# test trace pause recovery for clc
+trace_pause_recover_load = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("cmove $c10, $c10", {
+        "c10": pct_cap(0x0, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0x1000, perm), vid="v0"),
+    }),
+    ("cmove $c4, $c4", {
+        "c4": pct_cap(0x4000, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x4000, 0x0, 0x1000, perm), vid="v1"),
+    }),
+    ("csc $c4, $zero, 0x100($c10)", {
+        "c4": pct_cap(0x4000, 0x0, 0x1000, perm),
+        "store": True,
+        "mem": 0x100,
+        "vertex_mem": mk_vertex_mem("v1", 0x100, "store"),
+        "vertex_deref": mk_vertex_deref("v0", 0x100, True, "store"),
+    }),
+    # trace pause and resume here
+    ("lui $zero, 0xdead", {"0": 0xdead}),
+    ("clc $c8, $zero, 0x100($c10)", {
+        "c8": pct_cap(0xff000, 0x0, 0x10000, perm),
+        "pvertex": mk_pvertex(pct_cap(0xff000, 0x0, 0x10000, perm), vid="v2"),
+        "load": True,
+        "mem": 0x100,
+        "vertex_mem": mk_vertex_mem("v2", 0x100, "load"),
+        "vertex_deref": mk_vertex_deref("v0", 0x100, True, "load"),
+    }),
+)
+
 @pytest.mark.timeout(10)
 @pytest.mark.parametrize("threads", [1, 2])
 @pytest.mark.parametrize("trace", [
@@ -701,6 +733,7 @@ trace_pause_recover = (
     (trace_invalid_op_with_exception,),
     (trace_arith_in_delay_slot,),
     (trace_pause_recover,),
+    (trace_pause_recover_load,),
 ])
 def test_nodegen_simple(pgm, trace, threads):
     """Test provenance parser with the simplest trace possible."""

@@ -1398,7 +1398,7 @@ class PointerProvenanceSubparser:
                 # to validate the fact that the vertex in the regset
                 # matches the values in the trace entry.
                 reg_src = self.regset.get_reg(src.cap_index)
-                if reg_src is not None:
+                if reg_src is not None and src.value is not None:
                     src_data = self.pgm.data[reg_src]
                     assert src_data.cap.base == src.value.base, inst
                     assert src_data.cap.length == src.value.length, inst
@@ -1516,51 +1516,42 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         The parent is looked up in memory or a root node is created
         """
+        if inst.has_exception:
+            return False
+
         cd = inst.op0.cap_index
         node = self.vertex_map.mem_load(entry.memory_address)
         if node is None:
             logger.debug("{%d} Load c%d from new location 0x%x",
                          idx, cd, entry.memory_address)
-        # if the capability loaded from memory is valid, it
-        # can be safely assumed that it corresponds to the node
-        # stored in the memory_map for that location, if there is
-        # one. If there is no node in the memory_map then a
-        # new node can be created from the valid capability.
-        # Otherwise something has changed the memory location so we
-        # clear the memory_map and the regset entry.
-        if not inst.op0.value.valid and not inst.has_exception:
+        if not inst.op0.value.valid:
+            # if the value is invalid we don't care about what we found,
+            # it is overwritten anyway.
             logger.debug("{%d} clc load invalid, clear memory vertex map", idx)
             self.regset.set_reg(cd, None, entry.cycles)
             if node is not None:
                 self.vertex_map.clear(entry.memory_address)
         else:
-            # check if the load instruction has committed
-            old_cd = CheriCap(last_regs.cap_reg[cd])
-            curr_cd = CheriCap(regs.cap_reg[cd])
-            logger.debug("{%d} clc op0 valid old_cd %s curr_cd %s",
-                         idx, old_cd, curr_cd)
-            if old_cd != curr_cd or not inst.has_exception:
-                # the destination register was updated so the
-                # instruction did commit
-
-                if node is None:
-                    # add a node as a root node because we have never
-                    # seen the content of this register yet.
-                    node = self.make_root_node(entry, inst.op0.value,
-                                               time=entry.cycles)
-                    node_data = self.pgm.data[node]
-                    logger.debug("{%d} Found %s value %s from memory load",
-                                 idx, inst.op0.name, node_data)
-                    self.vertex_map.mem_load(entry.memory_address, node)
+            if node is None or not self.regset._is_cap_compatible(
+                    self.pgm.data[node], inst.op0.value):
+                # add a node as a root node because we have never
+                # seen the content of this register yet.
+                node = self.make_root_node(entry, inst.op0.value,
+                                           time=entry.cycles)
                 node_data = self.pgm.data[node]
-                # XXX check that the loaded cap matches with the expected value
-                assert node_data.cap.base == inst.op0.value.base, inst
-                assert node_data.cap.length == inst.op0.value.length, inst
-                assert (node_data.cap.permissions == \
-                        CheriCapPerm(inst.op0.value.permissions)),\
-                        "{} {}".format(node_data, inst)
-                node_data.add_mem_load(entry.cycles, entry.memory_address)
-                self.regset.set_reg(cd, node, entry.cycles)
+                logger.debug("{%d} Found %s value %s from memory load",
+                             idx, inst.op0.name, node_data)
+                self.vertex_map.mem_load(entry.memory_address, node)
+
+            node_data = self.pgm.data[node]
+            # XXX check that the loaded cap matches with the expected value
+            assert node_data.cap.base == inst.op0.value.base, (node_data, inst)
+            assert node_data.cap.length == inst.op0.value.length, (node_data, inst)
+            assert (node_data.cap.permissions == \
+                    CheriCapPerm(inst.op0.value.permissions)),\
+                    "{} {}".format(node_data, inst)
+            node_data.add_mem_load(entry.cycles, entry.memory_address)
+            self.regset.set_reg(cd, node, entry.cycles)
         return False
 
     scan_clcr = scan_clc
