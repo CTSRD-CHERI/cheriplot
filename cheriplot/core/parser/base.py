@@ -414,20 +414,17 @@ class CallbacksManager:
         :rtype: list of callables
         """
         # the <all> callback should be the last one executed
+        cbks = [self._callbacks[inst.opcode]]
         if inst.has_exception:
-            return chain(self._callbacks[inst.opcode],
-                         self._callbacks["exception"],
-                         self._callbacks["all"])
-        elif inst.entry.is_load:
-            return chain(self._callbacks[inst.opcode],
-                         self._callbacks["mem_load"],
-                         self._callbacks["all"])
-        elif inst.entry.is_store:
-            return chain(self._callbacks[inst.opcode],
-                         self._callbacks["mem_store"],
-                         self._callbacks["all"])
-        else:
-            return chain(self._callbacks[inst.opcode], self._callbacks["all"])
+            cbks.append(self._callbacks["exception"])
+        if inst.entry.is_load:
+            cbks.append(self._callbacks["mem_load"])
+        if inst.entry.is_store:
+            cbks.append(self._callbacks["mem_store"])
+        if inst.in_delay_slot:
+            cbks.append(self._callbacks["delay_slot"])
+        cbks.append(self._callbacks["all"])
+        return chain(*cbks)
 
 
 class CallbackTraceParser(TraceParser):

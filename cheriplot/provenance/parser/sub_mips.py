@@ -29,6 +29,7 @@ CHERI-MIPS specific subparsers that build the cheriplot graph
 """
 
 import logging
+from functools import partial
 from collections import deque
 from contextlib import suppress
 from itertools import chain
@@ -814,6 +815,12 @@ class CapabilityBranchSubparser:
         detect anything appended to it.
         """
 
+        self._branch_cbk = None
+        """
+        Callback for the call instruction to invoke when
+        it is assured that the delay slot commits.
+        """
+
     def mp_result(self):
         """
         Return partial result from worker subparser
@@ -887,7 +894,49 @@ class CapabilityBranchSubparser:
         self._saved_addr = entry.pc
         self._saved_epcc_out_neighbours = list(branch_target.out_neighbours())
 
+    def scan_delay_slot(self, inst, entry, regs, last_regs, idx):
+        """
+        Validate the delay slot, if there is an exception then we have
+        to check if the exception commits or not.
+        If not we just call the brach callback.
+        Since we do not know which instruction is in the delay slot,
+        we enqueue the branch_cbk in the exception handling system in
+        the provenance subparser.
+        """
+        if self._branch_cbk is None:
+            return False
+        if inst.has_exception:
+            # prepend it because it must run first since it happened further
+            # in the past
+            self.parser.exec_maybe.insert(0, self._branch_cbk)
+        else:
+            self._branch_cbk()
+        self._branch_cbk = None
+        return False
+
+    def scan_cjalr(self, inst, entry, regs, last_regs, idx):
+        """
+        Schedule the cjalr handler to run when the delay slot is validated.
+        """
+        if inst.has_exception:
+            self._do_scan_cjalr(inst, entry, regs, last_regs, idx)
+        else:
+            self._branch_cbk = lambda: self._do_scan_cjalr(
+                inst, entry, regs, last_regs, idx)
+        return False
+
     def scan_cjr(self, inst, entry, regs, last_regs, idx):
+        """
+        Schedule the cjr handler to run when the delay slot is validated.
+        """
+        if inst.has_exception:
+            self._do_scan_cjr(inst, entry, regs, last_regs, idx)
+        else:
+            self._branch_cbk = lambda: self._do_scan_cjr(
+                inst, entry, regs, last_regs, idx)
+        return False
+        
+    def _do_scan_cjr(self, inst, entry, regs, last_regs, idx):
         """
         Discard current pcc and replace it.
         If the cjr has an exception, the previous pcc is saved
@@ -916,7 +965,7 @@ class CapabilityBranchSubparser:
             raise UnexpectedOperationError("cjr to unknown capability")
         return False
 
-    def scan_cjalr(self, inst, entry, regs, last_regs, idx):
+    def _do_scan_cjalr(self, inst, entry, regs, last_regs, idx):
         """
         cjalr target, link
 
@@ -1191,6 +1240,18 @@ class PointerProvenanceSubparser:
         multiprocessing workers.
         """
 
+        self.exec_maybe = []
+        """
+        Callback to run when a decision about an instruction
+        commit/revoke caused by an exception is resolved.        
+        """
+
+        self.exec_maybe_addr = []
+        """
+        Address of the faulting instruction considered to be the one
+        in badvaddr if the instruction did not commit due to an exception.
+        """
+
     def mp_result(self):
         """
         Return the partial result from a worker process.
@@ -1207,6 +1268,38 @@ class PointerProvenanceSubparser:
             "mem_vertex_map": self.vertex_map,
         }
         return state
+
+    def maybe_scan(self, cbk, addr=None):
+        """
+        Register a scan callback to be invoked later depending
+        whether it committed or not.
+        This is decided by addr, which is the pc found in badvaddr
+        when the instruction did not commit.
+        """
+        self.exec_maybe.append(cbk)
+        if addr is not None:
+            self.exec_maybe_addr.append(addr)
+    
+    def scan_dmfc0(self, inst, entry, regs, last_regs, idx):
+        """
+        When there is an exception we have to make a decision about
+        whether an instruction committed or not.
+        XXX: this assumes that the register that is possibly modified
+        by the instruction causing the exception is not used before
+        the dmfc0 instruction.
+        """
+        if inst.op1.gpr_index == 8 and len(self.exec_maybe):
+            badvaddr = inst.op0.value
+            logger.debug("Invoke deferred exception callbacks "
+                         "bad:%s maybe:%s addr:%s",
+                         badvaddr, self.exec_maybe, self.exec_maybe_addr)
+            if badvaddr not in self.exec_maybe_addr:
+                # instruction committed, run the maybe callback
+                for deferred_cbk in self.exec_maybe:
+                    deferred_cbk()
+            self.exec_maybe = []
+            self.exec_maybe_addr = []
+        return False
 
     def scan_lui(self, inst, entry, regs, last_regs, idx):
         if inst.op0.gpr_index == 0 and inst.op1.value == 0xdead:
@@ -1330,7 +1423,7 @@ class PointerProvenanceSubparser:
     def scan_cgetpccsetoffset(self, inst, entry, regs, last_regs, idx):
         return self.scan_cgetpcc(inst, entry, regs, last_regs, idx)
 
-    def scan_csetbounds(self, inst, entry, regs, last_regs, idx):
+    def scan_csetbounds(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
         Each csetbounds is a new pointer allocation
         and is recorded as a new node in the provenance tree.
@@ -1341,11 +1434,17 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
+        if inst.has_exception and not maybe_call:
+            self.maybe_scan(
+                lambda: self.scan_csetbounds(
+                    inst, entry, regs, last_regs, idx, True),
+                entry.pc)
+            return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.SETBOUNDS)
         self.regset.set_reg(inst.op0.cap_index, node, entry.cycles)
         return False
 
-    def scan_cfromptr(self, inst, entry, regs, last_regs, idx):
+    def scan_cfromptr(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
         Each cfromptr is a new pointer allocation and is
         recodred as a new node in the provenance tree.
@@ -1356,11 +1455,17 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
+        if inst.has_exception and not maybe_call:
+            self.maybe_scan(
+                lambda: self.scan_cfromptr(
+                    inst, entry, regs, last_regs, idx, True),
+                entry.pc)
+            return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.FROMPTR)
         self.regset.set_reg(inst.op0.cap_index, node, entry.cycles)
         return False
 
-    def scan_candperm(self, inst, entry, regs, last_regs, idx):
+    def scan_candperm(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
         Each candperm is a new pointer allocation and is recorded
         as a new node in the provenance tree.
@@ -1369,17 +1474,27 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
+        if inst.has_exception and not maybe_call:
+            self.maybe_scan(
+                lambda: self.scan_candperm(
+                    inst, entry, regs, last_regs, idx, True),
+                entry.pc)
+            return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.ANDPERM)
         self.regset.set_reg(inst.op0.cap_index, node, entry.cycles)
         return False
 
-    def scan_cap_arith(self, inst, entry, regs, last_regs, idx):
+    def scan_cap_arith(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
         Whenever a capability instruction is found, update
         the mapping from capability register to the provenance
         tree node associated to the capability in it.
         """
-        if inst.has_exception and not inst.in_delay_slot:
+        if inst.has_exception and not inst.in_delay_slot and not maybe_call:
+            self.maybe_scan(
+                lambda: self.scan_cap_arith(
+                    inst, entry, regs, last_regs, idx, True),
+                entry.pc)
             return False
         dst = inst.op0
         src = inst.op1
@@ -1421,12 +1536,16 @@ class PointerProvenanceSubparser:
                     self.regset.set_reg(dst.cap_index, None, entry.cycles)
         return False
 
-    def _handle_dereference(self, inst, entry, ptr_reg):
+    def _handle_dereference(self, inst, entry, ptr_reg, maybe_call=False):
         """
         Store offset at time of dereference of a given capability.
         """
-        if inst.has_exception:
+        if inst.has_exception and not maybe_call:
+            self.maybe_scan(
+                lambda: self._handle_dereference(inst, entry, ptr_reg, True),
+                entry.memory_address)
             return
+
         try:
             node = self.regset.get_reg(ptr_reg)
         except KeyError:
@@ -1463,6 +1582,9 @@ class PointerProvenanceSubparser:
         clXr and clXi have pointer argument in op2
         cllX have pointer argument in op1
         """
+        if inst.has_exception and inst.op0.value == None:
+            # if there is an exception that caused the instruction to not commit.
+            return False
         # get the register with the address capability
         # this may be a normal capability load or a linked-load
         if inst.opcode.startswith("cll"):
@@ -1483,6 +1605,10 @@ class PointerProvenanceSubparser:
         csXr and csXi have pointer argument in op2
         cscX conditionals use op2
         """
+        if entry.exception != 31 and entry.exception != 2:
+            # TLB store store exception or other exception,
+            # instruction did not commit
+            return False
         # get the register with the address capability
         # this may be a normal capability store or an atomic-store
         if inst.opcode != "csc" and inst.opcode.startswith("csc"):
@@ -1496,7 +1622,7 @@ class PointerProvenanceSubparser:
         self._handle_dereference(inst, entry, ptr_reg)
         return False
 
-    def scan_mem_store(self, inst, entry, regs, last_regs, idx):
+    def scan_mem_store(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
         Called whenever an instruction that is a store is found.
         Can be a capability or non capability store.
@@ -1504,19 +1630,29 @@ class PointerProvenanceSubparser:
         and capability-specific scan callbacks have been invoked
         but before the generic scan_all.
         """
+        if inst.has_exception and not maybe_call:
+            self.maybe_scan(
+                lambda: self.scan_mem_store(
+                    inst, entry, regs, last_regs, idx, True),
+                entry.pc)
+            return False
+
         if inst.opcode != "csc":
             # csc stores a new vertex, we do not have access to that
             # here, so handle that case separately in scan_csc
             self.mem_overwrite(entry.cycles, entry.memory_address, None)
         return False
 
-    def scan_clc(self, inst, entry, regs, last_regs, idx):
+    def scan_clc(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
         clc:
         Operand 0 is the register with the new node
         The parent is looked up in memory or a root node is created
         """
-        if inst.has_exception:
+        if inst.has_exception and not maybe_call:
+            self.maybe_scan(
+                lambda: self.scan_clc(inst, entry, regs, last_regs, idx, True),
+                entry.memory_address)
             return False
 
         cd = inst.op0.cap_index
@@ -1557,7 +1693,7 @@ class PointerProvenanceSubparser:
     scan_clcr = scan_clc
     scan_clci = scan_clc
 
-    def scan_csc(self, inst, entry, regs, last_regs, idx):
+    def scan_csc(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
         Record the locations where a capability node is stored.
         This is later used if the capability is loaded again with
@@ -1571,9 +1707,14 @@ class PointerProvenanceSubparser:
         csc:
         Operand 0 is the capability being stored, the node already exists
         """
-        cd = inst.op0.cap_index
+        if inst.has_exception and not maybe_call:
+            self.maybe_scan(
+                lambda: self.scan_csc(inst, entry, regs, last_regs, idx, True),
+                entry.memory_address)
+            return False
 
-        if inst.op0.value.valid and not inst.has_exception:
+        cd = inst.op0.cap_index
+        if inst.op0.value.valid:
             # if this is not a data access
 
             if not self.regset.has_reg(cd, inst.op0.value, entry.cycles,
@@ -1606,8 +1747,8 @@ class PointerProvenanceSubparser:
         """
         Register the removal of anything contained at the given address,
         if the address is not capability-size aligned, it is aligned here.
-        If the vertex removed is not live in other memory locations or in the register set,
-        mark it out of scope.
+        If the vertex removed is not live in other memory locations
+        or in the register set, mark it out of scope.
         """
         addr &= ~(self.capability_size - 1)
         v = self.vertex_map.vertex_at(addr)
@@ -1708,13 +1849,16 @@ class CallgraphSubparser:
     Generate the call graph layer of the cheriplot graph.
     """
 
-    def __init__(self, pgm, regset):
+    def __init__(self, pgm, prov_parser, regset):
 
         self.pgm = pgm
         """Provenance graph manager, proxy access to the provenance graph."""
 
         self.regset = regset
         """Register set used to look up live vertices from the provenance layer."""
+
+        self.parser = prov_parser
+        """Provenance parser, used to synchronize state for exception handling."""
 
         self.call_stack = deque()
         """
@@ -1737,6 +1881,12 @@ class CallgraphSubparser:
 
         self._landing_addr = None
         """Landing address of the current call."""
+
+        self._call_cbk = None
+        """
+        Call instruction handler invoked when the delay slot is validated
+        and guaranteed to commit.
+        """
 
         self.pgm.layer_call[self.root] = True
         self.pgm.data[self.root] = CallVertexData(None)
@@ -1772,6 +1922,28 @@ class CallgraphSubparser:
         is_indirect = (code == 0 or code == 198)
         return indirect_code if is_indirect else code
 
+    def scan_delay_slot(self, inst, entry, regs, last_regs, idx):
+        """
+        Validate the delay slot, if there is an exception then we have
+        to check if the exception commits or not.
+        If not we just call the brach callback.
+        Since we do not know which instruction is in the delay slot,
+        we enqueue the branch_cbk in the exception handling system in
+        the provenance subparser.
+        """
+        if self._call_cbk is None:
+            return False
+        if inst.has_exception:
+            # set in position 1, postion 0 is expected to exist because
+            # the branch subparser runs first and prepend its own handler
+            # which MUST run before we do.
+            # XXX this is hacky
+            self.parser.exec_maybe.insert(1, self._call_cbk)
+        else:
+            self._call_cbk()
+        self._call_cbk = None
+        return False
+
     def scan_addiu(self, inst, entry, regs, last_regs, idx):
         """
         Get the current call frame size when the size is
@@ -1785,6 +1957,42 @@ class CallgraphSubparser:
         return False
 
     def scan_cjalr(self, inst, entry, regs, last_regs, idx):
+        """Schedule the cjalr handler to run when the delay slot is validated."""
+        if inst.has_exception:
+            self._do_scan_cjalr(inst, entry, regs, last_regs, idx)
+        else:
+            self._call_cbk = lambda: self._do_scan_cjalr(
+                inst, entry, regs, last_regs, idx)
+        return False
+
+    def scan_cjr(self, inst, entry, regs, last_regs, idx):
+        """Schedule the cjr handler to run when the delay slot is validated."""
+        if inst.has_exception:
+            self._do_scan_cjr(inst, entry, regs, last_regs, idx)
+        else:
+            self._call_cbk = lambda: self._do_scan_cjr(
+                inst, entry, regs, last_regs, idx)
+        return False
+
+    def scan_jalr(self, inst, entry, regs, last_regs, idx):
+        """Schedule the jalr handler to run when the delay slot is validated."""
+        if inst.has_exception:
+            self._do_scan_jalr(inst, entry, regs, last_regs, idx)
+        else:
+            self._call_cbk = lambda: self._do_scan_jalr(
+                inst, entry, regs, last_regs, idx)
+        return False
+
+    def scan_jr(self, inst, entry, regs, last_regs, idx):
+        """Schedule the jr handler to run when the delay slot is validated."""
+        if inst.has_exception:
+            self._do_scan_jr(inst, entry, regs, last_regs, idx)
+        else:
+            self._call_cbk = lambda: self._do_scan_jr(
+                inst, entry, regs, last_regs, idx)
+        return False
+
+    def _do_scan_cjalr(self, inst, entry, regs, last_regs, idx):
         """
         cjalr target, link
 
@@ -1805,7 +2013,7 @@ class CallgraphSubparser:
                             EdgeOperation.CALL)
         return False
 
-    def scan_cjr(self, inst, entry, regs, last_regs, idx):
+    def _do_scan_cjr(self, inst, entry, regs, last_regs, idx):
         """
         Attempt to register a return.
         This have the same assumptions as scan_cjalr.
@@ -1817,7 +2025,7 @@ class CallgraphSubparser:
             self._make_call_return(entry, return_addr, regs)
         return False
 
-    def scan_jalr(self, inst, entry, regs, last_regs, idx):
+    def _do_scan_jalr(self, inst, entry, regs, last_regs, idx):
         """
         op0: link register
         op1: target register
@@ -1829,7 +2037,7 @@ class CallgraphSubparser:
                             EdgeOperation.CALL)
         return False
 
-    def scan_jr(self, inst, entry, regs, last_regs, idx):
+    def _do_scan_jr(self, inst, entry, regs, last_regs, idx):
         addr = inst.op0.value
         if not inst.has_exception:
             self._make_call_return(entry, addr, regs)
@@ -2055,7 +2263,7 @@ class CheriMipsModelParser(CheriplotModelParser):
             self._syscall_subparser = SyscallSubparser(
                 self.pgm, self._provenance.regset)
             self._callgraph_subparser = CallgraphSubparser(
-                self.pgm, self._provenance.regset)
+                self.pgm, self._provenance, self._provenance.regset)
             self._add_subparser(self._provenance)
             self._add_subparser(self._initial_stack)
             self._add_subparser(self._syscall_subparser)

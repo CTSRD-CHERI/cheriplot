@@ -542,97 +542,290 @@ trace_invalid_root_from_arith = (
 )
 
 # attempt to create vertices with instruction with exceptions
-trace_invalid_op_with_exception = (
-    ("", { # call graph root
-        "cvertex": mk_cvertex(None)
-    }),
-    ("cmove $c10, $c10", {
-        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
-        "exc": 2,
-    }),
-    ("lui $at, 0x100", {"1": 0x100}),
-    ("cincoffset $c10, $c4, $at", {
-        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
-        "exc": 2,
-    }),
-    ("csetoffset $c10, $c5, $at", {
-        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
-        "exc": 2,
-    }),
-    ("clc $c10, $zero, 0x0($c4)", {
-        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
-        "load": True,
-        "mem": 0xdead,
-        "exc": 2,
-    }),
-    ("csc $c10, $zero, 0x10($c4)", {
-        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
-        "store": True,
-        "mem": 0xbeef,
-        "exc": 2,
-    }),
-    ("cmove $c10, $c10", {
-        "c10": pct_cap(0x0, 0x0, 0x1000, perm),
-        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0x1000, perm), vid="v0"),
-    }),
-    ("cmove $c3, $c3", {
-        "c3": pct_cap(0x0, 0x0, 0x0, perm, valid=False),
-    }),
-    ("csc $c10, $zero, 0x0($c10)", {
-        "c10": pct_cap(0x0, 0xdeadbeef, 0xffffffff, perm),
-        "store": True,
-        "mem": 0xdeadbeef,
-        "vertex_mem": mk_vertex_mem("v0", 0xdeadbeef, "store"),
-        "vertex_deref": mk_vertex_deref("v0", 0xdeadbeef, True, "store"),
-    }),
-    ("csc $c3, $zero, 0x0($c10)", {
-        "c3": pct_cap(0x0, 0x0, 0x0, perm, valid=False),
-        "store": True,
-        "mem": 0xdeadbeef,
-        "exc": 2,
-    }),
-    ("clc $c3, $zero, 0x0($c10)", {
-        "c3": pct_cap(0x0, 0x0, 0x0, perm, valid=False),
-        "load": True,
-        "mem": 0xdeadbeef,
-        "exc": 2,
-    })
-)
-
-# exceptions in the delay slot where the instruction commits
-# should still cause the register set update
-trace_arith_in_delay_slot = (
+# generic capability arithmetic
+trace_op_exception_commit_arith = (
     ("", { # call graph root
         "cvertex": mk_cvertex(None, vid="call-root")
     }),
+    ("cincoffset $c10, $c10, $at", {
+        "c10": pct_cap(0x0, 0x1000, 0xffffffff, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x1000, 0xffffffff, perm)),
+        "exc": 2,
+    }),
+    # badvaddr = instr-addr + 4 mimic tlb load for next page
+    ("dmfc0 $at, $8", {"1": 0x1004}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# capability setbounds
+trace_op_exception_commit_setbounds = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x0, 0x0, 0xffffffff, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xffffffff, perm), vid="root"),
+    }),
+    ("csetbounds $c2, $c1, $at", {
+        "c2": pct_cap(0x0, 0x0, 0x100, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0x100, perm),
+                              parent="root", origin=CheriNodeOrigin.SETBOUNDS),
+        "exc": 2,
+    }),
+    # badvaddr = instr-addr + 4 mimic tlb load for next page
+    ("dmfc0 $at, $8", {"1": 0x1014}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# capability andperm
+trace_op_exception_commit_andperm = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("lui $at, 0x08", {"1": 0x8}),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x0, 0x0, 0xffffffff, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xffffffff, perm), vid="root"),
+    }),
+    ("candperm $c2, $c1, $at", {
+        "c2": pct_cap(0x0, 0x0, 0xffffffff, CheriCapPerm.STORE),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xffffffff, CheriCapPerm.STORE),
+                              parent="root", origin=CheriNodeOrigin.ANDPERM),
+        "exc": 2,
+    }),
+    # badvaddr = instr-addr + 4 mimic tlb load for next page
+    ("dmfc0 $at, $8", {"1": 0x100c}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# generic capability operation in delay slot
+trace_op_exception_commit_delay_slot = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("lui $at, 0x100", {"1": 0x100}),
     ("cmove $c12, $c12", {
         "c12": pct_cap(0x0, 0xf00, 0xffffffff, exec_perm),
         "pvertex": mk_pvertex(pct_cap(0x0, 0xf00, 0xffffffff, exec_perm),
                               vid="target"),
     }),
-    ("lui $at, 0x100", {"1": 0x100}),
     ("cjalr $c12, $c17", {
-        "c17": pct_cap(0x0, 0xbadcafe, 0xffffffff, exec_perm),
-        "pvertex": mk_pvertex(pct_cap(0x0, 0xbadcafe, 0xffffffff, exec_perm),
+        "c17": pct_cap(0x0, 0x1010, 0xffffffff, exec_perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x1010, 0xffffffff, exec_perm),
                               vid="link"),
         "cvertex": mk_cvertex(0xf00, parent="call-root", visible=[
             mk_cvertex_visible("target", 0xf00, 12),
-            mk_cvertex_visible("link", 0xbadcafe, 17),
+            mk_cvertex_visible("link", 0x1010, 17),
+            # XXX err c1 should be marked visible as well...
+            # because the partial was there
         ]),
     }),
-    # delay slot operation
-    ("cincoffset $c1, $c12, $at", {
-        "c1": pct_cap(0x0, 0x1000, 0xffffffff, exec_perm),
+    ("cincoffset $c1, $c1, $at", {
+        "c1": pct_cap(0x1000, 0x0, 0xffffffff, exec_perm),
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0xffffffff, exec_perm)),
         "exc": 2,
     }),
-    # check that c1 has been updated
-    ("csetbounds $c2, $c1, $at", {
-        "c2": pct_cap(0x0, 0x1000, 0x100, exec_perm),
-        "pvertex": mk_pvertex(
-            pct_cap(0x0, 0x1000, 0x100, exec_perm),
-            parent="target",
-            origin=CheriNodeOrigin.SETBOUNDS),
+    # badvaddr = call target addr mimic tlb load for jump location
+    ("dmfc0 $at, $8", {"1": 0xf00}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# capability load
+trace_op_exception_commit_mem_load = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None)
     }),
+    ("lui $at, 0x08", {"1": 0x8}),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x0, 0x0, 0xffffffff, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xffffffff, perm), vid="root"),
+    }),
+    ("clc $c2, $zero, 0x100($c1)", {
+        "c2": pct_cap(0x1000, 0x0, 0x1000, perm),
+        "load": True,
+        "mem": 0x100,
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x1000, perm), vid="v0"),
+        "vertex_mem": mk_vertex_mem("v0", 0x100, "load"),
+        "vertex_deref": mk_vertex_deref("root", 0x100, True, "load"),
+        "exc": 2,
+    }),
+    # badvaddr = next instruction, mimic tlb instruction fetch fault
+    ("dmfc0 $at, $8", {"1": 0x100c}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# capability store
+trace_op_exception_commit_mem_store = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None)
+    }),
+    ("lui $at, 0x08", {"1": 0x8}),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x0, 0x0, 0xffffffff, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xffffffff, perm), vid="root"),
+    }),
+    ("csc $c2, $zero, 0x100($c1)", {
+        "c2": pct_cap(0x1000, 0x0, 0x1000, perm),
+        "store": True,
+        "mem": 0x100,
+        "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0x1000, perm), vid="v0"),
+        "vertex_mem": mk_vertex_mem("v0", 0x100, "store"),
+        "vertex_deref": mk_vertex_deref("root", 0x100, True, "store"),
+        "exc": 2,
+    }),
+    # badvaddr = next instruction, mimic tlb instruction fetch fault
+    ("dmfc0 $at, $8", {"1": 0x100c}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# generic capability arithmetic
+trace_op_exception_revoke_arith = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("cincoffset $c10, $c10, $at", {
+        "c10": pct_cap(0x0, 0x1000, 0xffffffff, perm),
+        "exc": 2,
+    }),
+    # badvaddr = instr-addr + 4 mimic tlb load for next page
+    ("dmfc0 $at, $8", {"1": 0x1000}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# capability setbounds
+trace_op_exception_revoke_setbounds = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x0, 0x0, 0xffffffff, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xffffffff, perm), vid="root"),
+    }),
+    ("csetbounds $c2, $c1, $at", {
+        "c2": pct_cap(0x0, 0x0, 0x100, perm),
+        "exc": 2,
+    }),
+    # badvaddr = instr-addr + 4 mimic tlb load for next page
+    ("dmfc0 $at, $8", {"1": 0x1008}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# capability andperm
+trace_op_exception_revoke_andperm = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("lui $at, 0x08", {"1": 0x8}),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x0, 0x0, 0xffffffff, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xffffffff, perm), vid="root"),
+    }),
+    ("candperm $c2, $c1, $at", {
+        "c2": pct_cap(0x0, 0x0, 0xffffffff, CheriCapPerm.STORE),
+        "exc": 2,
+    }),
+    # badvaddr = instr-addr + 4 mimic tlb load for next page
+    ("dmfc0 $at, $8", {"1": 0x1008}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# call with exception when fetching delay slot
+trace_op_exception_revoke_call = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    # set pcc
+    ("cmove $c31, $c31", {
+        "c3": pct_cap(0x0, 0x100c, 0xffffffff, exec_perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x100c, 0xffffffff, exec_perm),
+                              vid="pcc"),
+    }),
+    ("eret", {}),
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("cmove $c12, $c12", {
+        "c12": pct_cap(0x0, 0xf00, 0xffffffff, exec_perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0xf00, 0xffffffff, exec_perm),
+                              vid="target"),
+    }),
+    ("cjalr $c12, $c17", {
+        "c17": pct_cap(0x0, 0x1010, 0xffffffff, exec_perm),
+        "exc": 2,
+    }),
+    # badvaddr = call target addr mimic tlb load for jump location
+    ("dmfc0 $at, $8", {"1": 0x1014}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# call with exception in the delay slot, revoke also call
+trace_op_exception_revoke_delay_slot = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x0, 0x100, 0xffffffff, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x100, 0xffffffff, perm), vid="root"),
+    }),
+    ("lui $at, 0x100", {"1": 0x100}),
+    ("cmove $c12, $c12", {
+        "c12": pct_cap(0x0, 0xf00, 0xffffffff, exec_perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0xf00, 0xffffffff, exec_perm),
+                              vid="target"),
+    }),
+    ("cjalr $c12, $c17", {
+        "c17": pct_cap(0x0, 0x1010, 0xffffffff, exec_perm),
+    }),
+    ("csc $c1, $zero, 0x0($c1)", {
+        "c1": pct_cap(0x0, 0x100, 0xffffffff, perm),
+        "store": True,
+        "mem": 0x100,
+        "exc": 3,
+    }),
+    # badvaddr = call target addr mimic tlb load for jump location
+    ("dmfc0 $at, $8", {"1": 0x100}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# capability load
+trace_op_exception_revoke_mem_load = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None)
+    }),
+    ("lui $at, 0x08", {"1": 0x8}),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x0, 0x0, 0xffffffff, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xffffffff, perm), vid="root"),
+    }),
+    ("clc $c2, $zero, 0x100($c1)", {
+        "c2": pct_cap(0x1000, 0x0, 0x1000, perm),
+        "load": True,
+        "mem": 0x100,
+        "exc": 2,
+    }),
+    # badvaddr = load address
+    ("dmfc0 $at, $8", {"1": 0x100}),
+)
+
+# attempt to create vertices with instruction with exceptions
+# capability store
+trace_op_exception_revoke_mem_store = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None)
+    }),
+    ("lui $at, 0x08", {"1": 0x8}),
+    ("cmove $c1, $c1", {
+        "c1": pct_cap(0x0, 0x0, 0xffffffff, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0xffffffff, perm), vid="root"),
+    }),
+    ("csc $c2, $zero, 0x100($c1)", {
+        "c2": pct_cap(0x1000, 0x0, 0x1000, perm),
+        "store": True,
+        "mem": 0x100,
+        "exc": 2,
+    }),
+    # badvaddr = next instruction, mimic tlb instruction fetch fault
+    ("dmfc0 $at, $8", {"1": 0x100}),
 )
 
 # register value changes after a tracing pause
@@ -717,7 +910,7 @@ trace_pause_recover_load = (
 )
 
 @pytest.mark.timeout(10)
-@pytest.mark.parametrize("threads", [1, 2])
+@pytest.mark.parametrize("threads", [1, ])
 @pytest.mark.parametrize("trace", [
     (trace_init, trace_mp_move_and_setbounds),
     (trace_init, trace_mp_cjr_exception_pcc_update),
@@ -730,8 +923,19 @@ trace_pause_recover_load = (
     (trace_cap_propagate_setoffset,),
     (trace_cap_propagate_incoffset,),
     (trace_invalid_root_from_arith,),
-    (trace_invalid_op_with_exception,),
-    (trace_arith_in_delay_slot,),
+    (trace_op_exception_commit_arith,),
+    (trace_op_exception_commit_setbounds,),
+    (trace_op_exception_commit_andperm,),
+    (trace_op_exception_commit_delay_slot,),
+    (trace_op_exception_commit_mem_load,),
+    (trace_op_exception_commit_mem_store,),
+    (trace_op_exception_revoke_arith,),
+    (trace_op_exception_revoke_setbounds,),
+    (trace_op_exception_revoke_andperm,),
+    (trace_op_exception_revoke_call,),
+    (trace_op_exception_revoke_delay_slot,),
+    (trace_op_exception_revoke_mem_load,),
+    (trace_op_exception_revoke_mem_store,),
     (trace_pause_recover,),
     (trace_pause_recover_load,),
 ])

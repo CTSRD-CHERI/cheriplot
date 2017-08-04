@@ -64,6 +64,7 @@ trace_cap_call = (0x1000, (
         # "call" vertex return is set to this instruction time/addr
         "cret": mk_cvertex_ret("call")
     }),
+    ("nop", {}),
 ))
 
 # Trace with a more complex call graph that have
@@ -274,7 +275,8 @@ trace_cap_call_extra_return_0x100c = (0x100c, (
     }),
     ("cjr $c10", {
         "cret": mk_cvertex_ret("old-call-root"),
-    })
+    }),
+    ("nop", {}),
 ))
 
 # trace with non-capability calls
