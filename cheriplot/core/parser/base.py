@@ -415,14 +415,14 @@ class CallbacksManager:
         """
         # the <all> callback should be the last one executed
         cbks = [self._callbacks[inst.opcode]]
-        if inst.has_exception:
-            cbks.append(self._callbacks["exception"])
         if inst.entry.is_load:
             cbks.append(self._callbacks["mem_load"])
         if inst.entry.is_store:
             cbks.append(self._callbacks["mem_store"])
         if inst.in_delay_slot:
             cbks.append(self._callbacks["delay_slot"])
+        if inst.has_exception:
+            cbks.append(self._callbacks["exception"])
         cbks.append(self._callbacks["all"])
         return chain(*cbks)
 

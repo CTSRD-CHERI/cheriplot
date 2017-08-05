@@ -909,6 +909,40 @@ trace_pause_recover_load = (
     }),
 )
 
+# test exception 0 handling
+# try to cause a delayed call to scan the incoffset after an exception
+# this triggers an assertion in the parser if wrong
+trace_delay_call_after_exception = (
+    ("", { # call graph root
+        "cvertex": mk_cvertex(None, vid="call-root")
+    }),
+    ("cmove $c10, $c10", {
+        "c10": pct_cap(0x0, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0x0, 0x0, 0x1000, perm), vid="v0"),
+    }),
+    ("cmove $c9, $c9", {
+        "c9": pct_cap(0xf000, 0x0, 0x1000, perm),
+        "pvertex": mk_pvertex(pct_cap(0xf000, 0x0, 0x1000, perm), vid="v1"),
+    }),
+    ("lui $at, 0x1", {"1": 0x1}),
+    ("cincoffset $c11, $c10, $at", {
+        "c11": pct_cap(0x0, 0x1, 0x1000, perm),
+        "exc": 0,
+    }),
+    ("cmove $c10, $c9", {
+        "c10": pct_cap(0xf000, 0x0, 0x1000, perm),
+    }),
+    ("eret", {}),
+    ("cld $at, $zero, 0x0($c9)", {
+        "1": 0xbedbed,
+        "load": True,
+        "mem": 0xf000,
+        "vertex_deref": mk_vertex_deref("v1", 0xf000, False, "load"),
+        "exc": 2,
+    }),
+    ("dmfc0 $at, $8", {"1": 0x101c}),
+)
+
 @pytest.mark.timeout(10)
 @pytest.mark.parametrize("threads", [1, ])
 @pytest.mark.parametrize("trace", [
@@ -938,6 +972,7 @@ trace_pause_recover_load = (
     (trace_op_exception_revoke_mem_store,),
     (trace_pause_recover,),
     (trace_pause_recover_load,),
+    (trace_delay_call_after_exception,),
 ])
 def test_nodegen_simple(pgm, trace, threads):
     """Test provenance parser with the simplest trace possible."""

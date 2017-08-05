@@ -905,7 +905,8 @@ class CapabilityBranchSubparser:
         """
         if self._branch_cbk is None:
             return False
-        if inst.has_exception:
+        if inst.has_exception and entry.exception != 0:
+            # exception 0 is external interrupt and always commit
             # prepend it because it must run first since it happened further
             # in the past
             self.parser.exec_maybe.insert(0, self._branch_cbk)
@@ -1045,9 +1046,10 @@ class SyscallSubparser:
     syscall_code =>  (syscall_name, register_number)
     """
 
-    def __init__(self, pgm, regset):
+    def __init__(self, pgm, prov_parser, regset):
         self.pgm = pgm
         self.regset = regset
+        self.parser = prov_parser
 
         self.in_syscall = False
         """Flag indicates whether we are tracking a systemcall."""
@@ -1104,6 +1106,19 @@ class SyscallSubparser:
         return indirect_code if is_indirect else code
 
     def scan_exception(self, inst, entry, regs, last_regs, idx):
+        """
+        When there is an exception if a deferred decision is enqueued,
+        also enqueue the pcc/epcc swap operation to maintain ordering.
+        """
+        if len(self.parser.exec_maybe):
+            self.parser.delay_scan(
+                partial(self._do_scan_exception, inst, entry, regs,
+                        last_regs, idx))
+        else:
+            self._do_scan_exception(inst, entry, regs, last_regs, idx)
+        return False
+
+    def _do_scan_exception(self, inst, entry, regs, last_regs, idx):
         """
         When an exception occurs, adjust the epcc vertex from pcc.
         """
@@ -1168,6 +1183,10 @@ class SyscallSubparser:
         #                  self.code, data)
         #     data.add_use_syscall(entry.cycles, self.code, False)
 
+        logger.debug("eret {%d}: update pcc %s, update kcc %s",
+                     entry.cycles,
+                     self.pgm.data[self.regset.get_reg(31)],
+                     self.pgm.data[self.regset.get_pcc()])
         # restore saved pcc
         self.regset.set_pcc(self.regset.get_reg(31), entry.cycles)
         return False
@@ -1252,6 +1271,12 @@ class PointerProvenanceSubparser:
         in badvaddr if the instruction did not commit due to an exception.
         """
 
+        self.exec_delay = []
+        """
+        Callbacks to run after the exec_maybe callbacks, these are used
+        to preserver ordering with respect to the maybe callbacks.
+        """
+
     def mp_result(self):
         """
         Return the partial result from a worker process.
@@ -1269,7 +1294,7 @@ class PointerProvenanceSubparser:
         }
         return state
 
-    def maybe_scan(self, cbk, addr=None):
+    def maybe_scan(self, cbk, addr):
         """
         Register a scan callback to be invoked later depending
         whether it committed or not.
@@ -1279,6 +1304,13 @@ class PointerProvenanceSubparser:
         self.exec_maybe.append(cbk)
         if addr is not None:
             self.exec_maybe_addr.append(addr)
+
+    def delay_scan(self, cbk):
+        """
+        Run given callback after the maybe-scan run decision is made.
+        The callback will always run when the dmfc0 makes the decision.
+        """
+        self.exec_delay.append(cbk)
     
     def scan_dmfc0(self, inst, entry, regs, last_regs, idx):
         """
@@ -1289,16 +1321,22 @@ class PointerProvenanceSubparser:
         the dmfc0 instruction.
         """
         if inst.op1.gpr_index == 8 and len(self.exec_maybe):
+            # There must be at least one address here
+            assert len(self.exec_maybe_addr)
             badvaddr = inst.op0.value
-            logger.debug("Invoke deferred exception callbacks "
+            logger.debug("{%d} Invoke deferred exception callbacks "
                          "bad:%s maybe:%s addr:%s",
-                         badvaddr, self.exec_maybe, self.exec_maybe_addr)
+                         entry.cycles, badvaddr, self.exec_maybe,
+                         self.exec_maybe_addr)
             if badvaddr not in self.exec_maybe_addr:
                 # instruction committed, run the maybe callback
                 for deferred_cbk in self.exec_maybe:
                     deferred_cbk()
             self.exec_maybe = []
             self.exec_maybe_addr = []
+            for deferred_cbk in self.exec_delay:
+                deferred_cbk()
+            self.exec_delay = []
         return False
 
     def scan_lui(self, inst, entry, regs, last_regs, idx):
@@ -1343,11 +1381,11 @@ class PointerProvenanceSubparser:
         # XXX consistency checks
         src_data = self.pgm.data[self.regset.get_reg(regnum)]
         src = inst.op0.value
-        assert src_data.cap.base == src.base, inst
-        assert src_data.cap.length == src.length, inst
+        assert src is not None, "{} {}".format(src_data, inst)
+        assert src_data.cap.base == src.base, "{} {}".format(src_data, inst)
+        assert src_data.cap.length == src.length, "{} {}".format(src_data, inst)
         assert (src_data.cap.permissions == \
-                CheriCapPerm(src.permissions)),\
-                "{} {}".format(src_data, inst)
+                CheriCapPerm(src.permissions)), "{} {}".format(src_data, inst)
         self.regset.set_reg(inst.op0.cap_index, self.regset.get_reg(regnum),
                             entry.cycles)
 
@@ -1416,6 +1454,14 @@ class PointerProvenanceSubparser:
             self.regset.set_pcc(node, entry.cycles)
             logger.debug("cgetpcc: new node from pcc %s",
                          self.pgm.data[node])
+        data = self.pgm.data[self.regset.get_pcc()]
+        assert data.cap.base == inst.op0.value.base,\
+            "{} {}".format(data, inst)
+        assert data.cap.length == inst.op0.value.length,\
+            "{} {}".format(data, inst)
+        assert (data.cap.permissions == \
+                CheriCapPerm(inst.op0.value.permissions)),\
+                "{} {}".format(data, inst)
         self.regset.set_reg(inst.op0.cap_index, self.regset.get_pcc(),
                             entry.cycles)
         return False
@@ -1434,7 +1480,7 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
-        if inst.has_exception and not maybe_call:
+        if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 lambda: self.scan_csetbounds(
                     inst, entry, regs, last_regs, idx, True),
@@ -1455,7 +1501,7 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
-        if inst.has_exception and not maybe_call:
+        if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 lambda: self.scan_cfromptr(
                     inst, entry, regs, last_regs, idx, True),
@@ -1474,7 +1520,7 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
-        if inst.has_exception and not maybe_call:
+        if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 lambda: self.scan_candperm(
                     inst, entry, regs, last_regs, idx, True),
@@ -1490,7 +1536,8 @@ class PointerProvenanceSubparser:
         the mapping from capability register to the provenance
         tree node associated to the capability in it.
         """
-        if inst.has_exception and not inst.in_delay_slot and not maybe_call:
+        # XXX if inst.has_exception and entry.exception != 0 and not inst.in_delay_slot and not maybe_call:
+        if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 lambda: self.scan_cap_arith(
                     inst, entry, regs, last_regs, idx, True),
@@ -1515,8 +1562,10 @@ class PointerProvenanceSubparser:
                 reg_src = self.regset.get_reg(src.cap_index)
                 if reg_src is not None and src.value is not None:
                     src_data = self.pgm.data[reg_src]
-                    assert src_data.cap.base == src.value.base, inst
-                    assert src_data.cap.length == src.value.length, inst
+                    assert src_data.cap.base == src.value.base,\
+                        "{} {}".format(src_data, inst)
+                    assert src_data.cap.length == src.value.length,\
+                        "{} {}".format(src_data, inst)
                     assert (src_data.cap.permissions == \
                             CheriCapPerm(src.value.permissions)),\
                             "{} {}".format(src_data, inst)
@@ -1540,7 +1589,7 @@ class PointerProvenanceSubparser:
         """
         Store offset at time of dereference of a given capability.
         """
-        if inst.has_exception and not maybe_call:
+        if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 lambda: self._handle_dereference(inst, entry, ptr_reg, True),
                 entry.memory_address)
@@ -1574,7 +1623,7 @@ class PointerProvenanceSubparser:
                 logger.error("Dereference is neither a load or a store %s", inst)
                 raise RuntimeError("Dereference is neither a load nor a store")
 
-    def scan_cap_load(self, inst, entry, regs, last_regs, idx):
+    def scan_cap_load(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
         Store all offsets at time of dereference of a given capability.
 
@@ -1582,9 +1631,6 @@ class PointerProvenanceSubparser:
         clXr and clXi have pointer argument in op2
         cllX have pointer argument in op1
         """
-        if inst.has_exception and inst.op0.value == None:
-            # if there is an exception that caused the instruction to not commit.
-            return False
         # get the register with the address capability
         # this may be a normal capability load or a linked-load
         if inst.opcode.startswith("cll"):
@@ -1605,10 +1651,6 @@ class PointerProvenanceSubparser:
         csXr and csXi have pointer argument in op2
         cscX conditionals use op2
         """
-        if entry.exception != 31 and entry.exception != 2:
-            # TLB store store exception or other exception,
-            # instruction did not commit
-            return False
         # get the register with the address capability
         # this may be a normal capability store or an atomic-store
         if inst.opcode != "csc" and inst.opcode.startswith("csc"):
@@ -1630,7 +1672,7 @@ class PointerProvenanceSubparser:
         and capability-specific scan callbacks have been invoked
         but before the generic scan_all.
         """
-        if inst.has_exception and not maybe_call:
+        if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 lambda: self.scan_mem_store(
                     inst, entry, regs, last_regs, idx, True),
@@ -1649,7 +1691,7 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         The parent is looked up in memory or a root node is created
         """
-        if inst.has_exception and not maybe_call:
+        if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 lambda: self.scan_clc(inst, entry, regs, last_regs, idx, True),
                 entry.memory_address)
@@ -1707,7 +1749,7 @@ class PointerProvenanceSubparser:
         csc:
         Operand 0 is the capability being stored, the node already exists
         """
-        if inst.has_exception and not maybe_call:
+        if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 lambda: self.scan_csc(inst, entry, regs, last_regs, idx, True),
                 entry.memory_address)
@@ -1888,6 +1930,9 @@ class CallgraphSubparser:
         and guaranteed to commit.
         """
 
+        self._call_cbk_addr = None
+        """Address set in badvaddr if call_cbk does not run."""
+
         self.pgm.layer_call[self.root] = True
         self.pgm.data[self.root] = CallVertexData(None)
         self.call_stack.append((self.root, None))
@@ -1933,12 +1978,14 @@ class CallgraphSubparser:
         """
         if self._call_cbk is None:
             return False
-        if inst.has_exception:
+        if inst.has_exception and entry.exception != 0:
+            # exception 0 is external interrupt and always commit.
             # set in position 1, postion 0 is expected to exist because
             # the branch subparser runs first and prepend its own handler
             # which MUST run before we do.
             # XXX this is hacky
             self.parser.exec_maybe.insert(1, self._call_cbk)
+            self.parser.exec_maybe_addr.append(self._call_cbk_addr)
         else:
             self._call_cbk()
         self._call_cbk = None
@@ -1963,6 +2010,7 @@ class CallgraphSubparser:
         else:
             self._call_cbk = lambda: self._do_scan_cjalr(
                 inst, entry, regs, last_regs, idx)
+            self._call_cbk_addr = entry.pc
         return False
 
     def scan_cjr(self, inst, entry, regs, last_regs, idx):
@@ -1972,6 +2020,7 @@ class CallgraphSubparser:
         else:
             self._call_cbk = lambda: self._do_scan_cjr(
                 inst, entry, regs, last_regs, idx)
+            self._call_cbk_addr = entry.pc
         return False
 
     def scan_jalr(self, inst, entry, regs, last_regs, idx):
@@ -1981,6 +2030,7 @@ class CallgraphSubparser:
         else:
             self._call_cbk = lambda: self._do_scan_jalr(
                 inst, entry, regs, last_regs, idx)
+            self._call_cbk_addr = entry.pc
         return False
 
     def scan_jr(self, inst, entry, regs, last_regs, idx):
@@ -1990,6 +2040,7 @@ class CallgraphSubparser:
         else:
             self._call_cbk = lambda: self._do_scan_jr(
                 inst, entry, regs, last_regs, idx)
+            self._call_cbk_addr = entry.pc
         return False
 
     def _do_scan_cjalr(self, inst, entry, regs, last_regs, idx):
@@ -2261,7 +2312,7 @@ class CheriMipsModelParser(CheriplotModelParser):
             self._cap_branch = CapabilityBranchSubparser(
                 self.pgm, self._provenance.regset, self._provenance)
             self._syscall_subparser = SyscallSubparser(
-                self.pgm, self._provenance.regset)
+                self.pgm, self._provenance, self._provenance.regset)
             self._callgraph_subparser = CallgraphSubparser(
                 self.pgm, self._provenance, self._provenance.regset)
             self._add_subparser(self._provenance)

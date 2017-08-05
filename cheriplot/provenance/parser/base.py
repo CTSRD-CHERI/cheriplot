@@ -243,6 +243,9 @@ class RegisterSet:
         :param time: time of the vertex store
         """
         old_vertex = self.reg_nodes[index]
+        logger.debug("{%d} reg[%d] %s <- %s", time, index,
+                     self.pgm.data[old_vertex] if old_vertex else None,
+                     self.pgm.data[value] if value else None)
         self._attach_partial_vertex(old_vertex, value)
         self.reg_nodes[index] = value
         if value != old_vertex:
