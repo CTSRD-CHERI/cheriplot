@@ -273,9 +273,8 @@ class PtrSizePlotDriver(VMMapPlotDriver, ExternalLegendTopPlotBuilder):
         return kw
 
     def run(self):
-        self._vmmap_parser.parse()
-        vmmap = self._vmmap_parser.get_model()
-        hist = self.histogram_builder_class(self._provenance_graph, vmmap)
+        pgm = self._pgm_list[0]
+        hist = self.histogram_builder_class(pgm.prov_view(), self._vmmap)
         self.register_patch_builder([hist], HistogramPatchBuilder(self.fig))
         self.process(out_file=self.config.outfile)
 
@@ -374,9 +373,14 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
     x_label = "Size"
     y_label = "Proportion of the total number of capabilities"
 
-    extra_traces = Argument(help="Additional traces", nargs="*")
     outfile = Option(help="Output file", default=None)
     publish = Option(help="Adjust plot for publication", action="store_true")
+
+    def __init__(self, pgm_list, vmmap, **kwargs):
+        super().__init__(**kwargs)
+        self.pgm_list = pgm_list
+        if self.config.publish:
+            self._style["font"] = FontProperties(size=25)
 
     def _get_savefig_kwargs(self):
         kw = super()._get_figure_kwargs()
@@ -393,29 +397,11 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
         kw["loc"] = "lower right"
         return kw
 
-    def __init__(self, pgm, **kwargs):
-        super().__init__(**kwargs)
-        self.pgm = pgm
-        if self.config.publish:
-            self._style["font"] = FontProperties(size=25)
-
     def make_plot(self):
         super().make_plot()
         self.ax.set_xscale("log", basex=2)
 
     def run(self):
-        extra_pgm = []
-        for path in self.config.extra_traces:
-            parser = CheriMipsModelParser(cache=True, trace_path=path)
-            parser.parse()
-            pgm = parser.get_model()
-            filters = (FilterNullVertices(pgm) + FilterKernelVertices(pgm) +
-                       MergeCfromptr(pgm) + FilterCfromptr(pgm))
-            filtered_graph = filters(pgm.graph)
-            vfilt, _ = filtered_graph.get_vertex_filter()
-            pgm.graph.set_vertex_filter(vfilt)
-            extra_pgm.append(pgm)
-        datasets = [PtrBoundCdf(pgm) for pgm in extra_pgm]
-        datasets += [PtrBoundCdf(self.pgm)]
+        datasets = map(PtrBoundCdf, self.pgm_list)
         self.register_patch_builder(datasets, CdfPatchBuilder())
         self.process(out_file=self.config.outfile)

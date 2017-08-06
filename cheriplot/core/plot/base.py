@@ -266,30 +266,8 @@ class BasePlotBuilder:
                     ylabels = repeat(None)
             self._xticks.update(zip(xticks, xlabels))
             self._yticks.update(zip(yticks, ylabels))
-        # XXX integrated load / experimental
-        # bboxes = []
-        # for idx, (dataset, builders) in enumerate(self._patch_builders):
-        #         with ProgressTimer("Build patches [%d/%d]" % (
-        #                 idx + 1, len(self._patch_builders)), logger):
-        #             for b in builders:
-        #                 b.load(dataset)
-        #                 b.get_patches(self.ax)
-        #                 # grab the viewport from the builders
-        #                 bboxes.append(b.get_bbox())
-        #                 # grab the legend from the builders
-        #                 self._legend_handles.extend(b.get_legend())
-        #                 # grab the x and y ticks
-        #                 xticks = b.get_xticks()
-        #                 xlabels = b.get_xlabels()
-        #                 yticks = b.get_yticks()
-        #                 ylabels = b.get_ylabels()
-        #                 if xlabels is None:
-        #                     xlabels = repeat(None)
-        #                 if ylabels is None:
-        #                     ylabels = repeat(None)
-        #                 self._xticks.update(zip(xticks, xlabels))
-        #                 self._yticks.update(zip(yticks, ylabels))
-        # XXX experimental end
+        # free the builders as we have no use for them anymore
+        self.clear_patch_builders()
         self._view_box = Bbox.union(bboxes)
         logger.debug("Plot viewport %s", self._view_box)
         logger.debug("Num ticks: x:%d y:%d", len(self._xticks),
@@ -363,6 +341,10 @@ class BasePlotBuilder:
                 break
         else:
            self._patch_builders.append((dataset, [builder]))
+
+    def clear_patch_builders(self):
+        """Remove all registered patch builders."""
+        self._patch_builders = []
 
 
 class ExternalLegendTopPlotBuilder(BasePlotBuilder):

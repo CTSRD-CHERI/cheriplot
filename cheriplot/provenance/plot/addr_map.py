@@ -34,12 +34,13 @@ from operator import itemgetter
 
 from sortedcontainers import SortedDict
 
-from matplotlib.collections import LineCollection, PatchCollection
-from matplotlib.transforms import Bbox, blended_transform_factory
-from matplotlib.patches import Patch, Rectangle
-from matplotlib.text import Text
+from matplotlib.collections import LineCollection, PatchCollection, PathCollection
 from matplotlib.colors import colorConverter
 from matplotlib.font_manager import FontProperties
+from matplotlib.markers import MarkerStyle
+from matplotlib.patches import Patch, Rectangle, PathPatch
+from matplotlib.text import Text
+from matplotlib.transforms import Bbox, blended_transform_factory
 
 from cheriplot.core import (
     ASAxesPlotBuilderNoTitle, ASAxesPatchBuilder, PickablePatchBuilder,
@@ -96,7 +97,7 @@ class BaseColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
 
     def _clickable_element(self, vertex, y):
         """remember the node at the given Y for faster indexing."""
-        data = self._pgm.vp.data[vertex]
+        data = self._pgm.data[vertex]
         self._node_map[y] = data
 
     def _add_bbox(self, xmin, xmax, y):
@@ -110,17 +111,16 @@ class BaseColorCodePatchBuilder(ASAxesPatchBuilder, PickablePatchBuilder):
         if self._bbox[3] < y:
             self._bbox[3] = y
 
+    def _get_patch_collections(self, axes):
+        """Return a generator of collections of patches to add to the axes."""
+        pass
+
     def get_patches(self, axes):
         """
-        XXX once we are done with the coordinates in the
-        collections we can throw them away instead of keeping
-        memory used for nothing! (this may have an inpact
+        Return a collection of lines from the collection_map.
         """
         super().get_patches(axes)
-        for key, collection in self._collection_map.items():
-            coll = LineCollection(collection,
-                                  colors=[self._colors[key]],
-                                  linestyle="solid")
+        for coll in self._get_patch_collections(axes):
             axes.add_collection(coll)
 
     def get_bbox(self):
@@ -202,7 +202,7 @@ class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
 
     def inspect(self, vertex):
         """Inspect a graph vertex and create the patches for it."""
-        data = self._pgm.vp.data[vertex]
+        data = self._pgm.data[vertex]
         self._add_bbox(data.cap.base, data.cap.bound, data.cap.t_alloc)
 
         coords = ((data.cap.base, data.cap.t_alloc),
@@ -216,23 +216,12 @@ class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
         self._add_range(data.cap.base, data.cap.bound)
         self._clickable_element(vertex, data.cap.t_alloc)
 
-    def load(self, dataset):
-        """XXX experimental"""
-        for vertex in dataset.vertices():
-            data = self._pgm.vp.data[vertex]
-            assert data.cap.bound >= data.cap.base # XXX should be in the parsers
-            self._add_bbox(data.cap.base, data.cap.bound, data.cap.t_alloc)
-
-            coords = ((data.cap.base, data.cap.t_alloc),
-                      (data.cap.bound, data.cap.t_alloc))
-            perms = data.cap.permissions or 0
-            rwx_perm = perms & (CheriCapPerm.LOAD |
-                                CheriCapPerm.STORE |
-                                CheriCapPerm.EXEC)
-            self._collection_map[rwx_perm].append(coords)
-            # mark this address range as interesting
-            self._add_range(data.cap.base, data.cap.bound)
-            self._clickable_element(vertex, data.cap.t_alloc)
+    def _get_patch_collections(self, axes):
+        for key, collection in self._collection_map.items():
+            coll = LineCollection(collection,
+                                  colors=[self._colors[key]],
+                                  linestyle="solid")
+            yield coll
 
     def get_legend(self):
         legend = super().get_legend()
@@ -264,16 +253,12 @@ class DerefPatchBuilder(BaseColorCodePatchBuilder):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # register the colors we use
-        self._colors["load"] = colorConverter.to_rgb("#687a99")
-        self._colors["store"] = colorConverter.to_rgb("#895106")
+        self._colors["load"] = colorConverter.to_rgba("#687a99", 0.4)
+        self._colors["store"] = colorConverter.to_rgba("#895106", 0.4)
 
     def inspect(self, vertex):
-        """Create a patch for every dereference in the node.
-        XXX this is both slow and fairly memory intensive,
-        may get around it by preallocating a numpy array for
-        the values?
-        """
-        data = self._pgm.vp.data[vertex]
+        """Create a patch for every dereference in the node."""
+        data = self._pgm.data[vertex]
         load = data.event_tbl["type"] == ProvenanceVertexData.EventType.DEREF_LOAD
         store = data.event_tbl["type"] == ProvenanceVertexData.EventType.DEREF_STORE
         deref = load | store
@@ -295,58 +280,91 @@ class DerefPatchBuilder(BaseColorCodePatchBuilder):
 
         # create all the line coordinates
         self._collection_map["load"].extend(
-            zip(zip(repeat(base), data.event_tbl[deref]["time"]),
-                zip(repeat(bound), data.event_tbl[deref]["time"])))
+            zip(zip(repeat(base), data.event_tbl[load]["time"]),
+                zip(repeat(bound), data.event_tbl[load]["time"])))
+        self._collection_map["store"].extend(
+            zip(zip(repeat(base), data.event_tbl[store]["time"]),
+                zip(repeat(bound), data.event_tbl[store]["time"])))
 
-    def load(self, dataset):
-        """XXX experimental"""
-        n_deref = 0
-        for v in dataset.vertices():
-            data = dataset.vp.data[v]
-            n_deref += len(data.deref["time"])
-        # preallocate dereferences
-        # [xmin, xmax, y, type]
-        derefs = np.empty((n_deref, 4), dtype=int)
-        idx = 0
-        coords = (data.cap.base, data.cap.bound)
-        for v in dataset.vertices():
-            data = dataset.vp.data[v]
-            if len(data.deref["time"]):
-                min_time = np.inf
-                max_time = 0
-                # mark this address range as interesting
-                self._add_range(data.cap.base, data.cap.bound)
-                end_idx = idx + len(data.deref["time"])
-                derefs[idx:end_idx,0:2] = coords
-                derefs[idx:end_idx,2] = data.deref["time"]
-                derefs[idx:end_idx,3] = data.deref["type"]
-                for t in data.deref["time"]:
-                    min_time = min(min_time, t)
-                    max_time = max(max_time, t)
-                    self._clickable_element(v, t)
-                self._add_bbox(data.cap.base, data.cap.bound, min_time)
-                self._add_bbox(data.cap.base, data.cap.bound, max_time)
-        # can probably avoid this mess by duplicating the y coordinate
-        # above, we have to do that anyway below.
-        load_idx = np.where(
-            derefs[:,3] == ProvenanceVertexData.DerefType.DEREF_LOAD.value)
-        load = derefs[load_idx][:,:3]
-        dst = np.empty((len(load),2,2))
-        dst[:,:,0] = load[:,:2]
-        dst[:,:,1] = np.repeat(load[:,2], 2).reshape((len(load),2))
-        self._collection_map["load"] = dst
-        store_idx = np.where(
-            derefs[:,3] == ProvenanceVertexData.DerefType.DEREF_LOAD.value)
-        store = derefs[store_idx][:,:3]
-        dst = np.empty((len(store),2,2))
-        dst[:,:,0] = store[:,:2]
-        dst[:,:,1] = np.repeat(store[:,2], 2).reshape((len(store),2))
-        self._collection_map["store"] = dst
+    def _get_patch_collections(self, axes):
+        for key, collection in self._collection_map.items():
+            coll = LineCollection(collection,
+                                  colors=[self._colors[key]],
+                                  linestyle="solid")
+            yield coll
 
     def get_legend(self):
         handles = [
             Patch(color=self._colors["load"], label="load"),
             Patch(color=self._colors["store"], label="store"),
+        ]
+        return handles
+
+
+class AccessLocationPatchBuilder(BaseColorCodePatchBuilder):
+    """
+    Plot offsets of load/store accesses where a capability is stored in memory.
+    Only the accessed address is shown in the plot, the capability
+    bounds are omitted.
+    The points are color coded with respect to the mapped memory regions.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # register the colors we use
+        self._colors["load"] = colorConverter.to_rgba("#687a99", 1)
+        self._colors["store"] = colorConverter.to_rgba("#895106", 1)
+        self._markers = {
+            "load": MarkerStyle(","),
+            "store": MarkerStyle(","),
+        }
+
+    def inspect(self, vertex):
+        """Create a point for every load/store in the vertex."""
+        data = self._pgm.data[vertex]
+        load = data.event_tbl["type"] == ProvenanceVertexData.EventType.LOAD
+        store = data.event_tbl["type"] == ProvenanceVertexData.EventType.STORE
+        access = load | store
+        if not access.any():
+            # no dereferences, skip
+            return
+        # make a point at the load/store location
+        self._collection_map["load"].extend(data.event_tbl[load]["addr"])
+        self._collection_map["store"].extend(data.event_tbl[store]["addr"])
+        # mark this address range as interesting
+        low = data.event_tbl[access]["addr"].min()
+        high = data.event_tbl[access]["addr"].max()
+        self._add_range(low, high)
+        register_clickable = partial(self._clickable_element, vertex)
+        data.event_tbl[access]["time"].apply(register_clickable)
+
+        # extract Y limits and set the bounding box
+        min_time = data.event_tbl[access]["time"].min()
+        max_time = data.event_tbl[access]["time"].max()
+        self._add_bbox(low, high, min_time)
+        self._add_bbox(low, high, max_time)
+
+        # create all the line coordinates
+        self._collection_map["load"].extend(
+            data.event_tbl[load][["addr", "time"]])
+        self._collection_map["store"].extend(
+            data.event_tbl[store][["addr", "time"]])
+
+    def _get_patch_collections(self, axes):
+        for key, collection in self._collection_map.items():
+            marker = self._markers[key]
+            coll = PathCollection([marker.get_path()],
+                                  offsets=collection,
+                                  transOffset=axes.transAxes,
+                                  facecolors=[self._colors[key]])
+            yield coll
+
+    def get_legend(self):
+        handles = [
+            PathPatch(self._markers["load"], color=self._colors["load"],
+                      label="load"),
+            PathPatch(self._markers["store"], color=self._colors["store"],
+                      label="store"),
         ]
         return handles
 
@@ -417,12 +435,6 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
         self.annotations.append(label)
         self._add_range(vmentry.start, vmentry.end)
 
-    def load(self, dataset):
-        """XXX experimental"""
-        # dataset is a vmmap
-        for vme in dataset:
-            self.inspect(vme)
-
     def get_patches(self, axes):
         super().get_patches(axes)
         coll = PatchCollection(self.patches, alpha=0.1,
@@ -443,6 +455,9 @@ class BaseAddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
     """
     Plot that shows the capability size in the address space
     vs the time of allocation (i.e. when the capability is created).
+
+    Note this only builds a plot for the first graph in
+    :prop:`VMMapPlotDriver._pgm_list`.
     """
 
     title = "Capabilities derivation time vs capability position"
@@ -473,16 +488,14 @@ class BaseAddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
         self.ax.invert_yaxis()
 
     def run(self):
-        self._vmmap_parser.parse()
-        vmmap = self._vmmap_parser.get_model()
         if self.config.publish:
             # set the style
             self._style["font"] = FontProperties(size=20)
-        cap_builder = self.patch_builder_class(figure=self.fig,
-                                               pgm=self._provenance_graph)
-        self.register_patch_builder(self._provenance_graph.vertices(), cap_builder)
-        # self.register_patch_builder(self._provenance_graph, cap_builder)
-        self.register_patch_builder(vmmap, VMMapPatchBuilder(self.ax))
+        pgm = self._pgm_list[0]
+        graph = pgm.prov_view()
+        cap_builder = self.patch_builder_class(figure=self.fig, pgm=pgm)
+        self.register_patch_builder(graph.vertices(), cap_builder)
+        self.register_patch_builder(self._vmmap, VMMapPatchBuilder(self.ax))
         self.process(out_file=self._outfile)
 
 
@@ -522,144 +535,19 @@ class AddressMapDerefPlotDriver(BaseAddressMapPlotDriver):
     title = "Capabilities deallocation time vs capability position"
     patch_builder_class = DerefPatchBuilder
 
-# class SyscallPatchBuilder(PatchBuilder):
-#     """
-#     The patch generator build the matplotlib patches for each
-#     syscall data
+class AddressMapAccessPlotDriver(BaseAddressMapPlotDriver):
+    """
+    Plot that shows the locations where capabilities are stored and loaded
+    from vs the time of access (i.e. when a capability is dereferenced
+    for a load or a store).
+    """
+    description = """
+    Generate address-map plot with memory access information.
 
-#     The nodes are rendered as lines with a different color depending
-#     on the system call type.
-#     """
-
-#     def __init__(self):
-#         super(SyscallPatchBuilder, self).__init__()
-
-#         self.y_unit = 10**-6
-#         """Unit on the y-axis"""
-
-#         self._patches = None
-#         """Cached list of generated patches"""
-
-#         self._mmap_rects = []
-#         """Rectangles representing mmap-munmap pairs"""
-
-#     def inspect(self, node):
-#         if node.cap.bound < node.cap.base:
-#             raise RuntimeError("Invalid capability range %s", node)
-#         bottom_y = node.cap.t_alloc * self.y_unit
-#         top_y = node.cap.t_free * self.y_unit
-
-#         if top_y < 0:
-#             # t_free is not valid
-#             top_y = bottom_y # for now don't bother looking for the max y
-#         rect = patches.Rectangle((node.cap.base, bottom_y),
-#                                  node.cap.length, top_y - bottom_y)
-#         self._mmap_rects.append(rect)
-
-#         #invalidate collections
-#         self._patches = None
-
-#     def get_patches(self):
-#         if self._patches:
-#             return self._patches
-#         self._patches = []
-
-#         coll = collections.PatchCollection(self._mmap_rects)
-#         self._patches = [coll]
-#         return self._patches
-
-#     def get_legend(self):
-#         if not self._patches:
-#             self.get_patches()
-#         legend = (self._patches, ["mmap"])
-#         return legend
-
-
-# class SyscallAddressMapPlot(AddressMapPlot):
-#     """
-#     Address map plot that only shows system calls
-#     """
-
-#     def __init__(self, *args, **kwargs):
-#         self.syscall_graph = None
-#         """Graph of syscall nodes"""
-
-#         super(SyscallAddressMapPlot, self).__init__(*args, **kwargs)
-
-#         self.patch_builder = SyscallPatchBuilder()
-#         """Patch builder for syscall nodes"""
-
-#     def init_dataset(self):
-#         dataset = super(SyscallAddressMapPlot, self).init_dataset()
-#         self.syscall_graph = gt.Graph(directed=True)
-#         vdata = self.syscall_graph.new_vertex_property("object")
-#         self.syscall_graph.vp["data"] = vdata
-#         return dataset
-
-#     def build_dataset(self):
-#         """
-#         Load the provenance graph and only retain SYS_* nodes with
-#         relevant alloc and free times.
-
-#         XXX This is a PoC, the actual transformation should be done
-#         on the provenance graph directly
-#         XXX Make a generic graph transformation module based on visitors
-#         """
-#         super(SyscallAddressMapPlot, self).build_dataset()
-#         logger.info("Filter syscall nodes and merge mmap/munmap")
-
-#         class _Visitor(gt.BFSVisitor):
-#             pass
-
-#         for node in self.dataset.vertices():
-#             data = self.dataset.vp.data[node]
-#             if data.origin == CheriNodeOrigin.SYS_MMAP:
-#                 # look for munmap in the subtree, if none
-#                 # is found the map survives until the process
-#                 # exits
-#                 syscall_node = self.syscall_graph.add_vertex()
-#                 sys_node_data = ProvenanceVertexData()
-#                 sys_node_data.cap = CheriCap()
-#                 sys_node_data.cap.base = data.cap.base
-#                 sys_node_data.cap.length = data.cap.length
-#                 sys_node_data.cap.offset = data.cap.offset
-#                 sys_node_data.cap.permissions = data.cap.permissions
-#                 sys_node_data.cap.objtype = data.cap.objtype
-#                 sys_node_data.cap.valid = data.cap.valid
-#                 sys_node_data.cap.sealed = data.cap.sealed
-#                 sys_node_data.cap.t_alloc = data.cap.t_alloc
-#                 sys_node_data.origin = data.origin
-#                 sys_node_data.pc = data.pc
-#                 sys_node_data.is_kernel = data.is_kernel
-#                 self.syscall_graph.vp.data[syscall_node] = sys_node_data
-
-#                 _visitor = _Visitor()
-#                 for descendant in gt.search.bfs_search(self.dataset, node, _visitor):
-#                     descendant_data = self.dataset.vp.data[descendant]
-#                     if descendant_data.origin == CheriNodeOrigin.SYS_MUNMAP:
-#                         if sys_node_data.cap.t_free != -1:
-#                             logger.error("Multiple MUNMAP for a single mapped block")
-#                             raise RuntimeError("Multiple MUNMAP for a single mapped block")
-#                         sys_node_data.cap.t_free = descendant_data.cap.t_alloc
-
-#     def _prepare_patches(self):
-#         """
-#         Prepare the patches and address ranges in the patch_builder
-#         and range_builder.
-#         """
-#         dataset_progress = ProgressPrinter(self.dataset.num_vertices(),
-#                                            desc="Adding nodes")
-#         for item in self.syscall_graph.vertices():
-#             data = self.syscall_graph.vp.data[item]
-#             self.patch_builder.inspect(data)
-#             self.range_builder.inspect(data)
-#             dataset_progress.advance()
-#         dataset_progress.finish()
-
-#         if self.vmmap:
-#             logger.debug("Generate mmap regions")
-#             view_box = self.patch_builder.get_bbox()
-#             ymax = view_box.ymax * (1 + self.viewport_padding)
-#             for vme in self.vmmap:
-#                 self.vmmap_patch_builder.inspect(vme)
-#                 self.range_builder.inspect_range(Range(vme.start, vme.end))
+    The address-map plot shows the location and size of capabilities in
+    the address-space at the time of dereference.
+    The Y axis shows elapsed time in cycles or committed instructions.
+    The X axis is a non-linear representation of the address space.
+    """
+    title = "Capabilities store/load time vs memory location"
+    patch_builder_class = AccessLocationPatchBuilder

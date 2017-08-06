@@ -28,15 +28,17 @@
 import logging
 from contextlib import suppress
 
-from cheriplot.core import SubCommand, BaseToolTaskDriver, Argument, Option
+from cheriplot.core import (
+    SubCommand, BaseToolTaskDriver, Argument, Option, NestedConfig)
+from cheriplot.vmmap import VMMapFileParser
 from cheriplot.provenance.plot import (
     AddressMapPlotDriver, AddressMapDerefPlotDriver, PtrSizeDerefDriver,
-    PtrSizeBoundDriver, PtrSizeCdfDriver)
+    PtrSizeBoundDriver, PtrSizeCdfDriver, AddressMapAccessPlotDriver)
 from cheriplot.provenance.model import ProvenanceGraphManager
 from cheriplot.provenance.stats import ProvenanceStatsDriver
 from cheriplot.provenance.visit import (
     FilterNullVertices, FilterKernelVertices, FilterCfromptr, MergeCfromptr,
-    ProvGraphTimeSlice)
+    ProvGraphTimeSlice, FilterStackVertices)
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +52,12 @@ class GraphAnalysisDriver(BaseToolTaskDriver):
     This tool processes a cheriplot graph to produce plots and statistics.
     """
 
-    graph = Argument(help="Path to the cheriplot graph.")
+    graphs = Argument(nargs="+", help="Path to the cheriplot graph.")
+    vmmap = NestedConfig(VMMapFileParser)
     filters = Option(
         nargs="*",
         default=[],
-        choices=("no-kernel", "no-cfromptr", "tslice"),
+        choices=("no-kernel", "no-cfromptr", "tslice", "no-stack"),
         help="Enable filters, default no-null, no-kernel, no-cfromptr")
     tslice_mode = Option(
         nargs="+",
@@ -73,6 +76,7 @@ class GraphAnalysisDriver(BaseToolTaskDriver):
         help="tslice filter start-time and end-time parameters")
     addrmap = SubCommand(AddressMapPlotDriver)
     addrmap_deref = SubCommand(AddressMapDerefPlotDriver)
+    addrmap_access = SubCommand(AddressMapAccessPlotDriver)
     ptrsize_cdf = SubCommand(PtrSizeCdfDriver)
     ptrsize_bound = SubCommand(PtrSizeBoundDriver)
     ptrsize_deref = SubCommand(PtrSizeDerefDriver)
@@ -80,26 +84,45 @@ class GraphAnalysisDriver(BaseToolTaskDriver):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.pgm = ProvenanceGraphManager.load(self.config.graph)
-        """Loaded graph manager."""
 
-    def run(self):
-        filters = FilterNullVertices(self.pgm) + MergeCfromptr(self.pgm)
+        self.pgm_list = list(map(ProvenanceGraphManager.load, self.config.graphs))
+        """Loaded graph managers."""
+
+        self._vmmap_parser = VMMapFileParser(config=self.config.vmmap)
+        """Process memory mapping CSV parser"""
+
+    def _get_filter(self, pgm):
+        """Get a combined filter for a given graph manager."""
+        filters = FilterNullVertices(pgm) + MergeCfromptr(pgm)
         if "no-kernel" in self.config.filters:
-            filters = FilterKernelVertices(self.pgm) + filters
+            filters = FilterKernelVertices(pgm) + filters
         if "no-cfromptr" in self.config.filters:
-            filters += FilterCfromptr(self.pgm)
+            filters += FilterCfromptr(pgm)
+        if "no-stack" in self.config.filters:
+            for entry in vmmap:
+                if entry.grows_down:
+                    break
+            else:
+                logger.error("no-stack filter requires vmmap argument")
+                raise RuntimeError("np-stack filter requires vmmap argument")
+            filters += FilterStackVertices(pgm, entry.start, entry.end)
         if "tslice" in self.config.filters:
             start, end = self.config.tslice_time
             deref = "deref" in self.config.tslice_mode
             create = "create" in self.config.tslice_mode
             access = "access" in self.config.tslice_mode
             filters += ProvGraphTimeSlice(
-                self.pgm, start, end, creation_time=create,
+                pgm, start, end, creation_time=create,
                 deref_time=deref, access_time=access)
-        filtered_graph = filters(self.pgm.graph)
-        vfilt, _ = filtered_graph.get_vertex_filter()
-        self.pgm.graph.set_vertex_filter(vfilt)
+        return filters
 
-        sub = self.config.subcommand_class(self.pgm, config=self.config)
+    def run(self):
+        self._vmmap_parser.parse()
+        vmmap = self._vmmap_parser.get_model()
+        for pgm in self.pgm_list:
+            graph_filter = self._get_filter(pgm)
+            filtered_graph = graph_filter(pgm.graph)
+            vfilt, _ = filtered_graph.get_vertex_filter()
+            pgm.graph.set_vertex_filter(vfilt)
+        sub = self.config.subcommand_class(self.pgm_list, vmmap, config=self.config)
         sub.run()

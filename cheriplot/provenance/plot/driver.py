@@ -37,16 +37,19 @@ class VMMapPlotDriver(TaskDriver):
     Base driver for plots that require a vmmap file as an input
     """
     outfile = Option(help="Output file", default=None)
-    vmmap = NestedConfig(VMMapFileParser)
 
-    def __init__(self, pgm, **kwargs):
+    def __init__(self, pgm_list, vmmap, **kwargs):
         """
         :param pgm: provenance graph manager
         :param kwargs: TaskDriver arguments
         """
         super().__init__(**kwargs)
-        self._pgm = pgm
-        self._provenance_graph = pgm.prov_view()
-        self._vmmap_parser = VMMapFileParser(config=self.config.vmmap)
+        self._pgm_list = pgm_list
+        """List of graph managers for every input graph."""
+
+        self._vmmap = vmmap
+        """The process memory mapping model."""
+
         default_outfile = "{}_%s.png".format(self.__class__.__name__.lower())
         self._outfile = self.config.outfile or default_outfile
+        """Output file name for the plot."""

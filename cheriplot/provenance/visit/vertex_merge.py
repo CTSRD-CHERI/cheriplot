@@ -84,6 +84,28 @@ class FilterKernelVertices(MaskBFSVisit):
             if data.pc != 0 and data.is_kernel:
                 self.vertex_mask[u] = False
 
+
+class FilterStackVertices(MaskBFSVisit):
+    """
+    Mask capabilities that point to the stack.
+    """
+
+    description = "Mask capabilities to stack objects"
+
+    def __init__(self, pgm, stack_begin, stack_end):
+        super().__init__(pgm)
+
+        self.stack_begin = stack_begin
+        self.stack_end = stack_end
+
+    def examine_vertex(self, u):
+        if not self.pgm.layer_prov[u]:
+            return
+        data = self.pgm.data[u]
+        if data.cap.base >= self.stack_begin and data.cap.bound <= self.stack_end:
+            self.vertex_mask[u] = False
+
+
 class FilterCfromptr(MaskBFSVisit):
     """
     Transform that removes cfromptr vertices that are never stored
