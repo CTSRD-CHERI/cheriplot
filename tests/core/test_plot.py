@@ -9,8 +9,7 @@ from sortedcontainers import SortedList
 from unittest import mock
 from cheriplot.core.plot import *
 
-benchmark = pytest.mark.skipif(not pytest.config.getoption("--run-benchmark"),
-                               reason="Requires --run-benchmark option")
+from tests.utils import skipbenchmark
 
 range_set_10 = [(0,10), (20,30), (40,50), (60,70)]
 # assume that the omit_scale is 0.01
@@ -107,7 +106,8 @@ def test_interval_merge(trans, r_in, r_add, r_out):
     assert len(r_in) == len(r_out)
     assert set(r_in) == set(r_out)
 
-@benchmark
+@skipbenchmark
+@pytest.mark.benchmark(group="merge")
 def test_interval_merge_benchmark(benchmark, trans):
     ints = np.random.randint(0,100,10000)
     data = np.column_stack((ints, ints + 30))
@@ -131,7 +131,8 @@ def test_collapse_inverse_transform(mock_scale, trans, ranges, val, expect):
     t = trans.inverted().transform([float(val), 0])
     assert pytest.approx(t[0], 0.000001) == expect
 
-@benchmark
+@skipbenchmark
+@pytest.mark.benchmark(group="collapse")
 def test_collapse_benchmark_intervals(benchmark, trans, intervals):
     trans.set_ranges(intervals)
     # trigger gen_intervals outside benchmark loop
@@ -141,7 +142,8 @@ def test_collapse_benchmark_intervals(benchmark, trans, intervals):
         trans.get_x(np.random.randint(0, max_interval))
     benchmark.pedantic(run, iterations=5, rounds=100)
 
-@benchmark
+@skipbenchmark
+@pytest.mark.benchmark(group="lookup")
 @pytest.mark.parametrize("rounds", np.logspace(2,4,3))
 def test_collapse_benchmark_lookup(benchmark, trans, intervals_1000, rounds):
     intervals = intervals_1000

@@ -936,7 +936,7 @@ class CapabilityBranchSubparser:
             self._branch_cbk = lambda: self._do_scan_cjr(
                 inst, entry, regs, last_regs, idx)
         return False
-        
+
     def _do_scan_cjr(self, inst, entry, regs, last_regs, idx):
         """
         Discard current pcc and replace it.
@@ -1262,7 +1262,7 @@ class PointerProvenanceSubparser:
         self.exec_maybe = []
         """
         Callback to run when a decision about an instruction
-        commit/revoke caused by an exception is resolved.        
+        commit/revoke caused by an exception is resolved.
         """
 
         self.exec_maybe_addr = []
@@ -1482,8 +1482,8 @@ class PointerProvenanceSubparser:
         """
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
-                lambda: self.scan_csetbounds(
-                    inst, entry, regs, last_regs, idx, True),
+                partial(self.scan_csetbounds, inst, entry, regs,
+                        last_regs, idx, True),
                 entry.pc)
             return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.SETBOUNDS)
@@ -1503,8 +1503,8 @@ class PointerProvenanceSubparser:
         """
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
-                lambda: self.scan_cfromptr(
-                    inst, entry, regs, last_regs, idx, True),
+                partial(self.scan_cfromptr, inst, entry, regs,
+                        last_regs, idx, True),
                 entry.pc)
             return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.FROMPTR)
@@ -1522,8 +1522,8 @@ class PointerProvenanceSubparser:
         """
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
-                lambda: self.scan_candperm(
-                    inst, entry, regs, last_regs, idx, True),
+                partial(self.scan_candperm, inst, entry, regs,
+                        last_regs, idx, True),
                 entry.pc)
             return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.ANDPERM)
@@ -1539,8 +1539,8 @@ class PointerProvenanceSubparser:
         # XXX if inst.has_exception and entry.exception != 0 and not inst.in_delay_slot and not maybe_call:
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
-                lambda: self.scan_cap_arith(
-                    inst, entry, regs, last_regs, idx, True),
+                partial(self.scan_cap_arith, inst, entry, regs,
+                        last_regs, idx, True),
                 entry.pc)
             return False
         dst = inst.op0
@@ -1591,7 +1591,7 @@ class PointerProvenanceSubparser:
         """
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
-                lambda: self._handle_dereference(inst, entry, ptr_reg, True),
+                partial(self._handle_dereference, inst, entry, ptr_reg, True),
                 entry.memory_address)
             return
 
@@ -1674,8 +1674,8 @@ class PointerProvenanceSubparser:
         """
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
-                lambda: self.scan_mem_store(
-                    inst, entry, regs, last_regs, idx, True),
+                partial(self.scan_mem_store, inst, entry, regs,
+                        last_regs, idx, True),
                 entry.pc)
             return False
 
@@ -1693,7 +1693,7 @@ class PointerProvenanceSubparser:
         """
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
-                lambda: self.scan_clc(inst, entry, regs, last_regs, idx, True),
+                partial(self.scan_clc, inst, entry, regs, last_regs, idx, True),
                 entry.memory_address)
             return False
 
@@ -1751,7 +1751,7 @@ class PointerProvenanceSubparser:
         """
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
-                lambda: self.scan_csc(inst, entry, regs, last_regs, idx, True),
+                partial(self.scan_csc, inst, entry, regs, last_regs, idx, True),
                 entry.memory_address)
             return False
 
