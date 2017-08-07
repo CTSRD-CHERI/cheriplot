@@ -77,6 +77,7 @@ class ResolveSymbolsGraphVisit(BFSGraphVisit):
             return self.pgm.edge_operation[edge]
 
     def examine_vertex(self, u):
+        self.progress.advance()
         if not self.pgm.layer_call[u]:
             return
         udata = self.pgm.data[u]

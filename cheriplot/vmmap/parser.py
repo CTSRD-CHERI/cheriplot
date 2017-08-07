@@ -29,7 +29,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from cheriplot.core import ConfigurableComponent, Argument
+from cheriplot.core import ConfigurableComponent, Option
 from cheriplot.vmmap.model import VMMapModel
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,8 @@ class VMMapFileParser(ConfigurableComponent):
     """
     Parse a vmmap file created by procstat or libprocstat-based vmmap_dump tool
     """
-    vmmap_file = Argument(nargs="?",
+    vmmap_file = Option(
+        default=None,
         help="File that specify the VM mappings for the traced process")
 
     def __init__(self, **kwargs):

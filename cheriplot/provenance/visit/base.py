@@ -32,7 +32,7 @@ import logging
 
 from graph_tool.all import BFSVisitor, bfs_search, DFSVisitor, dfs_search
 
-from cheriplot.core import ProgressTimer
+from cheriplot.core import ProgressTimer, ProgressManager
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,9 @@ class GraphVisitBase:
         self.pgm = pgm
         """The graph manager model."""
 
+        self.progress = None
+        """Progress manager active during the visit."""
+
     def __call__(self, graph_view):
         """
         Visit the graph with the given view.
@@ -72,14 +75,18 @@ class GraphVisitBase:
         :param graph_view: a :class:`graph_tool.GraphView`
         :return: a :class:`graph_tool.GraphView` after the scan.
         """
-        with ProgressTimer("%s" % self, logger):
-            if self.order == "bfs":
-                bfs_search(graph_view, visitor=self)
-            elif self.order == "dfs":
-                dfs_search(graph_view, visitor=self)
-            else:
-                raise ValueError("Invalid visit order %s" % self.order)
-            return self.finalize(graph_view)
+        msg = "{}".format(self)
+        graph_size = graph_view.num_vertices()
+        with ProgressTimer(msg, logger):
+            with ProgressManager(msg, 0, graph_size) as progress:
+                self.progress = progress
+                if self.order == "bfs":
+                    bfs_search(graph_view, visitor=self)
+                elif self.order == "dfs":
+                    dfs_search(graph_view, visitor=self)
+                else:
+                    raise ValueError("Invalid visit order %s" % self.order)
+                return self.finalize(graph_view)
 
     def finalize(self, graph_view):
         """

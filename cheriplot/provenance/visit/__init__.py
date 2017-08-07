@@ -7,3 +7,4 @@ from .vertex_merge import (
     MergeCfromptr, FilterStackVertices)
 from .symbols import ResolveSymbolsGraphVisit
 from .slice import ProvGraphTimeSlice
+from .driver import GraphFilterDriver

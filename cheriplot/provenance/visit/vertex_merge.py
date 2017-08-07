@@ -65,6 +65,7 @@ class FilterNullVertices(MaskBFSVisit):
     description = "Mask NULL capabilities"
 
     def examine_vertex(self, u):
+        self.progress.advance()
         if self.pgm.layer_prov[u]:
             data = self.pgm.data[u]
             if ((data.cap.length == 0 and data.cap.base == 0) or
@@ -79,6 +80,7 @@ class FilterKernelVertices(MaskBFSVisit):
     description = "Mask Kernel capabilities"
 
     def examine_vertex(self, u):
+        self.progress.advance()
         if self.pgm.layer_prov[u]:
             data = self.pgm.data[u]
             if data.pc != 0 and data.is_kernel:
@@ -99,6 +101,7 @@ class FilterStackVertices(MaskBFSVisit):
         self.stack_end = stack_end
 
     def examine_vertex(self, u):
+        self.progress.advance()
         if not self.pgm.layer_prov[u]:
             return
         data = self.pgm.data[u]
@@ -115,6 +118,7 @@ class FilterCfromptr(MaskBFSVisit):
     description = "Filter temporary cfromptr"
 
     def examine_vertex(self, u):
+        self.progress.advance()
         if not self.pgm.layer_prov[u]:
             return
         data = self.pgm.data[u]
@@ -198,6 +202,7 @@ class MergeCfromptr(MaskBFSVisit):
         self.vertex_mask[u] = False
     
     def examine_vertex(self, u):
+        self.progress.advance()
         if not self.pgm.layer_prov[u]:
             return
         parent = self._get_parent(u)

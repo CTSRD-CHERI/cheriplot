@@ -102,6 +102,7 @@ class ProvGraphTimeSlice(BFSGraphVisit):
         return self._filter_event_time(v, mask)
 
     def examine_vertex(self, v):
+        self.progress.advance()
         if not self.pgm.layer_prov[v]:
             return
         match = False
