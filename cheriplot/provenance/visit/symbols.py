@@ -61,32 +61,23 @@ class ResolveSymbolsGraphVisit(BFSGraphVisit):
         self.symreader = symreader
         """Symbols reader"""
 
-    def _get_vertex_type(self, u):
-        """
-        Return the operation that generated the vertex (call, syscall, etc.)
-        """
-        call_view = self.pgm.call_view()
-        parents = list(call_view.vertex(u).in_neighbours())
-        if len(parents) == 0:
-            return None
-        elif len(parents) > 1:
-            raise ValueError("Call vertex with multiple parents %s %s",
-                             u, self.pgm.data[u])
-        else:
-            edge = call_view.edge(parents[0], u)
-            return self.pgm.edge_operation[edge]
+    def _get_progress_range(self, graph_view):
+        return (0, graph_view.num_edges())
 
-    def examine_vertex(self, u):
+    def examine_edge(self, e):
         self.progress.advance()
-        if not self.pgm.layer_call[u]:
+        src = e.source()
+        dst = e.target()
+        if (not self.pgm.layer_call[src] or
+            not self.pgm.layer_call[dst]):
             return
-        udata = self.pgm.data[u]
-        if udata.address is None:
-            return
-        if self._get_vertex_type(u) == EdgeOperation.CALL:
-            symdata = self.symreader.find_address(udata.address)
-            if symdata is not None:
-                udata.symbol, udata.symbol_file = symdata
-                logger.debug("Found symbol 0x%x -> (%s) %s",
-                             udata.address, udata.symbol_file, udata.symbol)
-        
+        if self.pgm.edge_operation[e] == EdgeOperation.CALL:
+            data = self.pgm.data[dst]
+            try:
+                sym, fname = self.symreader.find_address(data.address)
+                data.symbol = sym
+                data.symbol_file = fname
+                logger.warning("Found symbol 0x%x -> (%s) %s",
+                               data.address, data.symbol_file, data.symbol)
+            except TypeError:
+                return

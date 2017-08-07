@@ -32,6 +32,8 @@ import io
 from sortedcontainers import SortedDict
 from elftools.elf.elffile import ELFFile
 
+from cheriplot.core import ProgressTimer
+
 logger = logging.getLogger(__name__)
 
 class SymReader:
@@ -50,69 +52,54 @@ class SymReader:
         self.paths = path
         """Search paths for binaries that contain symbols."""
 
-        self.files = SortedDict()
-        """
-        Map memory base address to the ELFFile that provided the 
-        section mapped at that address.
-        """
+        self._symbol_map = {}
+        """Internal mapping of address to symbol name"""
 
-        self._load_mapped()
+        with ProgressTimer("Load symbols", logger):
+            self._load_mapped()
+
+    def _find_elf(self, vme_path):
+        fname = os.path.basename(vme_path)
+        if not fname:
+            return None
+        logger.debug("looking for %s", fname)
+        for path in self.paths:
+            bin_file = os.path.join(path, fname)
+            if os.path.exists(bin_file):
+                logger.debug("Found symbols for %s (%s)", fname, bin_file)
+                return bin_file
+        logger.debug("No ELF found for %s", bin_file)
+        return None
 
     def _load_mapped(self):
-        """
-        Load the binary files for each vnode-backed vmmap region.
-        """
+        loaded = []
         for vme in self.vmmap.get_model():
-            fname = os.path.basename(vme.path)
-            if not fname:
+            bin_file = self._find_elf(vme.path)
+            if bin_file is None or bin_file in loaded:
+                # is the file already been loaded?
                 continue
-            logger.debug("looking for %s", fname)
-            for path in self.paths:
-                bin_file = os.path.join(path, fname)
-                if os.path.exists(bin_file):
-                    logger.debug("Found symbols for %s (%s)", fname, bin_file)
-                    break
-            else:
-                logger.debug("No ELF found for %s", bin_file)
-                continue
-            # is the file already been opened?
-            for found in self.files.values():
-                _, base, elf, symtab = found
-                if elf.stream.name == bin_file:
-                    self.files[vme.start] = (vme.end, base, elf, symtab)
-                    break
-            else:
-                elf_file = ELFFile(open(bin_file, "rb"))
-                symtab = elf_file.get_section_by_name(".symtab")
-                if symtab is None:
-                    logger.debug("No symbol table for file %s, skipping",
-                                 elf_file.stream.name)
-                    continue
-                self.files[vme.start] = (vme.end, vme.start, elf_file, symtab)
+            loaded.append(bin_file)
+            elf_file = ELFFile(open(bin_file, "rb"))
+            symtab = elf_file.get_section_by_name(".symtab")
+            for sym in symtab.iter_symbols():
+                self._symbol_map[sym["st_value"]] = (sym.name, bin_file)
 
     def __repr__(self):
         data = io.StringIO()
         data.write("SymReader loaded symbols:\n")
-        for entry in self.files.values():
-            end, base, elf, symtab = entry
-            for sym in symtab.iter_symbols():
-                data.write("%s: 0x%x %s\n" % (
-                    elf.stream.name, base + sym["st_value"], sym.name))
+        for addr, (sym, fname) in self._symbol_map.items():
+            data.write("0x{:x} {} {}\n".format(addr, fname, sym))
         return data.getvalue()
 
     def find_file(self, addr):
         """
-        Find the file where the symbol at the given address is defined.        
+        Find the file where the symbol at the given address is defined.
         """
-        idx = self.files.bisect(addr)
-        match = idx - 1
-
-        if match < 0:
+        try:
+            sym, fname = self.symbol_map[addr]
+            return fname
+        except KeyError:
             return None
-        key = self.files.iloc[match]
-        if len(self.files) and self.files[key][0] >= addr:
-            base, elf_file, symtab = self.files[key][1:4]
-            return (base, elf_file, symtab)
 
     def find_symbol(self, addr):
         """
@@ -128,27 +115,15 @@ class SymReader:
         """
         Return the symbol and file where the address is found.
         """
-        match = self.find_file(addr)
-        if match is None:
+        try:
+            return self._symbol_map[addr]
+        except KeyError:
             return None
-        base, elf_file, symtab = match
-        for sym in symtab.iter_symbols():
-            if sym["st_value"] == addr:
-                return sym.name, elf_file.stream.name
-        return None
 
     def find_function(self, addr):
         """
         Return the symbol and file of the function containing the
         given address, if possible.
+        XXX TODO
         """
-        match = self.find_file(addr)
-        if match is None:
-            return None
-        base, elf_file, symtab = match
-        fn_sym = None
-        for sym in symtab.iter_symbols():
-            if sym["st_value"] + base <= addr:
-                if not fn_sym or fn_sym["st_value"] < sym["st_value"]:
-                    fn_sym = sym
-        return None
+        raise NotImplementedError("Not yet implemented")

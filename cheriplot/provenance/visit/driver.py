@@ -47,8 +47,12 @@ class GraphFilterDriver(BaseToolTaskDriver):
     """
 
     graph = Argument(help="Path to the cheriplot graph")
-    outfile = Option(default=None, help="Path to the output file")
-    display_name = Option(default=None, help="New display-name for the graph")
+    outfile = Option(
+        default=None,
+        help="Path to the output file")
+    display_name = Option(
+        default=None,
+        help="New display-name for the graph")
     purge = Option(
         action="store_true",
         help="Purge filtered elements in the output graph. "
@@ -57,15 +61,24 @@ class GraphFilterDriver(BaseToolTaskDriver):
         action="store_true",
         help="Do not remove existing graph filters.")
     vmmap = NestedConfig(VMMapFileParser)
-    no_null = Option(action="store_true", help="Filter null vertices")
-    no_kernel = Option(action="store_true", help="Filter kernel vertices")
-    no_cfromptr = Option(action="store_true", help="Filter cfromptr vertices")
-    no_stack = Option(action="store_true",
-                      help="Filter vertices pointing to the stack")
-    aggregate_ptrbounds = Option(action="store_true",
-                                 help="Merge sequences of cfromptr+csetbounds")
-    tslice = Option(action="store_true",
-                    help="Filter a graph slice (see tslice parameters)")
+    no_null = Option(
+        action="store_true",
+        help="Filter null vertices")
+    no_kernel = Option(
+        action="store_true",
+        help="Filter kernel vertices")
+    no_cfromptr = Option(
+        action="store_true",
+        help="Filter cfromptr vertices")
+    no_stack = Option(
+        action="store_true",
+        help="Filter vertices pointing to the stack")
+    aggregate_ptrbounds = Option(
+        action="store_true",
+        help="Merge sequences of cfromptr+csetbounds. This is not reversible.")
+    tslice = Option(
+        action="store_true",
+        help="Filter a graph slice (see tslice parameters)")
     tslice_mode = Option(
         nargs="+",
         choices=("deref", "create", "access"),
@@ -136,5 +149,6 @@ class GraphFilterDriver(BaseToolTaskDriver):
         if self.config.purge:
             with ProgressTimer("Purge filtered vertices", logger):
                 self.pgm.graph.purge_vertices()
-        self.pgm.save(self._outfile, self.config.display_name)
+        with ProgressTimer("Write output graph", logger):
+            self.pgm.save(self._outfile, self.config.display_name)
         
