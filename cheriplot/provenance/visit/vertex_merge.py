@@ -32,30 +32,15 @@ based on different properties such as origin and bounds.
 """
 
 import logging
+from itertools import chain
 
 import pandas as pd
-from graph_tool.all import GraphView
 
-from cheriplot.provenance.visit import BFSGraphVisit
+from cheriplot.provenance.visit import MaskBFSVisit
 from cheriplot.provenance.model import (
     CheriNodeOrigin, ProvenanceVertexData, CheriCap)
 
 logger = logging.getLogger(__name__)
-
-class MaskBFSVisit(BFSGraphVisit):
-    """
-    Base class for BFS visits that generate a masked graph-view
-    """
-
-    def __init__(self, pgm):
-        super().__init__(pgm)
-
-        self.vertex_mask = self.pgm.graph.new_vertex_property("bool", val=True)
-        """Vertex filter property"""
-
-    def finalize(self, graph_view):
-        return GraphView(graph_view, vfilt=self.vertex_mask)
-
 
 class FilterNullVertices(MaskBFSVisit):
     """
@@ -142,21 +127,6 @@ class MergeCfromptr(MaskBFSVisit):
 
     description = "Merge cfromptr+csetbounds sequences"
 
-    def _get_parent(self, u):
-        """Return the provenance-layer parent of a vertex, if any."""
-        prov_view = self.pgm.prov_view()
-        parents = prov_view.vertex(u).in_neighbours()
-        valid_parents = [p for p in parents if self.vertex_mask[p]]
-        if len(valid_parents) > 1:
-            msg = "Found provenance-layer vertex %s with "\
-                  "multiple parents %s" % (u, parents)
-            logger.error(msg)
-            raise ValueError(msg)
-        elif len(valid_parents) == 1 and valid_parents[0].out_degree() == 1:
-            return self.pgm.graph.vertex(valid_parents[0])
-        else:
-            return None
-
     def _make_merged(self, p, u):
         """
         Create a merged vertex in the provenance layer representing
@@ -168,7 +138,7 @@ class MergeCfromptr(MaskBFSVisit):
         p_data = self.pgm.data[p]
         u_data = self.pgm.data[u]
         v = self.pgm.graph.add_vertex()
-        v_data = ProvenanceVertexData()        
+        v_data = ProvenanceVertexData()
         v_data.origin = CheriNodeOrigin.PTR_SETBOUNDS
         v_data.pc = u_data.pc
         v_data.is_kernel = u_data.is_kernel or v_data.is_kernel
@@ -177,12 +147,14 @@ class MergeCfromptr(MaskBFSVisit):
             v_data.cap.t_free = max(u_data.cap.t_free, p_data.cap.t_free)
         else:
             v_data.cap.t_free = -1
-        # XXX making the dataframe for sorting is somewhat a waste
-        # it may be mitigated if the v_data could be left as a dataframe so
-        # we don't need to recreate it later on.
-        events = pd.DataFrame({k: p_data.events[k] + u_data.events[k]
-                               for k in v_data.events.keys()})
-        v_data.events = events.sort_values("time").to_dict(orient="list")
+        for col in v_data.events.keys():
+            # XXX can I use a generator here to avoid creating the list?
+            v_data.events[col] = p_data.events[col] + u_data.events[col]
+        # join active memory references
+        delta = len(p_data.events["time"])
+        u_mem = ((k, idx + delta) for k, idx in u_data.active_memory.items())
+        p_mem = p_data.active_memory.items()
+        v_data.active_memory = dict(chain(p_mem, u_mem))
         # copy edges
         for w in p.in_neighbours():
             e = self.pgm.graph.add_edge(w, v)
@@ -200,16 +172,19 @@ class MergeCfromptr(MaskBFSVisit):
         self.vertex_mask[v] = True
         self.vertex_mask[p] = False
         self.vertex_mask[u] = False
-    
-    def examine_vertex(self, u):
+
+    def _get_progress_range(self, graph_view):
+        return (0, graph_view.num_edges())
+
+    def examine_edge(self, e):
         self.progress.advance()
-        if not self.pgm.layer_prov[u]:
+        src = e.source()
+        dst = e.target()
+        if (not self.pgm.layer_prov[src] or
+            not self.pgm.layer_prov[dst]):
             return
-        parent = self._get_parent(u)
-        if parent is None:
-            return
-        parent_data = self.pgm.data[parent]
-        data = self.pgm.data[u]
-        if (parent_data.origin == CheriNodeOrigin.FROMPTR and
-            data.origin == CheriNodeOrigin.SETBOUNDS):
-            self._make_merged(parent, u)
+        src_data = self.pgm.data[src]
+        if src_data.origin == CheriNodeOrigin.FROMPTR:
+            dst_data = self.pgm.data[dst]
+            if dst_data.origin == CheriNodeOrigin.SETBOUNDS:
+                self._make_merged(src, dst)

@@ -67,27 +67,28 @@ def assert_prov_vertex_data_equal(u_data, v_data):
     Test that two provenance graph vertices have the same data
     """
     assert u_data.origin == v_data.origin,\
-        "origin differ expect:%s found:%s" % (u_data, v_data)
+        "origin differ expect:{} found:{}".format(u_data, v_data)
     assert u_data.pc == v_data.pc,\
-        "pc differ expect:%s found:%s" % (u_data, v_data)
+        "pc differ expect:{} found:{}".format(u_data, v_data)
     assert u_data.is_kernel == v_data.is_kernel,\
-        "is_kernel differ expect:%s found:%s" % (u_data, v_data)
+        "is_kernel differ expect:{} found:{}".format(u_data, v_data)
     assert u_data.cap == v_data.cap,\
-        "cap differ expect:%s found:%s" % (u_data, v_data)
+        "cap differ expect:{} found:{}".format(u_data, v_data)
     assert u_data.cap.offset == v_data.cap.offset,\
-        "cap offset differ expect:%s found:%s" % (u_data, v_data)
+        "cap offset differ expect:{} found:{}".format(u_data, v_data)
+    assert u_data.active_memory == v_data.active_memory,\
+        "active memory differ expect:{} found:{}".format(
+            u_data.active_memory, v_data.active_memory)
     # events should be unordered but for performance reasons
     # we ensure ordering at the use/deref/memop category level
     memop_mask = ProvenanceVertexData.EventType.memop_mask()
     deref_mask = ProvenanceVertexData.EventType.deref_mask()
-    # use_mask = ProvenanceVertexData.EventType.use_mask() XXX use events no longer exist
-    # masks = [memop_mask, deref_mask, use_mask]
     masks = [memop_mask, deref_mask]
     # compare the table type column with each mask
     # t = event-table type column (Series)
     # m = mask pattern
     assert len(u_data.event_tbl) == len(v_data.event_tbl),\
-        "events differ:\nexpect:%s\nfound:%s" % (
+        "events differ:\nexpect:{}\nfound:{}".format(
             u_data.event_tbl, v_data.event_tbl)
     fn = lambda t,m: (t & m) != 0
     u_cond = map(fn, repeat(u_data.event_tbl["type"]), masks)
@@ -107,14 +108,14 @@ def assert_prov_vertex_data_equal(u_data, v_data):
     fn = lambda df_match: df_match.all().all()
     bool_match = reduce(operator.and_, map(fn, match))
 
-    assert bool_match, "events differ:\nexpect:%s\nfound:%s" % (
+    assert bool_match, "events differ:\nexpect:{}\nfound:{}".format(
         u_data.event_tbl, v_data.event_tbl)
 
 def assert_call_vertex_data_equal(u_data, v_data):
     """
     Test that two call graph vertices have the same data
     """
-    assert u_data == v_data, "call differ:\nexpect:%s\nfound:%s" % (
+    assert u_data == v_data, "call differ:\nexpect:{}\nfound:{}".format(
         u_data, v_data)
 
 def assert_edge_equal(expect, e, other, f):

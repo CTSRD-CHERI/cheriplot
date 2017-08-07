@@ -47,6 +47,14 @@ class GraphFilterDriver(BaseToolTaskDriver):
 
     graph = Argument(help="Path to the cheriplot graph")
     outfile = Option(default=None, help="Path to the output file")
+    display_name = Option(default=None, help="New display-name for the graph")
+    purge = Option(
+        action="store_true",
+        help="Purge filtered elements in the output graph. "
+        "This is not reversible.")
+    incremental = Option(
+        action="store_true",
+        help="Do not remove existing graph filters.")
     vmmap = NestedConfig(VMMapFileParser)
     no_null = Option(action="store_true", help="Filter null vertices")
     no_kernel = Option(action="store_true", help="Filter kernel vertices")
@@ -118,10 +126,13 @@ class GraphFilterDriver(BaseToolTaskDriver):
     def run(self):
         self._vmmap_parser.parse()
         vmmap = self._vmmap_parser.get_model()
-        self.pgm.graph.clear_filters()
+        if not self.config.incremental:
+            self.pgm.graph.clear_filters()
         graph_filter = self._get_filter(self.pgm)
         filtered_graph = graph_filter(self.pgm.graph)
         vfilt, _ = filtered_graph.get_vertex_filter()
         self.pgm.graph.set_vertex_filter(vfilt)
-        self.pgm.save(self._outfile)
+        if self.config.purge:
+            self.pgm.graph.purge_vertices()
+        self.pgm.save(self._outfile, self.config.display_name)
         

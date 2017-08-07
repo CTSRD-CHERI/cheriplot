@@ -303,6 +303,17 @@ class ProvenanceVertexData:
         """
 
         self._active_memory = {}
+        """Map active memory addresses to rows in the events table."""
+
+    @property
+    def active_memory(self):
+        """XXX temporary alias to avoid rebuilding existin graphs."""
+        return self._active_memory
+
+    @active_memory.setter
+    def active_memory(self, val):
+        """XXX temporary alias to avoid rebuilding existin graphs."""
+        self._active_memory = val
 
     @cached_property
     def event_tbl(self):
@@ -358,13 +369,13 @@ class ProvenanceVertexData:
         Note: this relies on temporal ordering of entries in the event
         table, no sorting is done.
         """
-        return self._active_memory.keys()
+        return self.active_memory.keys()
 
     def has_active_memory(self):
         """
         Check whether this vertex is currnetly stored in memory.
         """
-        return len(self._active_memory) > 0
+        return len(self.active_memory) > 0
 
     # shortcuts for mem-op events
     add_mem_load = partialmethod(add_event, type_=EventType.LOAD)

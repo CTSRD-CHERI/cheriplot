@@ -7,7 +7,8 @@ import logging
 from unittest.mock import Mock, call
 
 from cheriplot.provenance.model import (
-    CheriNodeOrigin, CheriCapPerm, EdgeOperation, ProvenanceGraphManager)
+    CheriNodeOrigin, CheriCapPerm, EdgeOperation, ProvenanceGraphManager,
+    ProvenanceVertexData)
 
 from cheriplot.provenance.visit import (
     FilterNullVertices, FilterKernelVertices, FilterCfromptr, MergeCfromptr,
@@ -44,7 +45,7 @@ def test_chain_visit():
     result = chained(Mock())
     assert result.call_chain.call_args_list == [call(0), call(1), call(2)]
 
-
+# shorthand for rw permissions
 rw_perm = CheriCapPerm.LOAD | CheriCapPerm.STORE
 
 # test the kernel vertex filter
@@ -228,21 +229,70 @@ graph_merge_cfromptr = (
         "id": "C",
         "origin": CheriNodeOrigin.FROMPTR,
         "cap": model_cap(0x6000, 0x0, 0x100, rw_perm, t=10),
-        "pc": 0xf0000
+        "pc": 0xf0000,
+        "events": {
+            "time": [1, 2, 10, 20, 50],
+            "addr": [0xa10, 0xa20, 0xa30, 0xa40, 0xa50],
+            "type": [
+                ProvenanceVertexData.EventType.LOAD,
+                ProvenanceVertexData.EventType.STORE,
+                ProvenanceVertexData.EventType.DEREF_STORE,
+                ProvenanceVertexData.EventType.DEREF_LOAD,
+                ProvenanceVertexData.EventType.STORE
+            ]},
+        "active_memory": {
+            0xa20: 1,
+            0xa50: 4,
+        },
     }),
     ("prov_node", {
         "only": "subgraph",
         "id": "D",
         "origin": CheriNodeOrigin.SETBOUNDS,
         "cap": model_cap(0x6000, 0x0, 0x10, rw_perm, t=15),
-        "pc": 0x2000
+        "pc": 0x2000,
+        "events": {
+            "time": [100, 120, 140, 150, 200],
+            "addr": [0xb10, 0xb20, 0xb20, 0xb30, 0xb40],
+            "type": [
+                ProvenanceVertexData.EventType.LOAD,
+                ProvenanceVertexData.EventType.STORE,
+                ProvenanceVertexData.EventType.DELETE,
+                ProvenanceVertexData.EventType.STORE,
+                ProvenanceVertexData.EventType.DEREF_LOAD
+            ]},
+        "active_memory": {
+            0xb30: 3,
+        },
     }),
     ("prov_node", {
         "only": "expect",
         "id": "CD",
         "origin": CheriNodeOrigin.PTR_SETBOUNDS,
         "cap": model_cap(0x6000, 0x0, 0x10, rw_perm, t=15),
-        "pc": 0x2000
+        "pc": 0x2000,
+        "events": {
+            "time": [1, 2, 10, 20, 50,
+                     100, 120, 140, 150, 200],
+            "addr": [0xa10, 0xa20, 0xa30, 0xa40, 0xa50,
+                     0xb10, 0xb20, 0xb20, 0xb30, 0xb40],
+            "type": [
+                ProvenanceVertexData.EventType.LOAD,
+                ProvenanceVertexData.EventType.STORE,
+                ProvenanceVertexData.EventType.DEREF_STORE,
+                ProvenanceVertexData.EventType.DEREF_LOAD,
+                ProvenanceVertexData.EventType.STORE,
+                ProvenanceVertexData.EventType.LOAD,
+                ProvenanceVertexData.EventType.STORE,
+                ProvenanceVertexData.EventType.DELETE,
+                ProvenanceVertexData.EventType.STORE,
+                ProvenanceVertexData.EventType.DEREF_LOAD
+            ]},
+        "active_memory": {
+            0xa20: 1,
+            0xa50: 4,
+            0xb30: 8,
+        },
     }),
     ("prov_node", {
         "id": "E",

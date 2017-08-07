@@ -740,6 +740,7 @@ class MergePartialSubgraph(BFSGraphVisit):
         Case (3) is trivial to handle, the vertex is moved to the merged
         graph and the edges are recreated.
         """
+        self.progress.advance()
         if self.omit_vertex_map[u]:
             # nothing to do for this vertex, it is marked to be omitted
             return

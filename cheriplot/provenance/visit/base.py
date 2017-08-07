@@ -30,7 +30,8 @@ Base classes and functions for cheriplot graph visit.
 
 import logging
 
-from graph_tool.all import BFSVisitor, bfs_search, DFSVisitor, dfs_search
+from graph_tool.all import (
+    GraphView, BFSVisitor, bfs_search, DFSVisitor, dfs_search)
 
 from cheriplot.core import ProgressTimer, ProgressManager
 
@@ -68,6 +69,25 @@ class GraphVisitBase:
         self.progress = None
         """Progress manager active during the visit."""
 
+    def _get_progress_range(self, graph_view):
+        """
+        This is an hook to determine the size of the working set of the visit
+        for progress information.
+
+        :return: tuple (start, end) values or None if no progress information
+        should be given.
+        """
+        return (0, graph_view.num_vertices())
+
+    def _do_visit(self, graph_view):
+        if self.order == "bfs":
+            bfs_search(graph_view, visitor=self)
+        elif self.order == "dfs":
+            dfs_search(graph_view, visitor=self)
+        else:
+            raise ValueError("Invalid visit order %s" % self.order)
+        return self.finalize(graph_view)
+
     def __call__(self, graph_view):
         """
         Visit the graph with the given view.
@@ -76,17 +96,15 @@ class GraphVisitBase:
         :return: a :class:`graph_tool.GraphView` after the scan.
         """
         msg = "{}".format(self)
-        graph_size = graph_view.num_vertices()
         with ProgressTimer(msg, logger):
-            with ProgressManager(msg, 0, graph_size) as progress:
-                self.progress = progress
-                if self.order == "bfs":
-                    bfs_search(graph_view, visitor=self)
-                elif self.order == "dfs":
-                    dfs_search(graph_view, visitor=self)
-                else:
-                    raise ValueError("Invalid visit order %s" % self.order)
-                return self.finalize(graph_view)
+            progress_range = self._get_progress_range(graph_view)
+            if progress_range:
+                start, end = progress_range
+                with ProgressManager(msg, start, end) as progress:
+                    self.progress = progress
+                    return self._do_visit(graph_view)
+            else:
+                return self._do_visit(graph_view)
 
     def finalize(self, graph_view):
         """
@@ -99,9 +117,6 @@ class GraphVisitBase:
 
     def __add__(self, other):
         try:
-            if self.order != other.order:
-                raise ValueError("Can not chain %s visitor with %s visitor" % (
-                    other.order, self.order))
             return ChainGraphVisit(self.pgm, self, other)
         except AttributeError:
             raise TypeError("Can not add graph visit to %s" % type(other))
@@ -126,7 +141,7 @@ class ChainGraphVisit(GraphVisitBase):
 
         self._visitors = list(args)
 
-        self.order = args[-1].order if len(args) else None
+        self.order = [visit.order for visit in args]
 
     def __add__(self, other):
         """
@@ -136,10 +151,8 @@ class ChainGraphVisit(GraphVisitBase):
         """
         if not isinstance(other, GraphVisitBase):
             raise TypeError("Can not add graph visit to %s" % type(other))
-        if len(self._visitors) and other.order != self._visitors[0].order:
-            raise ValueError("Can not chain %s visitor with %s visitor" % (
-                other.order, self._visitors[0].order))
         self._visitors.append(other)
+        self.order.append(other.order)
         return self
 
     def __call__(self, graph_view):
@@ -158,3 +171,33 @@ class DFSGraphVisit(DFSVisitor, GraphVisitBase):
     """Depth-first-search ordering graph visitor."""
 
     order = "dfs"
+
+
+class MaskBFSVisit(BFSGraphVisit):
+    """
+    Base class for BFS visits that generate a masked graph-view
+    """
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+
+        self.vertex_mask = self.pgm.graph.new_vertex_property("bool", val=True)
+        """Vertex filter property"""
+
+    def finalize(self, graph_view):
+        return GraphView(graph_view, vfilt=self.vertex_mask)
+
+
+class MaskDFSVisit(DFSGraphVisit):
+    """
+    Base class for BFS visits that generate a masked graph-view
+    """
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+
+        self.vertex_mask = self.pgm.graph.new_vertex_property("bool", val=True)
+        """Vertex filter property"""
+
+    def finalize(self, graph_view):
+        return GraphView(graph_view, vfilt=self.vertex_mask)
