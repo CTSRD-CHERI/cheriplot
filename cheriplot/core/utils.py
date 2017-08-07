@@ -32,6 +32,7 @@ import cProfile
 import pstats
 import tracemalloc
 import linecache
+from threading import Thread, Lock, Event
 
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -88,6 +89,69 @@ class ProgressPrinter:
         if logger.getEffectiveLevel() < self.level:
             return
         print("\n")
+
+
+class ProgressManager(Thread):
+    """
+    Extended version of progress reporting. This runs as a separate thread that
+    prints out the internal progress count at given time intervals.
+    """
+
+    def __init__(self, desc, start, end, interval=2, level=logging.INFO):
+        super().__init__()
+
+        self._interval = interval
+        """Reporting interval (seconds)"""
+
+        self._lock = Lock()
+        """Progress counter lock"""
+
+        self._stop = Event()
+        """Progress finish event"""
+        self._stop.clear()
+
+        self._desc = desc
+        """Output description"""
+
+        self._start = start
+        """Start offset of the progress counter"""
+
+        self._end = end
+        """End offset of the progress counter"""
+
+        self._progress = start
+        """Current progress counter"""
+
+        self._level = level
+        """Log level"""
+
+    def advance(self, step=1):
+        if logger.getEffectiveLevel() > self._level:
+            return
+        with self._lock:
+            self._progress += step
+
+    def report(self):
+        with self._lock:
+            progress = int(self._progress * 100 / (self._end - self._start))
+        sys.stdout.write("\r{} [{:d}%] ({:d}/{:d})".format(
+            self._desc, progress, self._progress, self._end))
+        sys.stdout.flush()
+
+    def run(self):
+        timeout = False
+        while not timeout:
+            timeout = self._stop.wait(self._interval)
+            self.report()
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self._stop.set()
 
 
 class ProgressTimer:
