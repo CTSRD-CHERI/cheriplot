@@ -27,7 +27,8 @@
 
 import logging
 
-from cheriplot.core import BaseToolTaskDriver, Argument, Option, NestedConfig
+from cheriplot.core import (
+    BaseToolTaskDriver, Argument, Option, NestedConfig, ProgressTimer)
 from cheriplot.vmmap import VMMapFileParser
 from cheriplot.provenance.model import ProvenanceGraphManager
 from cheriplot.provenance.visit import (
@@ -133,6 +134,7 @@ class GraphFilterDriver(BaseToolTaskDriver):
         vfilt, _ = filtered_graph.get_vertex_filter()
         self.pgm.graph.set_vertex_filter(vfilt)
         if self.config.purge:
-            self.pgm.graph.purge_vertices()
+            with ProgressTimer("Purge filtered vertices", logger):
+                self.pgm.graph.purge_vertices()
         self.pgm.save(self._outfile, self.config.display_name)
         

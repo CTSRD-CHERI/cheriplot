@@ -9,7 +9,7 @@ setup(name="cheriplot",
           "console_scripts": [
               "cheriplot-provenance = tools.provenance:main",
               "cheriplot-graphproc = tools.graphproc:main",
-              "cheriplot-graphfilter = tools.grapfilter:main",
+              "cheriplot-graphfilter = tools.graphfilter:main",
               "cheriplot-symparse = tools.symparse:main",
               "cheriplot-tracedump = tools.pytracedump:main",
               "cheriplot-tracecmp = tools.pytracecmp:main",
