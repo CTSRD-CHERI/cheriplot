@@ -310,14 +310,31 @@ class PtrBoundCdf:
         self.name = pgm.name
         """The CDF name"""
 
-        self._build_cdf()
+        self._ignore_stack = False
+        """
+        When building the CDF, capabilities in the stack are
+        forced to the size of the whole stack mapping.
+        """
 
-    def _build_cdf(self):
+        self._stack_vm_entry = None
+        """VMmapEntry for the stack."""
+
+    def ignore_stack(self, stack_vm_entry):
+        self._stack_vm_entry = stack_vm_entry
+        self._ignore_stack = (stack_vm_entry is not None)
+
+    def build_cdf(self):
         ptr_sizes = []
         with ProgressTimer("Build CDF"):
             for v in self.graph.vertices():
                 vdata = self.graph.vp.data[v]
-                ptr_sizes.append(vdata.cap.length)
+                if (self._ignore_stack and
+                    vdata.cap.base >= self._stack_vm_entry.start and
+                    vdata.cap.bound <= self._stack_vm_entry.end):
+                    size = self._stack_vm_entry.end - self._stack_vm_entry.start
+                else:
+                    size = vdata.cap.length
+                ptr_sizes.append(size)
             size_freq = stats.itemfreq(ptr_sizes)
             logger.debug(size_freq)
             size_pdf = size_freq[:,1] / len(ptr_sizes)
@@ -375,10 +392,19 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
 
     outfile = Option(help="Output file", default=None)
     publish = Option(help="Adjust plot for publication", action="store_true")
+    ignore_stack = Option(
+        default=None,
+        help="Assume that vertices in the stack have the size of stack for the"
+        "graph with the given display-name.")
 
     def __init__(self, pgm_list, vmmap, **kwargs):
         super().__init__(**kwargs)
         self.pgm_list = pgm_list
+        """List of graph managers to plot."""
+
+        self.vmmap = vmmap
+        """VMmap model of the process memory mapping."""
+
         if self.config.publish:
             self._style["font"] = FontProperties(size=25)
 
@@ -402,6 +428,24 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
         self.ax.set_xscale("log", basex=2)
 
     def run(self):
-        datasets = map(PtrBoundCdf, self.pgm_list)
+        datasets = []
+        # grab the stack location in the addrspace
+        for vme in self.vmmap:
+            if vme.grows_down:
+                stack_vm_entry = vme
+                break
+        else:
+            if self.config.ignore_stack:
+                msg = "Need to specify a memory map to find the stack size."
+                logger.error(msg)
+                raise RuntimeError(msg)
+            stack_vm_entry = None
+
+        for pgm in self.pgm_list:
+            cdf = PtrBoundCdf(pgm)
+            if self.config.ignore_stack == pgm.name:
+                cdf.ignore_stack(stack_vm_entry)
+            cdf.build_cdf()
+            datasets.append(cdf)
         self.register_patch_builder(datasets, CdfPatchBuilder())
         self.process(out_file=self.config.outfile)
