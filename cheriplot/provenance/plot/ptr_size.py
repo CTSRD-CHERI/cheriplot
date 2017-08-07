@@ -310,7 +310,7 @@ class PtrBoundCdf:
         self.name = pgm.name
         """The CDF name"""
 
-        self._ignore_stack = False
+        self.ignore_stack = False
         """
         When building the CDF, capabilities in the stack are
         forced to the size of the whole stack mapping.
@@ -319,16 +319,16 @@ class PtrBoundCdf:
         self._stack_vm_entry = None
         """VMmapEntry for the stack."""
 
-    def ignore_stack(self, stack_vm_entry):
+    def ignore_region(self, stack_vm_entry):
         self._stack_vm_entry = stack_vm_entry
-        self._ignore_stack = (stack_vm_entry is not None)
+        self.ignore_stack = (stack_vm_entry is not None)
 
     def build_cdf(self):
         ptr_sizes = []
         with ProgressTimer("Build CDF"):
             for v in self.graph.vertices():
                 vdata = self.graph.vp.data[v]
-                if (self._ignore_stack and
+                if (self.ignore_stack and
                     vdata.cap.base >= self._stack_vm_entry.start and
                     vdata.cap.bound <= self._stack_vm_entry.end):
                     size = self._stack_vm_entry.end - self._stack_vm_entry.start
@@ -375,8 +375,10 @@ class CdfPatchBuilder(PatchBuilder):
     def get_legend(self):
         handles = []
         for cdf, color in zip(self.cdf, self.colormap):
-            handle = Line2D([], [], color=color,
-                            label=cdf.name)
+            label = cdf.name
+            if cdf.ignore_stack:
+                label += " no stack"
+            handle = Line2D([], [], color=color, label=label)
             handles.append(handle)
         return handles
 
@@ -441,10 +443,16 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
                 raise RuntimeError(msg)
             stack_vm_entry = None
 
-        for pgm in self.pgm_list:
+        try:
+            ignore_stack_idx = int(self.config.ignore_stack)
+        except ValueError:
+            ignore_stack_idx = -1
+
+        for idx, pgm in enumerate(self.pgm_list):
             cdf = PtrBoundCdf(pgm)
-            if self.config.ignore_stack == pgm.name:
-                cdf.ignore_stack(stack_vm_entry)
+            if (ignore_stack_idx == idx or
+                self.config.ignore_stack == pgm.name):
+                cdf.ignore_region(stack_vm_entry)
             cdf.build_cdf()
             datasets.append(cdf)
         self.register_patch_builder(datasets, CdfPatchBuilder())

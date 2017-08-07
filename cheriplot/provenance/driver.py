@@ -64,9 +64,19 @@ class GraphAnalysisDriver(BaseToolTaskDriver):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        loaded_graphs = {}
 
-        self.pgm_list = list(map(ProvenanceGraphManager.load, self.config.graphs))
+        self.pgm_list = []
         """Loaded graph managers."""
+
+        for path in self.config.graphs:
+            # if a graph is specified multiple times, avoid loading it twice
+            try:
+                self.pgm_list.append(loaded_graphs[path])
+            except KeyError:
+                pgm = ProvenanceGraphManager.load(path)
+                loaded_graphs[path] = pgm
+                self.pgm_list.append(pgm)
 
         self._vmmap_parser = VMMapFileParser(config=self.config.vmmap)
         """Process memory mapping CSV parser"""
