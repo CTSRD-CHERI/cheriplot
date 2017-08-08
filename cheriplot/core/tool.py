@@ -88,7 +88,7 @@ class BaseTraceTaskDriver(BaseToolTaskDriver):
     trace = Argument(help="Path to cvtrace file")
 
 
-def run_driver_tool(task, argv=None):
+def run_driver_tool(task, argv=None, extra_args=tuple()):
     """
     Run a TaskDriver as a CLI tool
 
@@ -100,7 +100,7 @@ def run_driver_tool(task, argv=None):
     parser = TaskDriverArgumentParser(description=task.description)
     task.make_config(parser)
     args = parser.parse_args(args=argv)
-    task_inst = task(config=args)
+    task_inst = task(*extra_args, config=args)
     task_inst.run()
 
 

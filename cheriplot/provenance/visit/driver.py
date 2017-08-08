@@ -98,7 +98,7 @@ class GraphFilterDriver(BaseToolTaskDriver):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        self.pgm = ProvenanceGraphManager.load(self.config.graph)
+        self.pgm = None
         """Loaded graph managers."""
 
         self._vmmap_parser = VMMapFileParser(config=self.config.vmmap)
@@ -106,6 +106,11 @@ class GraphFilterDriver(BaseToolTaskDriver):
 
         self._outfile = self.config.outfile or self.config.graph
         """Output file path, defaults to the input file."""
+
+        self._load_graph()
+
+    def _load_graph(self):
+        self.pgm = ProvenanceGraphManager.load(self.config.graph)
 
     def _get_filter(self, pgm):
         """Get a combined filter for a given graph manager."""

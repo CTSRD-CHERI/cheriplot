@@ -15,5 +15,6 @@ setup(name="cheriplot",
               "cheriplot-tracecmp = tools.pytracecmp:main",
               "cheriplot-treedump = tools.treedump:main",
               "cheriplot-backtrace = tools.backtrace:main",
+              "cheriplot-runner = tools.action:main",
           ]
       })

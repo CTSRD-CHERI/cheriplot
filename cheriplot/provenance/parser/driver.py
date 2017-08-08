@@ -120,7 +120,7 @@ class SymbolResolutionDriver(BaseToolTaskDriver):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.pgm = ProvenanceGraphManager.load(self.config.graph)
+        self.pgm = None
         """Loaded graph manager."""
 
         self.vmmap = VMMapFileParser(config=self.config.vmmap)
@@ -132,6 +132,10 @@ class SymbolResolutionDriver(BaseToolTaskDriver):
 
         # self.syscalls = BSDSyscallMasterParser(self.config.syscalls)
         # """Parser for the syscalls.master file."""
+        self._load_graph()
+
+    def _load_graph(self):
+        self.pgm = ProvenanceGraphManager.load(self.config.graph)
 
     def run(self):
         # self.syscalls.parse()

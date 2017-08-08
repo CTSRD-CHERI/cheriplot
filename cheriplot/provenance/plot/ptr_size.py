@@ -445,7 +445,7 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
 
         try:
             ignore_stack_idx = int(self.config.ignore_stack)
-        except ValueError:
+        except (ValueError, TypeError):
             ignore_stack_idx = -1
 
         for idx, pgm in enumerate(self.pgm_list):
