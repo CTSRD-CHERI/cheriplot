@@ -301,6 +301,9 @@ class PtrBoundCdf:
     """
 
     def __init__(self, pgm):
+        self.pgm = pgm
+        """The graph manager"""
+
         self.graph = pgm.prov_view()
         """The provenance graph."""
 
@@ -310,33 +313,45 @@ class PtrBoundCdf:
         self.name = pgm.name
         """The CDF name"""
 
-        self.ignore_stack = False
+        self.ignore_maps = []
         """
-        When building the CDF, capabilities in the stack are
-        forced to the size of the whole stack mapping.
+        List of vertex properties used to mask matching vertices.
+        [(vertex_map, new_base, new_bound), ..]
         """
 
-        self._stack_vm_entry = None
-        """VMmapEntry for the stack."""
+    def ignore_mask(self, mask, invalid_value, force_base=None,
+                    force_bound=None):
+        self.ignore_maps.append((mask, invalid_value, force_base, force_bound))
 
-    def ignore_region(self, stack_vm_entry):
-        self._stack_vm_entry = stack_vm_entry
-        self.ignore_stack = (stack_vm_entry is not None)
+    def _check_ignore(self, v):
+        """
+        Check if a vertex base and bound should be ignored and set to
+        something else.
+        Return the new base and length, or None
+        """
+        for ignore_mask, invalid, base, bound in self.ignore_maps:
+            if ignore_mask[v] != invalid:
+                if base is None or bound is None:
+                    u = self.pgm.graph.vertex(ignore_mask[v])
+                    u_data = self.pgm.data[u]
+                    return u_data.base, u_data.bound
+                else:
+                    return base, bound
+        return None
 
     def build_cdf(self):
         ptr_sizes = []
         with ProgressTimer("Build CDF"):
             for v in self.graph.vertices():
                 vdata = self.graph.vp.data[v]
-                if (self.ignore_stack and
-                    vdata.cap.base >= self._stack_vm_entry.start and
-                    vdata.cap.bound <= self._stack_vm_entry.end):
-                    size = self._stack_vm_entry.end - self._stack_vm_entry.start
-                else:
+                effective_bounds = self._check_ignore(v)
+                if effective_bounds is None:
                     size = vdata.cap.length
+                else:
+                    size = effective_bounds[1] - effective_bounds[0]
                 ptr_sizes.append(size)
             size_freq = stats.itemfreq(ptr_sizes)
-            logger.debug(size_freq)
+            #logger.debug(size_freq)
             size_pdf = size_freq[:,1] / len(ptr_sizes)
             y = np.concatenate(([0, 0], np.cumsum(size_pdf)))
             x = np.concatenate(([0, size_freq[0,0]], size_freq[:,0]))
@@ -376,8 +391,6 @@ class CdfPatchBuilder(PatchBuilder):
         handles = []
         for cdf, color in zip(self.cdf, self.colormap):
             label = cdf.name
-            if cdf.ignore_stack:
-                label += " no stack"
             handle = Line2D([], [], color=color, label=label)
             handles.append(handle)
         return handles
@@ -394,10 +407,13 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
 
     outfile = Option(help="Output file", default=None)
     publish = Option(help="Adjust plot for publication", action="store_true")
-    ignore_stack = Option(
-        default=None,
-        help="Assume that vertices in the stack have the size of stack for the"
-        "graph with the given display-name.")
+
+    filters = Option(
+        action="append",
+        nargs="+",
+        choices=("stack", "mmap", "malloc"),
+        help="set of possible elements to modify for the CDF, assume"
+        "that the size of the given elements is the maximum possible.")
 
     def __init__(self, pgm_list, vmmap, **kwargs):
         super().__init__(**kwargs)
@@ -437,22 +453,30 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
                 stack_vm_entry = vme
                 break
         else:
-            if self.config.ignore_stack:
-                msg = "Need to specify a memory map to find the stack size."
-                logger.error(msg)
-                raise RuntimeError(msg)
             stack_vm_entry = None
-
-        try:
-            ignore_stack_idx = int(self.config.ignore_stack)
-        except (ValueError, TypeError):
-            ignore_stack_idx = -1
 
         for idx, pgm in enumerate(self.pgm_list):
             cdf = PtrBoundCdf(pgm)
-            if (ignore_stack_idx == idx or
-                self.config.ignore_stack == pgm.name):
-                cdf.ignore_region(stack_vm_entry)
+            cdf.build_cdf()
+            datasets.append(cdf)
+        for filter_set in self.config.filters:
+            pgm = self.pgm_list[0]
+            cdf = PtrBoundCdf(pgm)
+            if "stack" in filter_set:
+                if stack_vm_entry is None:
+                    msg = "Need to specify a memory map to find the stack size."
+                    logger.error(msg)
+                    raise RuntimeError(msg)
+                cdf.ignore_mask(pgm.graph.vp.in_stack, False,
+                                stack_vm_entry.start,
+                                stack_vm_entry.end)
+                cdf.name += " no-stack"
+            if "mmap" in filter_set:
+                cdf.ignore_mask(pgm.graph.vp.from_mmap, -1)
+                cdf.name += " no-mmap"
+            if "malloc" in filter_set:
+                cdf.ignore_mask(pgm.graph.vp.from_malloc, -1)
+                cdf.name += " no-malloc"
             cdf.build_cdf()
             datasets.append(cdf)
         self.register_patch_builder(datasets, CdfPatchBuilder())

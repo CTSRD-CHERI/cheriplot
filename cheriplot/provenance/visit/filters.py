@@ -33,8 +33,8 @@ based on different properties such as origin and bounds.
 
 import logging
 
-from cheriplot.provenance.visit import MaskBFSVisit
-from cheriplot.provenance.model import CheriNodeOrigin
+from cheriplot.provenance.visit import MaskBFSVisit, DecorateBFSVisit
+from cheriplot.provenance.model import CheriNodeOrigin, EdgeOperation
 
 logger = logging.getLogger(__name__)
 
@@ -137,3 +137,137 @@ class FilterSyscallDerived(MaskBFSVisit):
     Filter out all vertices derived from a system call.
     """
     pass
+
+
+class DecorateStack(DecorateBFSVisit):
+    """Mark capabilities that point to the stack."""
+
+    description = "Mark capabilities to stack objects in a new vertex property"
+
+    mask_name = "in_stack"
+    mask_type = "bool"
+
+    def __init__(self, pgm, stack_begin, stack_end):
+        super().__init__(pgm)
+
+        self.stack_begin = stack_begin
+        self.stack_end = stack_end
+
+    def examine_vertex(self, u):
+        self.progress.advance()
+        if not self.pgm.layer_prov[u]:
+            return
+        data = self.pgm.data[u]
+        if (data.cap.base >= self.stack_begin and
+            data.cap.bound <= self.stack_end):
+            self.vertex_mask[u] = True
+
+
+class DecorateMmap(DecorateBFSVisit):
+    """Mark all mmap syscalls."""
+
+    description = "Mark mmap syscalls"
+
+    mask_name = "sys_mmap"
+    mask_type = "bool"
+
+    def _get_progress_range(self, graph):
+        return (0, graph.num_edges())
+
+    def examine_edge(self, e):
+        self.progress.advance()
+        src = e.source()
+        dst = e.target()
+        if (not self.pgm.layer_call[src] or
+            not self.pgm.layer_call[dst]):
+            return
+        if (self.pgm.edge_operation[e] == EdgeOperation.SYSCALL and
+            self.pgm.data[dst].address == 477):
+            self.vertex_mask[dst] = True
+
+
+class DecorateMmapReturn(DecorateBFSVisit):
+    """
+    Mark the capabilities that originate from an mmap syscall.
+    All the children are also decorated.
+    """
+
+    description = "Mark capabilities originated from an mmap syscall"
+
+    mask_name = "from_mmap"
+    mask_type = "int64_t"
+    mask_default = -1
+
+    def _get_progress_range(self, graph):
+        return (0, graph.num_edges())
+
+    def examine_edge(self, e):
+        self.progress.advance()
+        src = e.source()
+        dst = e.target()
+        if self.pgm.layer_prov[src]:
+            if (self.pgm.layer_call[dst] and
+                self.pgm.edge_operation[e] == EdgeOperation.RETURN and
+                self.pgm.graph.vp.sys_mmap[dst]):
+                # src is the return value of a sys_mmap
+                self.vertex_mask[src] = int(src)
+            elif self.pgm.layer_prov[dst] and self.vertex_mask[src] >= 0:
+                # src is mmap-derived
+                self.vertex_mask[dst] = self.vertex_mask[src]
+
+
+class DecorateMalloc(DecorateBFSVisit):
+    """Mark all malloc calls."""
+
+    description = "Mark malloc calls"
+
+    mask_name = "call_malloc"
+    mask_type = "bool"
+
+    def _get_progress_range(self, graph):
+        return (0, graph.num_edges())
+
+    def examine_edge(self, e):
+        self.progress.advance()
+        src = e.source()
+        dst = e.target()
+        if (not self.pgm.layer_call[src] or
+            not self.pgm.layer_call[dst]):
+            return
+        if (self.pgm.edge_operation[e] == EdgeOperation.CALL and
+            self.pgm.data[dst].symbol and
+            (self.pgm.data[dst].symbol == "__malloc" or
+             self.pgm.data[dst].symbol == "__calloc" or
+             self.pgm.data[dst].symbol == "malloc" or
+             self.pgm.data[dst].symbol == "calloc")):
+            self.vertex_mask[dst] = True
+
+
+class DecorateMallocReturn(DecorateBFSVisit):
+    """
+    Mark the capabilities that originate from an mmap syscall.
+    All the children are also decorated.
+    """
+
+    description = "Mark capabilities originated from an mmap syscall"
+
+    mask_name = "from_malloc"
+    mask_type = "int64_t"
+    mask_default = -1
+
+    def _get_progress_range(self, graph):
+        return (0, graph.num_edges())
+
+    def examine_edge(self, e):
+        self.progress.advance()
+        src = e.source()
+        dst = e.target()
+        if self.pgm.layer_prov[src]:
+            if (self.pgm.layer_call[dst] and
+                self.pgm.edge_operation[e] == EdgeOperation.RETURN and
+                self.pgm.graph.vp.call_malloc[dst]):
+                # src is the return value of a malloc
+                self.vertex_mask[src] = int(src)
+            elif self.pgm.layer_prov[dst] and self.vertex_mask[src] >= 0:
+                # src is mmap-derived
+                self.vertex_mask[dst] = self.vertex_mask[src]

@@ -201,3 +201,27 @@ class MaskDFSVisit(DFSGraphVisit):
 
     def finalize(self, graph_view):
         return GraphView(graph_view, vfilt=self.vertex_mask)
+
+
+class DecorateBFSVisit(BFSGraphVisit):
+    """
+    Base class for visits that generate a new graph mask property
+    for a given condition.
+    """
+
+    mask_name = None
+    """Name of the graph property created."""
+
+    mask_type = "bool"
+    """The type of the mask"""
+
+    mask_default = None
+    """Default value of the mask"""
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+        self.vertex_mask = self.pgm.graph.new_vertex_property(
+            self.mask_type, self.mask_default)
+        """Vertex mask created by the visit."""
+
+        self.pgm.graph.vp[self.mask_name] = self.vertex_mask

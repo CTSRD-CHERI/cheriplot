@@ -31,9 +31,7 @@ from cheriplot.core import (
     BaseToolTaskDriver, Argument, Option, NestedConfig, ProgressTimer)
 from cheriplot.vmmap import VMMapFileParser
 from cheriplot.provenance.model import ProvenanceGraphManager
-from cheriplot.provenance.visit import (
-    FilterNullVertices, FilterKernelVertices, FilterCfromptr, MergeCfromptr,
-    ProvGraphTimeSlice, FilterStackVertices, FilterCandperm, ChainGraphVisit)
+from cheriplot.provenance.visit import *
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +74,15 @@ class GraphFilterDriver(BaseToolTaskDriver):
     no_stack = Option(
         action="store_true",
         help="Filter vertices pointing to the stack")
+    mark_stack = Option(
+        action="store_true",
+        help="Mark vertices pointing to the stack")
+    mark_malloc = Option(
+        action="store_true",
+        help="Mark vertices derived from malloc")
+    mark_mmap = Option(
+        action="store_true",
+        help="Mark vertices derived from mmap")
     aggregate_ptrbounds = Option(
         action="store_true",
         help="Merge sequences of cfromptr+csetbounds. This is not reversible.")
@@ -145,6 +152,21 @@ class GraphFilterDriver(BaseToolTaskDriver):
             filters += ProvGraphTimeSlice(
                 pgm, start, end, creation_time=create,
                 deref_time=deref, access_time=access)
+        if self.config.mark_stack:
+            vmmap = self._vmmap_parser.get_model()
+            for entry in vmmap:
+                if entry.grows_down:
+                    break
+            else:
+                logger.error("mark-stack filter requires vmmap argument")
+                raise RuntimeError("mark-stack filter requires vmmap argument")
+            filters += DecorateStack(pgm, entry.start, entry.end)
+        if self.config.mark_mmap:
+            filters += DecorateMmap(pgm)
+            filters += DecorateMmapReturn(pgm)
+        if self.config.mark_malloc:
+            filters += DecorateMalloc(pgm)
+            filters += DecorateMallocReturn(pgm)
         return filters
 
     def run(self):

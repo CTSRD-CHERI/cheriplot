@@ -3,11 +3,12 @@ This module implements the various algorithms that walk the graph to filter, upd
 """
 from .base import (
     GraphVisitBase, ChainGraphVisit, BFSGraphVisit, DFSGraphVisit,
-    MaskBFSVisit, MaskDFSVisit)
+    MaskBFSVisit, MaskDFSVisit, DecorateBFSVisit)
 from .vertex_merge import MergeCfromptr
 from .filters import (
     FilterNullVertices, FilterKernelVertices, FilterCfromptr,
-    FilterStackVertices)
+    FilterStackVertices, DecorateStack, DecorateMmap, DecorateMmapReturn,
+    DecorateMalloc, DecorateMallocReturn, FilterCandperm)
 from .symbols import ResolveSymbolsGraphVisit
 from .slice import ProvGraphTimeSlice
 from .driver import GraphFilterDriver
