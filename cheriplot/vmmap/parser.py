@@ -29,7 +29,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from cheriplot.core import ConfigurableComponent, Option
+from cheriplot.core import ConfigurableComponent, Option, file_path_validator
 from cheriplot.vmmap.model import VMMapModel
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ class VMMapFileParser(ConfigurableComponent):
     """
     vmmap_file = Option(
         default=None,
+        type=file_path_validator,
         help="File that specify the VM mappings for the traced process")
 
     def __init__(self, **kwargs):

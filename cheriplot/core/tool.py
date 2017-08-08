@@ -39,7 +39,8 @@ from cheriplot.core.driver import (
     NestedConfig, ProxyConfig, TaskDriverArgumentParser)
 
 __all__ = ("BaseToolTaskDriver", "BaseTraceTaskDriver", "interactive_tool",
-           "run_driver_tool", "any_int_validator", "option_range_validator")
+           "run_driver_tool", "any_int_validator", "option_range_validator",
+           "file_path_validator")
 
 class BaseToolTaskDriver(TaskDriver):
     """Base taskdriver that handles logging configuration and profiling"""
@@ -190,6 +191,15 @@ def interactive_tool(key):
         return driver_class
     return wrapper
 
+def file_path_validator(value):
+    """
+    Validate input parameter of argparse argument.
+    Accept a file path.
+    """
+    path = os.path.abspath(os.path.expanduser(value))
+    if not os.path.exists(path):
+        raise ValueError("File {} not found.".format(path))
+    return path
 
 def any_int_validator(value):
     """
