@@ -117,6 +117,9 @@ class SymbolResolutionDriver(BaseToolTaskDriver):
     syscalls = Option(
         default=None,
         help="Path to the syscalls.master file")
+    outfile = Option(
+        default=None,
+        help="Output file name, defaults to the input file")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -130,6 +133,9 @@ class SymbolResolutionDriver(BaseToolTaskDriver):
         self.symreader = SymReader(vmmap=self.vmmap, path=self.config.elfpath)
         """Symbol reader"""
 
+        self._outfile = self.config.outfile or self.config.graph
+        """Output file path, defaults to the input file"""
+
         # self.syscalls = BSDSyscallMasterParser(self.config.syscalls)
         # """Parser for the syscalls.master file."""
         self._load_graph()
@@ -141,4 +147,4 @@ class SymbolResolutionDriver(BaseToolTaskDriver):
         # self.syscalls.parse()
         visitor = ResolveSymbolsGraphVisit(self.pgm, self.symreader, None)
         visitor(self.pgm.graph)
-        self.pgm.save()
+        self.pgm.save(self._outfile)
