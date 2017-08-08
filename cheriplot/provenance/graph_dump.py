@@ -104,6 +104,8 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     # call layer filters
     target = Option(
         help="Show calls to the given target address or symbol name.")
+    related = Option(
+        help="Show vertices in the provenance layer related to each call.")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -319,6 +321,16 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             space = "  " * depth
             print("{}+- {}".format(space, self._dump_vertex(edge, s)))
 
+    def _dump_related(self, v):
+        if not self.config.related or not self.pgm.layer_call[v]:
+            return
+        for edge in v.in_edges():
+            if not self.pgm.layer_prov[edge.source()]:
+                continue
+            eop = self.pgm.edge_operation[edge]
+            src = self.pgm.data[edge.source()]
+            print("[{}] +-> {}".format(eop, src))
+
     def _get_parent(self, view, v):
         """
         Get the parent vertex in the given layer and the connecting
@@ -350,6 +362,7 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             if match:
                 self._dump_predecessors(view, parent)
                 print("+- {}".format(self._dump_vertex(edge, v)))
+                self._dump_related(v)
                 self._dump_successors(v)
                 print("######")
 

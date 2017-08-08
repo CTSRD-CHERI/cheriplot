@@ -516,7 +516,7 @@ class ProvenanceGraphManager:
         :param source: source file path
         """
         pgm = cls(source)
-        with ProgressTimer("Load cached graph", logger):
+        with ProgressTimer("Load graph ({})".format(source), logger):
             pgm.graph = load_graph(source)
         pgm._init_props()
         return pgm
