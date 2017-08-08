@@ -33,7 +33,7 @@ from cheriplot.vmmap import VMMapFileParser
 from cheriplot.provenance.model import ProvenanceGraphManager
 from cheriplot.provenance.visit import (
     FilterNullVertices, FilterKernelVertices, FilterCfromptr, MergeCfromptr,
-    ProvGraphTimeSlice, FilterStackVertices, ChainGraphVisit)
+    ProvGraphTimeSlice, FilterStackVertices, FilterCandperm, ChainGraphVisit)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,9 @@ class GraphFilterDriver(BaseToolTaskDriver):
     no_cfromptr = Option(
         action="store_true",
         help="Filter cfromptr vertices")
+    no_andperm = Option(
+        action="store_true",
+        help="Filter candperm vertices")
     no_stack = Option(
         action="store_true",
         help="Filter vertices pointing to the stack")
@@ -123,6 +126,8 @@ class GraphFilterDriver(BaseToolTaskDriver):
              filters+= MergeCfromptr(pgm)
         if self.config.no_cfromptr:
             filters += FilterCfromptr(pgm)
+        if self.config.no_andperm:
+            filters += FilterCandperm(pgm)
         if self.config.no_stack:
             vmmap = self._vmmap_parser.get_model()
             for entry in vmmap:

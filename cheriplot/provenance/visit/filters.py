@@ -115,6 +115,23 @@ class FilterCfromptr(MaskBFSVisit):
             #     self.vertex_mask[u] = True
 
 
+class FilterCandperm(MaskBFSVisit):
+    """
+    Transform that removes cfromptr vertices that are never stored
+    in memory nor used for dereferencing.
+    """
+
+    description = "Filter candperm derived vertices"
+
+    def examine_vertex(self, u):
+        self.progress.advance()
+        if not self.pgm.layer_prov[u]:
+            return
+        data = self.pgm.data[u]
+        if data.origin == CheriNodeOrigin.ANDPERM:
+            self.vertex_mask[u] = False
+
+
 class FilterSyscallDerived(MaskBFSVisit):
     """
     Filter out all vertices derived from a system call.
