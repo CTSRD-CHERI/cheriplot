@@ -59,7 +59,10 @@ class ResolveSymbolsGraphVisit(BFSGraphVisit):
         super().__init__(pgm)
 
         self.symreader = symreader
-        """Symbols reader"""
+        """Symbols reader."""
+
+        self.num_found = 0
+        """Number of symbols found."""
 
     def _get_progress_range(self, graph_view):
         return (0, graph_view.num_edges())
@@ -77,7 +80,12 @@ class ResolveSymbolsGraphVisit(BFSGraphVisit):
                 sym, fname = self.symreader.find_address(data.address)
                 data.symbol = sym
                 data.symbol_file = fname
-                logger.warning("Found symbol 0x%x -> (%s) %s",
-                               data.address, data.symbol_file, data.symbol)
+                logger.debug("Found symbol 0x%x -> (%s) %s",
+                             data.address, data.symbol_file, data.symbol)
+                self.num_found = 0
             except TypeError:
                 return
+
+    def finalize(self, graph_view):
+        logger.info("Found %d symbols", self.num_found)
+        return super().finalize(graph_view)

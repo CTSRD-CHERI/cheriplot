@@ -50,6 +50,6 @@ class VMMapPlotDriver(TaskDriver):
         self._vmmap = vmmap
         """The process memory mapping model."""
 
-        default_outfile = "{}_%s.png".format(self.__class__.__name__.lower())
+        default_outfile = "{}_plot.pdf".format(self.__class__.__name__.lower())
         self._outfile = self.config.outfile or default_outfile
         """Output file name for the plot."""

@@ -32,7 +32,8 @@ graph from a trace input.
 import logging
 
 from cheriplot.core import (
-    BaseToolTaskDriver, BaseTraceTaskDriver, Option, Argument, NestedConfig)
+    BaseToolTaskDriver, BaseTraceTaskDriver, Option, Argument, NestedConfig,
+    ProgressTimer, file_path_validator)
 from cheriplot.vmmap import VMMapFileParser
 from cheriplot.dbg.symbols import SymReader
 from cheriplot.provenance.parser import CheriMipsModelParser
@@ -62,6 +63,7 @@ class GraphParserDriver(BaseTraceTaskDriver):
         help="Run the tool with the given number of workers (experimental)")
     outfile = Option(
         default=None,
+        type=file_path_validator,
         help="Output graph file name")
     display_name = Option(
         default=None,
@@ -108,17 +110,25 @@ class SymbolResolutionDriver(BaseToolTaskDriver):
     The tool is incremental, it can be run multiple times on the graph.
     """
 
-    graph = Argument(help="Path to the cheriplot graph.")
+    graph = Argument(
+        type=file_path_validator,
+        help="Path to the cheriplot graph.")
+    no_output = Option(
+        action="store_true",
+        help="Do not store output graph, useful for cheriplot-runner")
     vmmap = NestedConfig(VMMapFileParser)
     elfpath = Option(
         nargs="+",
+        type=file_path_validator,
         default=[],
         help="Paths where to look for ELF files with symbols")
     syscalls = Option(
         default=None,
+        type=file_path_validator,
         help="Path to the syscalls.master file")
     outfile = Option(
         default=None,
+        type=file_path_validator,
         help="Output file name, defaults to the input file")
 
     def __init__(self, **kwargs):
@@ -147,4 +157,6 @@ class SymbolResolutionDriver(BaseToolTaskDriver):
         # self.syscalls.parse()
         visitor = ResolveSymbolsGraphVisit(self.pgm, self.symreader, None)
         visitor(self.pgm.graph)
-        self.pgm.save(self._outfile)
+        if not self.config.no_output:
+            with ProgressTimer("Write output graph", logger):
+                self.pgm.save(self._outfile)

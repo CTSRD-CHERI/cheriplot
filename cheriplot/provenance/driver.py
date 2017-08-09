@@ -31,7 +31,7 @@ from contextlib import suppress
 
 from cheriplot.core import (
     SubCommand, BaseToolTaskDriver, Argument, Option, NestedConfig,
-    run_driver_tool)
+    run_driver_tool, file_path_validator)
 from cheriplot.vmmap import VMMapFileParser
 from cheriplot.provenance.plot import (
     AddressMapPlotDriver, AddressMapDerefPlotDriver, PtrSizeDerefDriver,
@@ -53,7 +53,10 @@ class GraphAnalysisDriver(BaseToolTaskDriver):
     This tool processes a cheriplot graph to produce plots and statistics.
     """
 
-    graphs = Argument(nargs="+", help="Path to the cheriplot graph.")
+    graphs = Argument(
+        nargs="+",
+        type=file_path_validator,
+        help="Path to the cheriplot graph.")
     vmmap = NestedConfig(VMMapFileParser)
     addrmap = SubCommand(AddressMapPlotDriver)
     addrmap_deref = SubCommand(AddressMapDerefPlotDriver)
@@ -95,10 +98,11 @@ class MultiActionDriver(BaseToolTaskDriver):
     """
     Combine things to do in a single driver so we don't have to load
     graphs an insane amount of times.
-    XXX this is temporary until we work out a decent solution to the loading problem.
     """
 
-    taskfile = Argument(help="path to task file")
+    taskfile = Argument(
+        type=file_path_validator,
+        help="path to task file")
 
     class _Analysis(GraphAnalysisDriver):
         def __init__(self, state, **kwargs):

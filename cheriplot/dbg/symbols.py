@@ -66,7 +66,7 @@ class SymReader:
         for path in self.paths:
             bin_file = os.path.join(path, fname)
             if os.path.exists(bin_file):
-                logger.debug("Found symbols for %s (%s)", fname, bin_file)
+                logger.info("Found symbols for %s (%s)", fname, bin_file)
                 return bin_file
         logger.debug("No ELF found for %s", bin_file)
         return None

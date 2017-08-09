@@ -409,7 +409,7 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
     x_label = "Size"
     y_label = "Proportion of the total number of capabilities"
 
-    outfile = Option(help="Output file", default=None)
+    outfile = Option(help="Output file", default="ptrsize_cdf.pdf")
     publish = Option(help="Adjust plot for publication", action="store_true")
 
     filters = Option(

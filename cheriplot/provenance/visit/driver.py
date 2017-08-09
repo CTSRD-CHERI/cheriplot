@@ -28,7 +28,8 @@
 import logging
 
 from cheriplot.core import (
-    BaseToolTaskDriver, Argument, Option, NestedConfig, ProgressTimer)
+    BaseToolTaskDriver, Argument, Option, NestedConfig, ProgressTimer,
+    file_path_validator)
 from cheriplot.vmmap import VMMapFileParser
 from cheriplot.provenance.model import ProvenanceGraphManager
 from cheriplot.provenance.visit import *
@@ -44,9 +45,12 @@ class GraphFilterDriver(BaseToolTaskDriver):
     that removes some of the vertices when used.
     """
 
-    graph = Argument(help="Path to the cheriplot graph")
+    graph = Argument(
+        type=file_path_validator,
+        help="Path to the cheriplot graph")
     outfile = Option(
         default=None,
+        type=file_path_validator,
         help="Path to the output file")
     display_name = Option(
         default=None,
@@ -58,6 +62,9 @@ class GraphFilterDriver(BaseToolTaskDriver):
     incremental = Option(
         action="store_true",
         help="Do not remove existing graph filters.")
+    no_output = Option(
+        action="store_true",
+        help="Do not store output graph, useful for cheriplot-runner")
     vmmap = NestedConfig(VMMapFileParser)
     no_null = Option(
         action="store_true",
@@ -181,6 +188,7 @@ class GraphFilterDriver(BaseToolTaskDriver):
         if self.config.purge:
             with ProgressTimer("Purge filtered vertices", logger):
                 self.pgm.graph.purge_vertices()
-        with ProgressTimer("Write output graph", logger):
-            self.pgm.save(self._outfile, self.config.display_name)
+        if not self.config.no_output:
+            with ProgressTimer("Write output graph", logger):
+                self.pgm.save(self._outfile, self.config.display_name)
         
