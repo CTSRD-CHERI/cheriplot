@@ -64,6 +64,8 @@ class ResolveSymbolsGraphVisit(BFSGraphVisit):
         self.num_found = 0
         """Number of symbols found."""
 
+        self.evaluated = 0
+
     def _get_progress_range(self, graph_view):
         return (0, graph_view.num_edges())
 
@@ -74,6 +76,7 @@ class ResolveSymbolsGraphVisit(BFSGraphVisit):
         if (not self.pgm.layer_call[src] or
             not self.pgm.layer_call[dst]):
             return
+        self.evaluated += 1
         if self.pgm.edge_operation[e] == EdgeOperation.CALL:
             data = self.pgm.data[dst]
             try:
@@ -87,5 +90,5 @@ class ResolveSymbolsGraphVisit(BFSGraphVisit):
                 return
 
     def finalize(self, graph_view):
-        logger.info("Found %d symbols", self.num_found)
+        logger.info("Found %d symbols of %d", self.num_found, self.evaluated)
         return super().finalize(graph_view)
