@@ -319,6 +319,9 @@ class PtrBoundCdf:
         [(vertex_map, new_base, new_bound), ..]
         """
 
+        self.num_ignored = 0
+        """Number of vertices that matched the ignore condition."""
+
     def ignore_mask(self, mask, invalid_value, force_base=None,
                     force_bound=None):
         self.ignore_maps.append((mask, invalid_value, force_base, force_bound))
@@ -331,6 +334,7 @@ class PtrBoundCdf:
         """
         for ignore_mask, invalid, base, bound in self.ignore_maps:
             if ignore_mask[v] != invalid:
+                self.num_ignored += 1
                 if base is None or bound is None:
                     u = self.pgm.graph.vertex(ignore_mask[v])
                     u_data = self.pgm.data[u]
@@ -390,7 +394,7 @@ class CdfPatchBuilder(PatchBuilder):
     def get_legend(self):
         handles = []
         for cdf, color in zip(self.cdf, self.colormap):
-            label = cdf.name
+            label = "{} ({:d})".format(cdf.name, cdf.num_ignored)
             handle = Line2D([], [], color=color, label=label)
             handles.append(handle)
         return handles
@@ -409,6 +413,7 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
     publish = Option(help="Adjust plot for publication", action="store_true")
 
     filters = Option(
+        default=[],
         action="append",
         nargs="+",
         choices=("stack", "mmap", "malloc"),

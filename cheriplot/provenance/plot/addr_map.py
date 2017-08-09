@@ -414,9 +414,7 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
         # set the height position of the label independently of
         # the Y scale
         rect = Rectangle((vmentry.start, 0.01),
-                         vmentry.end - vmentry.start, 0.98,
-                         linestyle="solid",
-                         edgecolor="k")
+                         vmentry.end - vmentry.start, 0.98)
         self.patches.append(rect)
         self.patch_colors.append(self._colors[vmentry.perms])
         self._ticks.add(vmentry.start)
