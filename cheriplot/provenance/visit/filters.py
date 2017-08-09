@@ -132,6 +132,23 @@ class FilterCandperm(MaskBFSVisit):
             self.vertex_mask[u] = False
 
 
+class FilterRootVertices(MaskBFSVisit):
+    """
+    Transform that removes root vertices.
+    """
+
+    description = "Filter root vertices"
+
+    def examine_vertex(self, u):
+        self.progress.advance()
+        if not self.pgm.layer_prov[u]:
+            return
+        data = self.pgm.data[u]
+        if (data.origin == CheriNodeOrigin.ROOT or
+            data.origin == CheriNodeOrigin.INITIAL_ROOT):
+            self.vertex_mask[u] = False
+
+
 class FilterSyscallDerived(MaskBFSVisit):
     """
     Filter out all vertices derived from a system call.

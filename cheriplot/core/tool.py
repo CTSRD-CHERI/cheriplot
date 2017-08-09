@@ -197,8 +197,6 @@ def file_path_validator(value):
     Accept a file path.
     """
     path = os.path.abspath(os.path.expanduser(value))
-    if not os.path.exists(path):
-        raise ValueError("File {} not found.".format(path))
     return path
 
 def any_int_validator(value):

@@ -81,6 +81,9 @@ class GraphFilterDriver(BaseToolTaskDriver):
     no_stack = Option(
         action="store_true",
         help="Filter vertices pointing to the stack")
+    no_roots = Option(
+        action="store_true",
+        help="Filter root vertices")
     mark_stack = Option(
         action="store_true",
         help="Mark vertices pointing to the stack")
@@ -134,6 +137,8 @@ class GraphFilterDriver(BaseToolTaskDriver):
         filters = ChainGraphVisit(pgm)
         if self.config.no_null:
             filters += FilterNullVertices(pgm)
+        if self.config.no_roots:
+            filters += FilterRootVertices(pgm)
         if self.config.no_kernel:
             filters += FilterKernelVertices(pgm)
         if self.config.aggregate_ptrbounds:
