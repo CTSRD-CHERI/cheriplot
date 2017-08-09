@@ -415,6 +415,7 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
         # the Y scale
         rect = Rectangle((vmentry.start, 0.01),
                          vmentry.end - vmentry.start, 0.98,
+                         linestyle="solid",
                          edgecolor="k")
         self.patches.append(rect)
         self.patch_colors.append(self._colors[vmentry.perms])
@@ -431,6 +432,7 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
                      position=label_position,
                      horizontalalignment="center",
                      verticalalignment="center",
+                     fontproperties=self.style["font-small"],
                      transform=self.transform)
         self.annotations.append(label)
         self._add_range(vmentry.start, vmentry.end)
@@ -439,6 +441,8 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
         super().get_patches(axes)
         coll = PatchCollection(self.patches, alpha=0.1,
                                facecolors=self.patch_colors,
+                               edgecolors="k",
+                               linestyle="solid",
                                transform=self.transform)
         axes.add_collection(coll)
         for a in self.annotations:
@@ -491,6 +495,7 @@ class BaseAddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
         if self.config.publish:
             # set the style
             self._style["font"] = FontProperties(size=20)
+            self._style["font-small"] = FontProperties(size=15)
         pgm = self._pgm_list[0]
         graph = pgm.prov_view()
         cap_builder = self.patch_builder_class(figure=self.fig, pgm=pgm)

@@ -59,7 +59,11 @@ class BasePlotBuilder:
         "vp_padding_bottom": 0.02,
         "vp_padding_left": 0.02,
         "vp_padding_right": 0.02,
-        "font": None, # matplotlib FontProperties
+        # font size control
+        # matplotlib FontProperties
+        "font-large": None,
+        "font": None,
+        "font-small": None
     }
 
     def __init__(self, **kwargs):
