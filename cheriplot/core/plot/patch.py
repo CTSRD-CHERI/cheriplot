@@ -87,7 +87,7 @@ class PatchBuilder:
         """
         return Bbox.from_bounds(0, 0, 0, 0)
 
-    def get_legend(self):
+    def get_legend(self, handles):
         """
         Generate legend handles for the patches produced.
 

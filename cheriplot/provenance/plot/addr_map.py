@@ -223,8 +223,8 @@ class ColorCodePatchBuilder(BaseColorCodePatchBuilder):
                                   linestyle="solid")
             yield coll
 
-    def get_legend(self):
-        legend = super().get_legend()
+    def get_legend(self, handles):
+        legend = super().get_legend(handles)
         for key in self._collection_map.keys():
             label = ""
             if key & CheriCapPerm.LOAD:
@@ -293,7 +293,7 @@ class DerefPatchBuilder(BaseColorCodePatchBuilder):
                                   linestyle="solid")
             yield coll
 
-    def get_legend(self):
+    def get_legend(self, handles):
         handles = [
             Patch(color=self._colors["load"], label="load"),
             Patch(color=self._colors["store"], label="store"),
@@ -359,7 +359,7 @@ class AccessLocationPatchBuilder(BaseColorCodePatchBuilder):
                                   facecolors=[self._colors[key]])
             yield coll
 
-    def get_legend(self):
+    def get_legend(self, handles):
         handles = [
             PathPatch(self._markers["load"], color=self._colors["load"],
                       label="load"),
@@ -409,6 +409,8 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
         self._ticks = set()
         """X axis ticks"""
 
+        self._legend_set = set()
+
     def inspect(self, vmentry):
         # the patches use axes transform on the y coordinate to
         # set the height position of the label independently of
@@ -417,6 +419,7 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
                          vmentry.end - vmentry.start, 0.98)
         self.patches.append(rect)
         self.patch_colors.append(self._colors[vmentry.perms])
+        self._legend_set.add(vmentry.perms)
         self._ticks.add(vmentry.start)
         self._ticks.add(vmentry.end)
 
@@ -451,6 +454,15 @@ class VMMapPatchBuilder(ASAxesPatchBuilder):
 
     def get_xlabels(self):
         return ["0x%x" % t for t in self._ticks]
+
+    def get_legend(self, handles):
+        legend = super().get_legend(handles)
+        for perm in self._legend_set:
+            existing = [h for h in handles if str(h.get_label()).lower() == perm]
+            if len(existing) == 0:
+                legend.append(Patch(color=self._colors[perm],
+                                    label=perm.upper()))
+        return legend
 
 
 class BaseAddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):

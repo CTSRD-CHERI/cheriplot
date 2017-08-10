@@ -196,7 +196,7 @@ class HistogramPatchBuilder(PatchBuilder):
         step = 2
         return range(1, step * self.hist.norm_histogram.shape[0] + 1, step)
 
-    def get_legend(self):
+    def get_legend(self, handles):
         legend_handles = []
         bin_start = 0
         # skip the first column that holds the vmmap entry for the row
@@ -407,7 +407,7 @@ class CdfPatchBuilder(PatchBuilder):
         for cdf, color in zip(self.cdf, self.colormap):
             axes.plot(cdf.size_cdf[:,0], cdf.size_cdf[:,1], color=color)
 
-    def get_legend(self):
+    def get_legend(self, handles):
         handles = []
         for cdf, color in zip(self.cdf, self.colormap):
             if cdf.num_ignored >= 0:

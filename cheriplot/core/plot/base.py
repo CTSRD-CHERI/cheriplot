@@ -258,7 +258,7 @@ class BasePlotBuilder:
                 # grab the viewport from the builders
                 bboxes.append(b.get_bbox())
                 # grab the legend from the builders
-                self._legend_handles.extend(b.get_legend())
+                self._legend_handles.extend(b.get_legend(self._legend_handles))
                 # grab the x and y ticks
                 xticks = b.get_xticks()
                 xlabels = b.get_xlabels()
