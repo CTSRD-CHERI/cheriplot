@@ -135,15 +135,17 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         logger.debug("Merge collapse ranges (remaining %d)", len(out))
         return out
 
-    def _gen_omit_scale(self, intervals, keep_idx, omit_idx):
+    def _gen_omit_scale(self, intervals):
         """
         Generate the scale used to collapse omit ranges.
         The scale is computed so that the omitted ranges take up 5% of the
         total size of the keep ranges.
         """
-        keep_size = np.sum(intervals[keep_idx,1] - intervals[keep_idx,0])
+        keep = intervals[intervals[:,2] == 1]
+        omit = intervals[intervals[:,2] == 0]
+        keep_size = np.sum(keep[:,1] - keep[:,0])
         # the last omit interval always goes to Inf
-        omit_size = np.sum(intervals[omit_idx[:-1],1] - intervals[omit_idx[:-1],0])
+        omit_size = np.sum(omit[:,1] - omit[:,0])
         if omit_size != 0:
             # we want the omitted ranges to take up 5% of the keep ranges
             # in size
@@ -166,37 +168,21 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         merged_intervals = self._merge(self._target_ranges)
         if len(merged_intervals) == 0:
             self._intervals = np.zeros((0,3))
-            return
-        # if the first interval starts from 0, the starting
-        # interval is a KEEP interval
-        is_start_keep = merged_intervals[0][0] == 0
-        holes = len(merged_intervals)
-        if not is_start_keep:
-            holes += 1
-        # generate condition arrays for the piecewise function boundaries
-        # cond: [start, end, type]
-        n_intervals = len(merged_intervals) + holes
-        if is_start_keep:
-            # first interval is keep
-            keep = range(0,n_intervals, 2)
-            omit = range(1,n_intervals, 2)
-        else:
-            # first interval is omit
-            keep = range(1,n_intervals, 2)
-            if (self._range_len(1, n_intervals, 2) !=
-                self._range_len(0, n_intervals, 2)):
-                omit = range(0,n_intervals - 1, 2)
-            else:
-                omit = range(0,n_intervals, 2)
-        intervals = np.zeros((n_intervals,3))
-        intervals[keep,2] = 1
-        intervals[keep,0:2] = merged_intervals
-        intervals[omit,0] = intervals[keep,1]
-        intervals[omit[:-1],1] = intervals[keep[1:],0]
-        # fixup last omit interval end
-        intervals[-1,1] = np.inf
-        self._gen_omit_scale(intervals, keep, omit)
-        self._intervals = intervals
+            return        
+        # try not using fancy vectorization
+        intervals = []
+        prev_end = 0
+        for r in merged_intervals:
+            if prev_end < r[0]:
+                # omit
+                intervals.append((prev_end, r[0], 0))
+            # keep
+            intervals.append((r[0], r[1], 1))
+            prev_end = r[1]
+        # last always omitted to infinity
+        intervals.append((prev_end, np.inf, 0))
+        self._intervals = np.array(intervals)
+        self._gen_omit_scale(self._intervals[:-1])
 
     def _precompute_offsets(self):
         """
