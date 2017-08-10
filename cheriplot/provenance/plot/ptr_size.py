@@ -362,6 +362,22 @@ class PtrBoundCdf:
             self.size_cdf = np.column_stack((x,y))
 
 
+class BaselineCdf:
+    """
+    Model of the baseline cdf line.
+    """
+
+    MAX_ADDR = 0xffffffffffffffff
+    MAX_UADDR = 0x10000000000
+
+    def __init__(self):
+        self.name = "baseline"
+        self.size_cdf = np.array([
+            [0, 0], [self.MAX_UADDR, 0],
+            [self.MAX_UADDR, 1], [self.MAX_ADDR, 1]])
+        self.num_ignored = -1
+
+
 class CdfPatchBuilder(PatchBuilder):
     """
     Plot a Cumulative Distribution Function of the number of
@@ -394,7 +410,10 @@ class CdfPatchBuilder(PatchBuilder):
     def get_legend(self):
         handles = []
         for cdf, color in zip(self.cdf, self.colormap):
-            label = "{} ({:d})".format(cdf.name, cdf.num_ignored)
+            if cdf.num_ignored >= 0:
+                label = "{} ({:d})".format(cdf.name, cdf.num_ignored)
+            else:
+                label = "{}".format(cdf.name)
             handle = Line2D([], [], color=color, label=label)
             handles.append(handle)
         return handles
@@ -463,8 +482,11 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
             if vme.grows_down:
                 stack_vm_entry = vme
 
+        datasets.append(BaselineCdf())
         for idx, pgm in enumerate(self.pgm_list):
             cdf = PtrBoundCdf(pgm)
+            # prevent the ignored count in legend for these
+            cdf.num_ignored = -1
             cdf.build_cdf()
             datasets.append(cdf)
         for filter_set in self.config.filters:
