@@ -175,8 +175,20 @@ class GraphFilterDriver(BaseToolTaskDriver):
             filters += DecorateMmap(pgm)
             filters += DecorateMmapReturn(pgm)
         if self.config.mark_malloc:
-            filters += DecorateMalloc(pgm)
-            filters += DecorateMallocReturn(pgm)
+            vmmap = self._vmmap_parser.get_model()
+            min_addr = 2**64
+            heap_entry = None
+            # first entry in the memory map
+            for entry in vmmap:
+                if entry.end < min_addr:
+                    min_addr = entry.end
+                    heap_entry = entry
+            if not heap_entry:
+                logger.error("mark-malloc filter requires vmmap argument")
+                raise RuntimeError("mark-malloc filter requires vmmap argument")
+            filters += DecorateHeap(pgm, heap_entry.start, heap_entry.end)
+            # filters += DecorateMalloc(pgm)
+            # filters += DecorateMallocReturn(pgm)
         if self.config.no_kernel:
             filters += FilterKernelVertices(pgm)
         return filters

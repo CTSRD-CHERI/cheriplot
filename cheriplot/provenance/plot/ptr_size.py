@@ -453,12 +453,15 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
     def run(self):
         datasets = []
         # grab the stack location in the addrspace
+        min_addr = 2**64
+        heap_entry = None
+        stack_vm_entry = None
         for vme in self.vmmap:
+            if vme.end < min_addr:
+                min_addr = vme.end
+                heap_entry = vme
             if vme.grows_down:
                 stack_vm_entry = vme
-                break
-        else:
-            stack_vm_entry = None
 
         for idx, pgm in enumerate(self.pgm_list):
             cdf = PtrBoundCdf(pgm)
@@ -479,8 +482,13 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
             if "mmap" in filter_set:
                 cdf.ignore_mask(pgm.graph.vp.from_mmap, -1)
                 cdf.name += " no-mmap"
+            # if "malloc" in filter_set:
+            #     cdf.ignore_mask(pgm.graph.vp.from_malloc, -1)
+            #     cdf.name += " no-malloc"
             if "malloc" in filter_set:
-                cdf.ignore_mask(pgm.graph.vp.from_malloc, -1)
+                cdf.ignore_mask(pgm.graph.vp.in_jemalloc, False,
+                                heap_entry.start,
+                                heap_entry.end)
                 cdf.name += " no-malloc"
             cdf.build_cdf()
             datasets.append(cdf)

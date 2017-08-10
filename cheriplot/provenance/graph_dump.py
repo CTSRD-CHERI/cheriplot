@@ -105,6 +105,7 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     target = Option(
         help="Show calls to the given target address or symbol name.")
     related = Option(
+        action="store_true",
         help="Show vertices in the provenance layer related to each call.")
 
     def __init__(self, **kwargs):

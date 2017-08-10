@@ -180,6 +180,30 @@ class DecorateStack(DecorateBFSVisit):
             self.vertex_mask[u] = True
 
 
+class DecorateHeap(DecorateBFSVisit):
+    """Mark capabilities that point to the stack."""
+
+    description = "Mark capabilities to malloc objects in a new vertex property"
+
+    mask_name = "in_jemalloc"
+    mask_type = "bool"
+
+    def __init__(self, pgm, heap_begin, heap_end):
+        super().__init__(pgm)
+
+        self.heap_begin = heap_begin
+        self.heap_end = heap_end
+
+    def examine_vertex(self, u):
+        self.progress.advance()
+        if not self.pgm.layer_prov[u]:
+            return
+        data = self.pgm.data[u]
+        if (data.cap.base >= self.heap_begin and
+            data.cap.bound <= self.heap_end):
+            self.vertex_mask[u] = True
+
+
 class DecorateMmap(DecorateBFSVisit):
     """Mark all mmap syscalls."""
 
