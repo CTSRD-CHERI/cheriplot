@@ -152,38 +152,8 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         logger.debug("Omit scale 5%%: total-keep:%d total-omit:%d scale:%s",
                      keep_size, omit_size, self.omit_scale)
 
-    def _gen_piecewise_fn(self, intervals, keep, omit):
-        """
-        Deprecated - kept for reference
-        XXX terribly slow, keep it as maybe we can make an interpolated polynomial
-        from this, hopefully would take less than the piecewise evaluation
-        """
-        # generate functions array based on the interval type
-        # the function generates the transformed X given the
-        # input x
-        # Each function on the interval k = [x0_k, x1_k] and interval scale
-        # factor s_k performs:
-        # f(x) = sum[i=0,i=k-1]((x1_i - x0_i)*s_i) + (x - x0_k)*s_k
-        functions = np.empty(len(intervals), dtype="O")
-        # cumulative_offset = np.vectorize(lambda i: (
-        #     np.sum(intervals[:i:2,1] - intervals[:i:2,0]) +
-        #     np.sum(intervals[1:i:2,1] - intervals[1:i:2,0]) * self.omit_scale))
-        def gen_function(start, i, scale):
-            cumulative_offset = (
-                np.sum(intervals[:i:2,1] - intervals[:i:2,0]) +
-                np.sum(intervals[1:i:2,1] - intervals[1:i:2,0]) * self.omit_scale)
-            return lambda x: (x - start) * scale + cumulative_offset
-        get_fn = np.vectorize(gen_function)
-
-        functions[keep] = get_fn(intervals[keep,0], keep, 1)
-        functions[omit] = get_fn(intervals[omit,0], omit, self.omit_scale)
-        self._functions = functions
-        # the call
-        if self._intervals == None:
-            self._gen_intervals()
-        intervals = self._intervals
-        func = self._functions
-        return np.piecewise(x, np.logical_and(intervals[:,0] <= x, x < intervals[:,1]), func)
+    def _range_len(self, start, end, step):
+        return (end - start -1) // step + 1
 
     def _gen_intervals(self):
         """
@@ -213,7 +183,11 @@ class AddressSpaceCollapseTransform(transforms.Transform):
         else:
             # first interval is omit
             keep = range(1,n_intervals, 2)
-            omit = range(0,n_intervals, 2)
+            if (self._range_len(1, n_intervals, 2) !=
+                self._range_len(0, n_intervals, 2)):
+                omit = range(0,n_intervals - 1, 2)
+            else:
+                omit = range(0,n_intervals, 2)
         intervals = np.zeros((n_intervals,3))
         intervals[keep,2] = 1
         intervals[keep,0:2] = merged_intervals

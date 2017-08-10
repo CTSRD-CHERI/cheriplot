@@ -88,15 +88,13 @@ def intervals(request):
     end = start + step / 2
     return np.column_stack((start, end))
 
-@pytest.fixture
-def intervals_1000():
+def genintervals(n, offset=0):
     """
     Generate 1000 intervals for benchmarks to check how things
     scale in the number of lookups
     """
-    n = 1000
     step = 20
-    start = np.arange(0, step*n, step)
+    start = np.arange(offset, offset + step*n, step)
     end = start + step / 2
     return np.column_stack((start, end))
 
@@ -133,6 +131,7 @@ def test_collapse_inverse_transform(mock_scale, trans, ranges, val, expect):
 
 @skipbenchmark
 @pytest.mark.benchmark(group="collapse")
+@pytest.mark.parametrize("intervals", [genintervals(100)])
 def test_collapse_benchmark_intervals(benchmark, trans, intervals):
     trans.set_ranges(intervals)
     # trigger gen_intervals outside benchmark loop
@@ -145,8 +144,8 @@ def test_collapse_benchmark_intervals(benchmark, trans, intervals):
 @skipbenchmark
 @pytest.mark.benchmark(group="lookup")
 @pytest.mark.parametrize("rounds", np.logspace(2,4,3))
-def test_collapse_benchmark_lookup(benchmark, trans, intervals_1000, rounds):
-    intervals = intervals_1000
+@pytest.mark.parametrize("intervals", [genintervals(1000)])
+def test_collapse_benchmark_lookup(benchmark, trans, intervals, rounds):
     trans.set_ranges(intervals)
     # trigger gen_intervals outside benchmark loop
     trans.transform((0,0))
@@ -155,3 +154,15 @@ def test_collapse_benchmark_lookup(benchmark, trans, intervals_1000, rounds):
         for i in range(int(rounds)):
             trans.get_x(np.random.randint(0, max_interval))
     benchmark.pedantic(run, iterations=1, rounds=10)
+
+
+@pytest.mark.parametrize("intervals", [
+    genintervals(1000),
+    genintervals(99),
+    genintervals(100, 1),
+    genintervals(100, 99),
+    genintervals(100, 98),
+    genintervals(100, 101)])
+def test_genintervals(trans, intervals):
+    trans.set_ranges(intervals)
+    trans.transform((100,0))
