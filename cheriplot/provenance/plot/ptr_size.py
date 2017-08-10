@@ -338,7 +338,7 @@ class PtrBoundCdf:
                 if base is None or bound is None:
                     u = self.pgm.graph.vertex(ignore_mask[v])
                     u_data = self.pgm.data[u]
-                    return u_data.base, u_data.bound
+                    return u_data.cap.base, u_data.cap.bound
                 else:
                     return base, bound
         return None

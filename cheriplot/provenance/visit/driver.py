@@ -139,8 +139,6 @@ class GraphFilterDriver(BaseToolTaskDriver):
             filters += FilterNullVertices(pgm)
         if self.config.no_roots:
             filters += FilterRootVertices(pgm)
-        if self.config.no_kernel:
-            filters += FilterKernelVertices(pgm)
         if self.config.aggregate_ptrbounds:
              filters+= MergeCfromptr(pgm)
         if self.config.no_cfromptr:
@@ -179,6 +177,8 @@ class GraphFilterDriver(BaseToolTaskDriver):
         if self.config.mark_malloc:
             filters += DecorateMalloc(pgm)
             filters += DecorateMallocReturn(pgm)
+        if self.config.no_kernel:
+            filters += FilterKernelVertices(pgm)
         return filters
 
     def run(self):
