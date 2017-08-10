@@ -205,7 +205,9 @@ class GraphFilterDriver(BaseToolTaskDriver):
         if self.config.purge:
             with ProgressTimer("Purge filtered vertices", logger):
                 self.pgm.graph.purge_vertices()
+        if self.config.display_name:
+            self.pgm.graph.gp.name = self.config.display_name
         if not self.config.no_output:
             with ProgressTimer("Write output graph", logger):
-                self.pgm.save(self._outfile, self.config.display_name)
+                self.pgm.save(self._outfile)
         
