@@ -116,7 +116,8 @@ class SymReader:
         Return the symbol and file where the address is found.
         """
         try:
-            return self._symbol_map[addr]
+            sym, fname = self._symbol_map[addr]
+            return (sym, os.path.basename(fname))
         except KeyError:
             return None
 

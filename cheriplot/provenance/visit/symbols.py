@@ -79,13 +79,15 @@ class ResolveSymbolsGraphVisit(BFSGraphVisit):
         self.evaluated += 1
         if self.pgm.edge_operation[e] == EdgeOperation.CALL:
             data = self.pgm.data[dst]
+            if data.address is None:
+                return
             try:
                 sym, fname = self.symreader.find_address(data.address)
                 data.symbol = sym
                 data.symbol_file = fname
                 logger.debug("Found symbol 0x%x -> (%s) %s",
                              data.address, data.symbol_file, data.symbol)
-                self.num_found = 0
+                self.num_found += 1
             except TypeError:
                 return
 
