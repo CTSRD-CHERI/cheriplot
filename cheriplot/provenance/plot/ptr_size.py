@@ -482,7 +482,6 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
             if vme.grows_down:
                 stack_vm_entry = vme
 
-        # datasets.append(BaselineCdf())
         for idx, pgm in enumerate(self.pgm_list):
             cdf = PtrBoundCdf(pgm)
             # prevent the ignored count in legend for these

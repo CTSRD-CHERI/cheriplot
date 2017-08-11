@@ -857,6 +857,8 @@ class CapabilityBranchSubparser:
         if before there was an exception involving
         a capability branch.
         """
+        if self.parser.paused:
+            return False
         if self._saved_addr != None:
             self._save_first_mfc = False
             # badvaddr
@@ -882,6 +884,8 @@ class CapabilityBranchSubparser:
         return False
 
     def scan_eret(self, inst, entry, regs, last_regs, idx):
+        if self.parser.paused:
+            return False
         self._save_first_mfc = False
         return False
 
@@ -904,6 +908,8 @@ class CapabilityBranchSubparser:
         we enqueue the branch_cbk in the exception handling system in
         the provenance subparser.
         """
+        if self.parser.paused:
+            return False
         if self._branch_cbk is None:
             return False
         if inst.has_exception and entry.exception != 0:
@@ -920,6 +926,8 @@ class CapabilityBranchSubparser:
         """
         Schedule the cjalr handler to run when the delay slot is validated.
         """
+        if self.parser.paused:
+            return False
         if inst.has_exception:
             self._do_scan_cjalr(inst, entry, regs, last_regs, idx)
         else:
@@ -931,6 +939,8 @@ class CapabilityBranchSubparser:
         """
         Schedule the cjr handler to run when the delay slot is validated.
         """
+        if self.parser.paused:
+            return False
         if inst.has_exception:
             self._do_scan_cjr(inst, entry, regs, last_regs, idx)
         else:
@@ -1111,6 +1121,8 @@ class SyscallSubparser:
         When there is an exception if a deferred decision is enqueued,
         also enqueue the pcc/epcc swap operation to maintain ordering.
         """
+        if self.parser.paused:
+            return False
         if len(self.parser.exec_maybe):
             self.parser.delay_scan(
                 partial(self._do_scan_exception, inst, entry, regs,
@@ -1132,34 +1144,36 @@ class SyscallSubparser:
         self.regset.set_pcc(self.regset.get_reg(29), entry.cycles) # pcc <- kcc
         return False
 
-    def scan_syscall(self, inst, entry, regs, last_regs, idx):
-        """
-        Scan a syscall instruction and detect the syscall type
-        and arguments.
-        """
-        # self.code = self._get_syscall_code(regs)
-        # try:
-        #     record = SyscallSubparser.syscall_codes[self.code]
-        #     if record[1] != SyscallSubparser.SYS_RET:
-        #         # record the use of a vertex as system call argument
-        #         vertex = self.regset[record[1]]
-        #         data = self.pgm.data[vertex]
-        #         logger.debug("Detected syscall %d capability argument: %s",
-        #                      self.code, data)
-        #         # data.add_use_syscall(entry.cycles, self.code, True)
-        #     else:
-        #         self.in_syscall = True
-        #         self.pc_eret = entry.pc + 4
-        # except KeyError:
-        #     # not interested in the syscall
-        #     pass
-        return False
+    # def scan_syscall(self, inst, entry, regs, last_regs, idx):
+    #     """
+    #     Scan a syscall instruction and detect the syscall type
+    #     and arguments.
+    #     """
+    #     # self.code = self._get_syscall_code(regs)
+    #     # try:
+    #     #     record = SyscallSubparser.syscall_codes[self.code]
+    #     #     if record[1] != SyscallSubparser.SYS_RET:
+    #     #         # record the use of a vertex as system call argument
+    #     #         vertex = self.regset[record[1]]
+    #     #         data = self.pgm.data[vertex]
+    #     #         logger.debug("Detected syscall %d capability argument: %s",
+    #     #                      self.code, data)
+    #     #         # data.add_use_syscall(entry.cycles, self.code, True)
+    #     #     else:
+    #     #         self.in_syscall = True
+    #     #         self.pc_eret = entry.pc + 4
+    #     # except KeyError:
+    #     #     # not interested in the syscall
+    #     #     pass
+    #     return False
 
     def scan_eret(self, inst, entry, regs, last_regs, idx):
         """
         Scan eret instructions to properly restore pcc from epcc
         and capture syscall return values.
         """
+        if self.parser.paused:
+            return False
         # self.exception_depth -= 1
         # epcc_valid = regs.valid_caps[31]
         # if not epcc_valid:
@@ -1215,6 +1229,8 @@ class InitialStackAccessSubparser:
         """First eret seen, userspace started."""
 
     def scan_eret(self, inst, entry, regs, last_regs, idx):
+        if self.parser.paused:
+            return False
         if self.first_eret:
             return False
         self.first_eret = True
@@ -1278,6 +1294,19 @@ class PointerProvenanceSubparser:
         to preserver ordering with respect to the maybe callbacks.
         """
 
+        self.last_pcb_addr = None
+        """XXX"""
+
+        self.grab_in_pcb = False
+        self.grab_out_pcb = False
+        self.paused = False
+
+    def pause_all(self):
+        self.paused = True
+
+    def unpause_all(self):
+        self.paused = False
+
     def mp_result(self):
         """
         Return the partial result from a worker process.
@@ -1321,6 +1350,8 @@ class PointerProvenanceSubparser:
         by the instruction causing the exception is not used before
         the dmfc0 instruction.
         """
+        if self.paused:
+            return False
         if inst.op1.gpr_index == 8 and len(self.exec_maybe):
             # There must be at least one address here
             assert len(self.exec_maybe_addr)
@@ -1343,10 +1374,31 @@ class PointerProvenanceSubparser:
     def scan_lui(self, inst, entry, regs, last_regs, idx):
         if inst.op0.gpr_index == 0 and inst.op1.value == 0xdead:
             logger.debug("{%d} Tracing paused", entry.cycles)
+            self.grab_in_pcb = True
             self.regset.handle_pause()
         if inst.op0.gpr_index == 0 and inst.op1.value == 0xcafe:
             logger.warning("{%d} Force parser stop", entry.cycles)
             return True
+        if (inst.op0.gpr_index == 0 and inst.op1.value == 0x1d1d and
+            not self.grab_in_pcb and not self.paused):
+            logger.debug("{%d} Grab PCB addr before switch", entry.cycles)
+            self.grab_out_pcb = True
+        return False
+
+    def scan_dadd(self, inst, entry, regs, last_regs, idx):
+        if inst.op0.gpr_index == 0:
+            if self.grab_out_pcb:
+                self.grab_out_pcb = False
+                self.last_pcb_addr = inst.op2.value
+            elif self.grab_in_pcb:
+                self.grab_in_pcb = False
+                if self.last_pcb_addr != inst.op2.value:
+                    # pause parsing until next switch
+                    logger.debug("{%d} Parser paused", entry.cycles)
+                    self.pause_all()
+                else:
+                    logger.debug("{%d} Parser unpaused", entry.cycles)
+                    self.unpause_all()
         return False
 
     def scan_cclearregs(self, inst, entry, regs, last_regs, idx):
@@ -1355,6 +1407,8 @@ class PointerProvenanceSubparser:
         The result can not be immediately found in the trace, it
         is otherwise spread among all the uses of the registers.
         """
+        if self.paused:
+            return False
         raise NotImplementedError("cclearregs not yet supported")
         return False
 
@@ -1418,38 +1472,56 @@ class PointerProvenanceSubparser:
                             entry.cycles)
 
     def scan_cgetepcc(self, inst, entry, regs, last_regs, idx):
+        if self.paused:
+            return False
         self._handle_cpreg_get(31, inst, entry)
         return False
 
     def scan_csetepcc(self, inst, entry, regs, last_regs, idx):
+        if self.paused:
+            return False
         self._handle_cpreg_set(31, inst, entry)
         return False
 
     def scan_cgetkcc(self, inst, entry, regs, last_regs, idx):
+        if self.paused:
+            return False
         self._handle_cpreg_get(29, inst, entry)
         return False
 
     def scan_csetkcc(self, inst, entry, regs, last_regs, idx):
+        if self.paused:
+            return False
         self._handle_cpreg_set(29, inst, entry)
         return False
 
     def scan_cgetkdc(self, inst, entry, regs, last_regs, idx):
         self._handle_cpreg_get(30, inst, entry)
+        if self.paused:
+            return False
         return False
 
     def scan_csetkdc(self, inst, entry, regs, last_regs, idx):
+        if self.paused:
+            return False
         self._handle_cpreg_set(30, inst, entry)
         return False
 
     def scan_cgetdefault(self, inst, entry, regs, last_regs, idx):
+        if self.paused:
+            return False
         self._handle_cpreg_get(0, inst, entry)
         return False
 
     def scan_csetdefault(self, inst, entry, regs, last_regs, idx):
+        if self.paused:
+            return False
         self._handle_cpreg_set(0, inst, entry)
         return False
 
     def scan_cgetpcc(self, inst, entry, regs, last_regs, idx):
+        if self.paused:
+            return False
         if not self.regset.has_pcc(inst.op0.value, entry.cycles,
                                    allow_root=True):
             # never seen anything in pcc so we create a new node
@@ -1471,6 +1543,8 @@ class PointerProvenanceSubparser:
         return False
 
     def scan_cgetpccsetoffset(self, inst, entry, regs, last_regs, idx):
+        if self.paused:
+            return False
         return self.scan_cgetpcc(inst, entry, regs, last_regs, idx)
 
     def scan_csetbounds(self, inst, entry, regs, last_regs, idx, maybe_call=False):
@@ -1484,6 +1558,8 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
+        if self.paused:
+            return False
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 partial(self.scan_csetbounds, inst, entry, regs,
@@ -1505,6 +1581,8 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
+        if self.paused:
+            return False
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 partial(self.scan_cfromptr, inst, entry, regs,
@@ -1524,6 +1602,8 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         Operand 1 is the register with the parent node
         """
+        if self.paused:
+            return False
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 partial(self.scan_candperm, inst, entry, regs,
@@ -1540,6 +1620,8 @@ class PointerProvenanceSubparser:
         the mapping from capability register to the provenance
         tree node associated to the capability in it.
         """
+        if self.paused:
+            return False
         # XXX if inst.has_exception and entry.exception != 0 and not inst.in_delay_slot and not maybe_call:
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
@@ -1635,6 +1717,8 @@ class PointerProvenanceSubparser:
         clXr and clXi have pointer argument in op2
         cllX have pointer argument in op1
         """
+        if self.paused:
+            return False
         # get the register with the address capability
         # this may be a normal capability load or a linked-load
         if inst.opcode.startswith("cll"):
@@ -1655,6 +1739,8 @@ class PointerProvenanceSubparser:
         csXr and csXi have pointer argument in op2
         cscX conditionals use op2
         """
+        if self.paused:
+            return False
         # get the register with the address capability
         # this may be a normal capability store or an atomic-store
         if inst.opcode != "csc" and inst.opcode.startswith("csc"):
@@ -1676,6 +1762,8 @@ class PointerProvenanceSubparser:
         and capability-specific scan callbacks have been invoked
         but before the generic scan_all.
         """
+        if self.paused:
+            return False
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 partial(self.scan_mem_store, inst, entry, regs,
@@ -1695,6 +1783,8 @@ class PointerProvenanceSubparser:
         Operand 0 is the register with the new node
         The parent is looked up in memory or a root node is created
         """
+        if self.paused:
+            return False
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 partial(self.scan_clc, inst, entry, regs, last_regs, idx, True),
@@ -1753,6 +1843,8 @@ class PointerProvenanceSubparser:
         csc:
         Operand 0 is the capability being stored, the node already exists
         """
+        if self.paused:
+            return False
         if inst.has_exception and entry.exception != 0 and not maybe_call:
             self.maybe_scan(
                 partial(self.scan_csc, inst, entry, regs, last_regs, idx, True),
@@ -1796,6 +1888,8 @@ class PointerProvenanceSubparser:
         If the vertex removed is not live in other memory locations
         or in the register set, mark it out of scope.
         """
+        if self.paused:
+            return False
         addr &= ~(self.capability_size - 1)
         v = self.vertex_map.vertex_at(addr)
         if v != None and v != new_vertex:
@@ -1980,6 +2074,8 @@ class CallgraphSubparser:
         we enqueue the branch_cbk in the exception handling system in
         the provenance subparser.
         """
+        if self.parser.paused:
+            return False
         if self._call_cbk is None:
             return False
         if inst.has_exception and entry.exception != 0:
@@ -2001,6 +2097,8 @@ class CallgraphSubparser:
         subtracted from $sp in the prologue
         at $pc matching the call landing address
         """
+        if self.parser.paused:
+            return False
         if (entry.pc == self._landing_addr and
             inst.op0.gpr_index == 29):
             data = self.pgm.data[self.current_frame]
@@ -2009,6 +2107,8 @@ class CallgraphSubparser:
 
     def scan_cjalr(self, inst, entry, regs, last_regs, idx):
         """Schedule the cjalr handler to run when the delay slot is validated."""
+        if self.parser.paused:
+            return False
         if inst.has_exception:
             self._do_scan_cjalr(inst, entry, regs, last_regs, idx)
         else:
@@ -2019,6 +2119,8 @@ class CallgraphSubparser:
 
     def scan_cjr(self, inst, entry, regs, last_regs, idx):
         """Schedule the cjr handler to run when the delay slot is validated."""
+        if self.parser.paused:
+            return False
         if inst.has_exception:
             self._do_scan_cjr(inst, entry, regs, last_regs, idx)
         else:
@@ -2029,6 +2131,8 @@ class CallgraphSubparser:
 
     def scan_jalr(self, inst, entry, regs, last_regs, idx):
         """Schedule the jalr handler to run when the delay slot is validated."""
+        if self.parser.paused:
+            return False
         if inst.has_exception:
             self._do_scan_jalr(inst, entry, regs, last_regs, idx)
         else:
@@ -2039,6 +2143,8 @@ class CallgraphSubparser:
 
     def scan_jr(self, inst, entry, regs, last_regs, idx):
         """Schedule the jr handler to run when the delay slot is validated."""
+        if self.parser.paused:
+            return False
         if inst.has_exception:
             self._do_scan_jr(inst, entry, regs, last_regs, idx)
         else:
@@ -2104,6 +2210,8 @@ class CallgraphSubparser:
         eret should be ignored.
         XXX Note for now assume no context switches are tracked.
         """
+        if self.parser.paused:
+            return False
         self.exception_depth += 1
         return False
 
@@ -2116,6 +2224,8 @@ class CallgraphSubparser:
         asthonishing property of not always returning in the
         same place.
         """
+        if self.parser.paused:
+            return False
         code = self._get_syscall_code(regs)
         self._in_syscall = True
         self._make_call(entry, regs, code, None, None, EdgeOperation.SYSCALL)
@@ -2126,6 +2236,8 @@ class CallgraphSubparser:
         Scan eret instructions to properly restore pcc from epcc
         and capture syscall return values.
         """
+        if self.parser.paused:
+            return False
         self.exception_depth -= 1
         if (self._in_syscall and self.exception_depth == 0 and
             not inst.has_exception):
