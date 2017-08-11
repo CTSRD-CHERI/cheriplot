@@ -301,12 +301,21 @@ class RegisterSet:
         :param cap: cheritrace capability_register
         :return: bool
         """
+        if data is None:
+            # invalidated vertex
+            if not cap.valid:
+                return True
+            return False
+        if data.cap is None:
+            # partial
+            return True
         if (data.cap.base == cap.base and
             data.cap.length == cap.length and
             data.cap.permissions == cap.permissions and
             data.cap.objtype == cap.type & CheriCap.MAX_OTYPE and
             data.cap.valid == cap.valid and
             data.cap.sealed == cap.unsealed):
+            # normal vertex
             return True
         return False
 
