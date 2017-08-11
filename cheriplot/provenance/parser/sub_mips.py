@@ -1222,8 +1222,10 @@ class InitialStackAccessSubparser:
     abstraction in the graph anyway.
     """
 
-    def __init__(self, pgm):
+    def __init__(self, pgm, prov_parser):
         self.pgm = pgm
+
+        self.parser = prov_parser
 
         self.first_eret = False
         """First eret seen, userspace started."""
@@ -2424,7 +2426,8 @@ class CheriMipsModelParser(CheriplotModelParser):
 
         if self.is_worker:
             self._provenance = PointerProvenanceSubparser(self.pgm)
-            self._initial_stack = InitialStackAccessSubparser(self.pgm)
+            self._initial_stack = InitialStackAccessSubparser(
+                self.pgm, self._provenance)
             self._cap_branch = CapabilityBranchSubparser(
                 self.pgm, self._provenance.regset, self._provenance)
             self._syscall_subparser = SyscallSubparser(
