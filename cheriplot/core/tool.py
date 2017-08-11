@@ -42,6 +42,47 @@ __all__ = ("BaseToolTaskDriver", "BaseTraceTaskDriver", "interactive_tool",
            "run_driver_tool", "any_int_validator", "option_range_validator",
            "file_path_validator")
 
+def file_path_validator(value):
+    """
+    Validate input parameter of argparse argument.
+    Accept a file path.
+    """
+    path = os.path.abspath(os.path.expanduser(value))
+    return path
+
+def any_int_validator(value):
+    """
+    Validata input parameter of argparse argument.
+    Accept integers in base 10 and 16
+    """
+    try:
+        n = int(value)
+    except ValueError:
+        # try hex
+        n = int(value, 16)
+    return n
+
+def option_range_validator(value):
+    """
+    Validate input parameter of an argparse argument.
+    Accept a range of values.
+    Expects a string in the form "start-end".
+    Returns the tuple (start, end).
+    """
+    parts = value.split("-")
+    try:
+        if len(parts) > 1:
+            start, end = parts
+        else:
+            start = end = parts[0]
+        start = any_int_validator(start) if start != "" else None
+        end = any_int_validator(end) if end != "" else None
+    except ValueError:
+        raise ValueError("Invalid range %s, accepted formats are"\
+                         "<start>-<end>, <start>-, -<end>, <start=end>" % value)
+    return (start, end)
+
+
 class BaseToolTaskDriver(TaskDriver):
     """Base taskdriver that handles logging configuration and profiling"""
     verbose = Option(action="store_true", help="Show debug output")
@@ -86,7 +127,7 @@ class BaseTraceTaskDriver(BaseToolTaskDriver):
     Base task driver that adds options to accept a
     trace file, output file and caching policy
     """
-    trace = Argument(help="Path to cvtrace file")
+    trace = Argument(type=file_path_validator, help="Path to cvtrace file")
 
 
 def run_driver_tool(task, argv=None, extra_args=tuple()):
@@ -103,6 +144,7 @@ def run_driver_tool(task, argv=None, extra_args=tuple()):
     args = parser.parse_args(args=argv)
     task_inst = task(*extra_args, config=args)
     task_inst.run()
+    return task_inst
 
 
 class InteractiveTool(TaskDriver):
@@ -190,43 +232,3 @@ def interactive_tool(key):
         driver_class.task_class = wrapped_task
         return driver_class
     return wrapper
-
-def file_path_validator(value):
-    """
-    Validate input parameter of argparse argument.
-    Accept a file path.
-    """
-    path = os.path.abspath(os.path.expanduser(value))
-    return path
-
-def any_int_validator(value):
-    """
-    Validata input parameter of argparse argument.
-    Accept integers in base 10 and 16
-    """
-    try:
-        n = int(value)
-    except ValueError:
-        # try hex
-        n = int(value, 16)
-    return n
-
-def option_range_validator(value):
-    """
-    Validate input parameter of an argparse argument.
-    Accept a range of values.
-    Expects a string in the form "start-end".
-    Returns the tuple (start, end).
-    """
-    parts = value.split("-")
-    try:
-        if len(parts) > 1:
-            start, end = parts
-        else:
-            start = end = parts[0]
-        start = any_int_validator(start) if start != "" else None
-        end = any_int_validator(end) if end != "" else None
-    except ValueError:
-        raise ValueError("Invalid range %s, accepted formats are"\
-                         "<start>-<end>, <start>-, -<end>, <start=end>" % value)
-    return (start, end)

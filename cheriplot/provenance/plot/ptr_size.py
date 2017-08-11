@@ -511,7 +511,7 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
                 cdf.ignore_mask(pgm.graph.vp.in_jemalloc, False,
                                 heap_entry.start,
                                 heap_entry.end)
-                cdf.name += " no-malloc"
+                cdf.name += " no-malloc-all"
             cdf.build_cdf()
             datasets.append(cdf)
         self.register_patch_builder(datasets, CdfPatchBuilder())

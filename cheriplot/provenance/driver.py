@@ -39,7 +39,8 @@ from cheriplot.provenance.plot import (
 from cheriplot.provenance.model import ProvenanceGraphManager
 from cheriplot.provenance.stats import ProvenanceStatsDriver
 from cheriplot.provenance.visit import GraphFilterDriver
-from cheriplot.provenance.parser import SymbolResolutionDriver
+from cheriplot.provenance.parser import (
+    SymbolResolutionDriver, GraphParserDriver)
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,6 @@ class MultiActionDriver(BaseToolTaskDriver):
         def _load_graph(self):
             self.pgm = self.state.load_graph(self.config.graph)
 
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
@@ -160,7 +160,14 @@ class MultiActionDriver(BaseToolTaskDriver):
                 tool = self._Symbols
             elif line.startswith("plot"):
                 tool = self._Analysis
+            elif line.startswith("parse"):
+                tool = GraphParserDriver
             else:
                 continue
-            run_driver_tool(tool, argv=shlex.split(line)[1:], extra_args=(self,))
+            if line.startswith("parse"):
+                driver = run_driver_tool(tool, argv=shlex.split(line)[1:])
+                self.loaded_graphs[driver.pgm.outfile] = driver.pgm
+            else:
+                driver = run_driver_tool(tool, argv=shlex.split(line)[1:],
+                                         extra_args=(self,))
 
