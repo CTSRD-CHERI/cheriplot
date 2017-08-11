@@ -491,6 +491,7 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
         for filter_set in self.config.filters:
             pgm = self.pgm_list[0]
             cdf = PtrBoundCdf(pgm)
+            cdf.name = ""
             if "stack" in filter_set:
                 if stack_vm_entry is None:
                     msg = "Need to specify a memory map to find the stack size."
