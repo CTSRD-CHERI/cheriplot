@@ -1345,7 +1345,7 @@ class PointerProvenanceSubparser:
             logger.debug("{%d} Tracing paused", entry.cycles)
             self.regset.handle_pause()
         if inst.op0.gpr_index == 0 and inst.op1.value == 0xcafe:
-            logger.debug("{%d} Force parser stop", entry.cycles)
+            logger.warning("{%d} Force parser stop", entry.cycles)
             return True
         return False
 
