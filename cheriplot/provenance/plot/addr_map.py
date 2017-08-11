@@ -476,7 +476,7 @@ class BaseAddressMapPlotDriver(VMMapPlotDriver, ASAxesPlotBuilderNoTitle):
 
     title = "Capabilities derivation time vs capability position"
     x_label = "Virtual Address"
-    y_label = "Time (million of cycles)"
+    y_label = "Time (million of instructions)"
 
     publish = Option(help="Adjust plot for publication", action="store_true")
 
