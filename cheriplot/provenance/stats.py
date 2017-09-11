@@ -30,7 +30,8 @@ import pandas as pd
 
 from functools import reduce
 
-from cheriplot.core import SubCommand, TaskDriver, ProgressTimer, CumulativeTimer
+from cheriplot.core import NestedConfig, TaskDriver, ProgressTimer, CumulativeTimer
+from cheriplot.vmmap import VMMapFileParser
 from cheriplot.provenance.model import (
     CheriNodeOrigin, ProvenanceVertexData, EdgeOperation)
 from cheriplot.provenance.visit import BFSGraphVisit
@@ -42,15 +43,11 @@ class MmapStatsVisitor(BFSGraphVisit):
     Visitor that gather informations about the vertices in the graph
     """
 
-    def __init__(self, pgm):
+    def __init__(self, pgm, vmmap):
         super().__init__(pgm)
+        self.pgm = pgm
         self.graph = pgm.graph
         self.stats = {
-            # number of successors of syscall-returned capabilities
-            "syscall_derived": 0,
-            # number of capabilities returned by syscalls
-            # (in c3 when the syscall returns)
-            "syscall_return": 0,
             # number of times a capability is dereferenced for store
             "deref_store": 0,
             # number of times a capability is dereferenced for load
@@ -64,47 +61,64 @@ class MmapStatsVisitor(BFSGraphVisit):
             # number of capabilities originating (being loaded) from the
             # initial stack region for argv, envv and ELF auxargs
             "from_args_stack": 0,
+            # number of csetbounds that generate from different places
+            "stack_alloc": 0,
+            "mmap_alloc": 0,
+            "malloc_alloc": 0,
+            "globals": 0,
+            # total number of setbounds operations
+            "num_setbounds": 0,
         }
 
-        self.syscall_derived = pgm.graph.new_vertex_property("bool", val=False)
-        """
-        Mark vertices that are successors of a syscall-returned
-        capability.
-        """
+        for entry in vmmap:
+            if entry.grows_down:
+                self.stack = entry
+                break
+        else:
+            self.stack = None
 
     def examine_vertex(self, u):
-        data = self.graph.vp.data[u]
+        self.progress.advance()
+        if not self.pgm.layer_prov[u]:
+            return
+        data = self.pgm.data[u]
         events = data.event_tbl
-        self._get_syscall_stats(u, events)
         self._get_deref_stats(events)
         self._get_memop_stats(events)
         self._get_argv_stats(events)
+        self._get_alloc_stack(data)
+        if (data.origin == CheriNodeOrigin.SETBOUNDS or
+            data.origin == CheriNodeOrigin.PTR_SETBOUNDS):
+            self.stats["num_setbounds"] += 1
 
-    def _get_syscall_stats(self, u, events):
-        if not self.syscall_derived[u]:
-            # get unfiltered vertex so that we can access call-layer
-            # vertices
-            uu = self.pgm.graph.vertex(u)
-            for w in uu.out_neighbours():
-                e = self.pgm.graph.edge(uu, w)
-                if self.pgm.edge_operation[e] == EdgeOperation.RETURN:
-                    # check if the call-layer vertex is created by a SYSCALL
-                    # for this we need the edge from the call-parent
-                    call_view = self.pgm.call_view()
-                    call_vertex = call_view.vertex(e.target())
-                    call_parents = list(call_vertex.in_neighbours())
-                    assert len(call_parents) <= 1
-                    if len(call_parents):
-                        edge = self.pgm.graph.edge(call_parents[0], call_vertex)
-                        if self.pgm.edge_operation[edge] == EdgeOperation.SYSCALL:
-                            self.syscall_derived[u] = True
-                    break
-            if not self.syscall_derived[u]:
-                return
-        # the vertex is used in a syscall return
-        self.stats["syscall_derived"] += 1
-        for v in u.out_neighbours():
-            self.syscall_derived[v] = True
+    def examine_edge(self, e):
+        if self.pgm.layer_prov[e.source()] and self.pgm.layer_call[e.target()]:
+            self._get_alloc_stats(e)
+
+    def _get_alloc_stats(self, edge):
+        if not self.pgm.edge_operation == EdgeOperation.RETURN:
+            return
+        target = edge.target()
+        if (self.pgm.data[target].symbol == "malloc" or
+            self.pgm.data[target].symbol == "__malloc"):
+            self.stats["malloc_alloc"] += 1
+        elif self.pgm.data[target].address == 447:
+            self.stats["mmap_alloc"] += 1
+
+    def _get_alloc_stack(self, data):
+        """
+        Check if the vertex is a setbounds referencing the stack.
+        XXX note this is not the same of a stack allocation, we need information
+        about the current function frame boundaries.
+        """
+        if self.stack is None:
+            return
+
+        if ((data.origin == CheriNodeOrigin.SETBOUNDS or
+             data.origin == CheriNodeOrigin.PTR_SETBOUNDS) and
+            data.cap.base >= self.stack.start and
+            data.cap.bound <= self.stack.end):
+            self.stats["stack_alloc"] += 1
 
     def _get_deref_stats(self, events):
         n_deref_load = (
@@ -139,15 +153,17 @@ class ProvenanceStatsDriver(TaskDriver):
     distribution of pointers in the program.
     """
 
-    def __init__(self, pgm, **kwargs):
+    def __init__(self, pgm_list, vmmap, **kwargs):
         super().__init__(**kwargs)
 
-        self.pgm = pgm
+        self.vmmap = vmmap
+
+        self.pgm = pgm_list[0]
         """Provenance graph model"""
 
     def run(self):
-        mmap_stats = MmapStatsVisitor(self.pgm)
-        mmap_stats(self.pgm.prov_view())
+        mmap_stats = MmapStatsVisitor(self.pgm, self.vmmap)
+        mmap_stats(self.pgm.graph)
 
         stats = pd.DataFrame(mmap_stats.stats, index=[0])
         print(stats)
