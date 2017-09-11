@@ -301,6 +301,9 @@ class RegisterSet:
         :param cap: cheritrace capability_register
         :return: bool
         """
+        if cap is None:
+            # don't know what to compare to
+            return True
         if data is None:
             # invalidated vertex
             if not cap.valid:
