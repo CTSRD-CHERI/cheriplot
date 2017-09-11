@@ -1708,8 +1708,8 @@ class PointerProvenanceSubparser:
                                       is_cap)
         else:
             if not inst.has_exception:
-                logger.error("Dereference is neither a load or a store %s", inst)
-                raise RuntimeError("Dereference is neither a load nor a store")
+                logger.warning("Dereference is neither a load or a store %s, "
+                               "not committed", inst)
 
     def scan_cap_load(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
