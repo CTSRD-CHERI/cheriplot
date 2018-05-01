@@ -41,6 +41,7 @@ from collections import defaultdict
 from enum import Enum
 from functools import reduce, partial
 from itertools import chain
+from threading import Event, Lock
 from multiprocessing import Pool, Value, Manager, Lock, Condition
 
 from cheriplot.core.utils import ProgressPrinter
@@ -56,16 +57,37 @@ class TraceParser:
     :type trace_path: str
     """
 
-    def __init__(self, trace_path=None, defer_preload=False, **kwargs):
+    def __init__(self, trace_path=None, keyframe_file=None, **kwargs):
         super().__init__(**kwargs)
         self.path = trace_path
         self.trace = None
 
+        preload_done = Event()
+        preload_done.clear()
+        preload_progress = ProgressPrinter(-1, "Preloading...")
+        if keyframe_file is None:
+            keyframe_file = "{}.kf".format(trace_path)
+
+        def _keyframe_save(trace, entries, done):
+            preload_progress.advance(to=entries)
+            if done:
+                trace.save_keyframes(keyframe_file)
+                preload_progress.finish()
+                preload_done.set()
+            return False
+
         if trace_path is not None:
             if not os.path.exists(trace_path):
                 raise IOError("File not found %s" % trace_path)
-            logger.debug("Open trace %s (preload=%s)", trace_path, defer_preload)
-            self.trace = pct.trace.open(trace_path, None, defer_preload)
+            logger.debug("Open trace %s, keyframes %s", trace_path, keyframe_file)
+            if keyframe_file is not None and os.path.exists(keyframe_file):
+                # we have a keyframe file to load cheaply
+                self.trace = pct.trace.open(trace_path, keyframe_file)
+            else:
+                # need to generate the keyframe file
+                self.trace = pct.trace.open(trace_path, _keyframe_save)
+                preload_progress.end = self.trace.size()
+                preload_done.wait()
             if self.trace is None:
                 raise IOError("Can not open trace %s" % trace_path)
 
@@ -621,8 +643,8 @@ class MultiprocessCallbackParser(CallbackTraceParser):
 
         :param threads: number of worker processes to use.
         """
-        if threads > 1 and "defer_preload" not in kwargs:
-            kwargs["defer_preload"] = True
+        if threads > 1 and "keyframe_file" not in kwargs:
+            kwargs["keyframe_file"] = "{}.kfr".format(trace_path)
         super().__init__(**kwargs)
         assert threads > 0, "At least a worker process must be used!"
 

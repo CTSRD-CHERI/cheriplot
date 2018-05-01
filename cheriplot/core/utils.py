@@ -76,6 +76,9 @@ class ProgressPrinter:
             self.curr = to
         else:
             self.curr += step
+        if self.end < 0:
+            # wait until someone resets a consistent end
+            return
         progress = int(self.curr * 100 / (self.end - self.start))
         if (progress != self.progress):
             self.progress = progress

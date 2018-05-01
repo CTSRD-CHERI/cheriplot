@@ -112,6 +112,9 @@ class TraceDumpParser(MultiprocessCallbackParser, ConfigurableComponent):
         symbol information
         """
         sym_reader = kwargs.pop("sym_reader")
+        assert "trace_path" in kwargs, "trace_path argument is required!"
+        if "keyframe_file" not in kwargs:
+            kwargs["keyframe_file"] = "{}.kf".format(kwargs["trace_path"])
         super().__init__(**kwargs)
 
         if not self.is_worker:
