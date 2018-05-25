@@ -166,8 +166,11 @@ class MultiActionDriver(BaseToolTaskDriver):
                 continue
             if line.startswith("parse"):
                 driver = run_driver_tool(tool, argv=shlex.split(line)[1:])
-                self.loaded_graphs[driver.pgm.outfile] = driver.pgm
+                if not driver.config.no_output:
+                    self.loaded_graphs[driver.pgm.outfile] = driver.pgm
             else:
                 driver = run_driver_tool(tool, argv=shlex.split(line)[1:],
                                          extra_args=(self,))
+                if line.startswith("filter") and not driver.config.no_output:
+                    self.loaded_graphs[driver.pgm.outfile] = driver.pgm
 

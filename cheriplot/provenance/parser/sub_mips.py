@@ -1373,34 +1373,76 @@ class PointerProvenanceSubparser:
             self.exec_delay = []
         return False
 
-    def scan_lui(self, inst, entry, regs, last_regs, idx):
-        if inst.op0.gpr_index == 0 and inst.op1.value == 0xdead:
-            logger.debug("{%d} Tracing paused", entry.cycles)
-            self.grab_in_pcb = True
-            self.regset.handle_pause()
-        if inst.op0.gpr_index == 0 and inst.op1.value == 0xcafe:
-            logger.warning("{%d} Force parser stop", entry.cycles)
-            return True
-        if (inst.op0.gpr_index == 0 and inst.op1.value == 0x1d1d and
-            not self.grab_in_pcb and not self.paused):
-            logger.debug("{%d} Grab PCB addr before switch", entry.cycles)
-            self.grab_out_pcb = True
+    # def scan_lui(self, inst, entry, regs, last_regs, idx):
+    #     if inst.op0.gpr_index == 0 and inst.op1.value == 0xdead:
+    #         logger.debug("{%d} Tracing paused", entry.cycles)
+    #         self.grab_in_pcb = True
+    #         self.regset.handle_pause()
+    #     if inst.op0.gpr_index == 0 and inst.op1.value == 0xcafe:
+    #         logger.warning("{%d} Force parser stop", entry.cycles)
+    #         return True
+    #     if (inst.op0.gpr_index == 0 and inst.op1.value == 0x1d1d and
+    #         not self.grab_in_pcb and not self.paused):
+    #         logger.debug("{%d} Grab PCB addr before switch", entry.cycles)
+    #         self.grab_out_pcb = True
+    #     return False
+
+    # def scan_dadd(self, inst, entry, regs, last_regs, idx):
+    #     if inst.op0.gpr_index == 0:
+    #         if self.grab_out_pcb:
+    #             self.grab_out_pcb = False
+    #             self.last_pcb_addr = inst.op2.value
+    #         elif self.grab_in_pcb:
+    #             self.grab_in_pcb = False
+    #             if self.last_pcb_addr != inst.op2.value:
+    #                 # pause parsing until next switch
+    #                 logger.debug("{%d} Parser paused", entry.cycles)
+    #                 self.pause_all()
+    #             else:
+    #                 logger.debug("{%d} Parser unpaused", entry.cycles)
+    #                 self.unpause_all()
+    #     return False
+
+    def scan_cseal(self, inst, entry, regs, last_regs, idx):
+        """
+        Scan sealing instruction, this is a marker to notify that
+        sealing is not properly handled yet.
+        """
+        if self.paused:
+            return False
+        raise NotImplementedError("cseal not yet supported")
         return False
 
-    def scan_dadd(self, inst, entry, regs, last_regs, idx):
-        if inst.op0.gpr_index == 0:
-            if self.grab_out_pcb:
-                self.grab_out_pcb = False
-                self.last_pcb_addr = inst.op2.value
-            elif self.grab_in_pcb:
-                self.grab_in_pcb = False
-                if self.last_pcb_addr != inst.op2.value:
-                    # pause parsing until next switch
-                    logger.debug("{%d} Parser paused", entry.cycles)
-                    self.pause_all()
-                else:
-                    logger.debug("{%d} Parser unpaused", entry.cycles)
-                    self.unpause_all()
+    def scan_cunseal(self, inst, entry, regs, last_regs, idx):
+        """
+        Scan sealing instruction, this is a marker to notify that
+        sealing is not properly handled yet.
+        """
+        if self.paused:
+            return False
+        raise NotImplementedError("cunseal not yet supported")
+        return False
+
+    def scan_cclearhi(self, inst, entry, regs, last_regs, idx):
+        """
+        Fast register clearing. This must be handled separately
+        since it updates multiple registers and only the first
+        register change is recorded in the trace.
+        """
+        if self.paused:
+            return False
+        raise NotImplementedError("cclearhi not yet supported")
+        return False
+
+    def scan_cclearlo(self, inst, entry, regs, last_regs, idx):
+        """
+        Fast register clearing. This must be handled separately
+        since it updates multiple registers and only the first
+        register change is recorded in the trace.
+        """
+        if self.paused:
+            return False
+        raise NotImplementedError("cclearlo not yet supported")
         return False
 
     def scan_cclearregs(self, inst, entry, regs, last_regs, idx):
@@ -1614,6 +1656,46 @@ class PointerProvenanceSubparser:
             return False
         node = self.make_node(entry, inst, origin=CheriNodeOrigin.ANDPERM)
         self.regset.set_reg(inst.op0.cap_index, node, entry.cycles)
+        return False
+
+    def scan_cmovn(self, inst, entry, regs, last_regs, idx, maybe_call=False):
+        """
+        Conditional move, if the condition holds, then this behaves as
+        the arithmetic capability instruction scan.
+        """
+        if self.paused:
+            return False
+        if inst.has_exception and entry.exception != 0 and not maybe_call:
+            self.maybe_scan(
+                partial(self.scan_cmovn, inst, entry, regs, last_regs, idx, True),
+                entry.pc)
+            return False
+        dst = inst.op0
+        src = inst.op1
+        assert dst.is_capability and src.is_capability
+        if CheriCap(dst.value) == CheriCap(src.value):
+            # conditional move occurred
+            self.scan_cap_arith(inst, entry, regs, last_regs, idx)
+        return False
+
+    def scan_cmovz(self, inst, entry, regs, last_regs, idx, maybe_call=False):
+        """
+        Conditional move, if the condition holds, then this behaves as
+        the arithmetic capability instruction scan.
+        """
+        if self.paused:
+            return False
+        if inst.has_exception and entry.exception != 0 and not maybe_call:
+            self.maybe_scan(
+                partial(self.scan_cmovn, inst, entry, regs, last_regs, idx, True),
+                entry.pc)
+            return False
+        dst = inst.op0
+        src = inst.op1
+        assert dst.is_capability and src.is_capability
+        if CheriCap(dst.value) == CheriCap(src.value):
+            # conditional move occurred
+            self.scan_cap_arith(inst, entry, regs, last_regs, idx)
         return False
 
     def scan_cap_arith(self, inst, entry, regs, last_regs, idx, maybe_call=False):
@@ -2308,6 +2390,9 @@ class CallgraphSubparser:
         # temporarily hold prov-vertex => edge pairs
         visible_edges = {}
         for reg_idx, u in enumerate(self.regset.reg_nodes):
+            if reg_idx >= self.regset.cap_regfile_size:
+                # reg_nodes contains also special hw registers, e.g. pcc
+                break
             if u is None or not regs.valid_caps[reg_idx]:
                 continue
             offset = regs.cap_reg[reg_idx].offset

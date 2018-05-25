@@ -580,7 +580,6 @@ class CallbackTraceParser(TraceParser):
                 return False
 
             ret = False
-
             try:
                 for cbk in self._cbk_manager.get_callbacks(inst):
                     ret |= cbk(inst, entry, regs, self._last_regs, idx)

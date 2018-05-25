@@ -88,7 +88,10 @@ class VMMapFileParser(ConfigurableComponent):
             logger.info("Try to load vmmap_dump memory map file")
             vmmap_dump_cols = ["start", "end", "offset", "perm", "res", "pres",
                                "ref", "shd", "flag", "tp", "path"]
-            vmmap = pd.read_csv(self.map_file, names=vmmap_dump_cols)
+            maybe_b16_int = lambda x: int(x, 16) if str(x).strip().startswith("0x") else int(x)
+            col_converters = {"start": maybe_b16_int, "end": maybe_b16_int}
+            vmmap = pd.read_csv(self.map_file, names=vmmap_dump_cols,
+                                converters=col_converters)
         else:
             logger.info("Try to load procstat memory map file")
             procstat_cols = ["pid", "start", "end", "perm", "res", "pres",

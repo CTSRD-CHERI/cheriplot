@@ -50,12 +50,12 @@ class CheriMipsCallbacksManager(CallbacksManager):
         IClass.I_CAP_CAST: [
             "ctoptr", "cfromptr"],
         IClass.I_CAP_ARITH: [
-            "cincoffset", "csetoffset", "csub"],
+            "cincoffset", "csetoffset", "csub", "cmove"],
         IClass.I_CAP_BOUND: [
             "csetbounds", "csetboundsexact", "candperm"],
         IClass.I_CAP_FLOW: [
             "cbtu", "cbts", "cjr", "cjalr",
-            "ccall", "creturn"],
+            "ccall", "creturn", "cbez", "cbnz"],
         IClass.I_CAP_CPREG: [
             "csetdefault", "cgetdefault", "cgetepcc", "csetepcc",
             "cgetkcc", "csetkcc", "cgetkdc", "csetkdc", "cgetpcc",
@@ -69,6 +69,6 @@ class CheriMipsCallbacksManager(CallbacksManager):
             "ccleartag", "cclearregs",
             "cgetcause", "csetcause", "ccheckperm", "cchecktype",
             "clearlo", "clearhi", "cclearlo", "cclearhi",
-            "fpclearlo", "fpclearhi", "cmove"]
+            "fpclearlo", "fpclearhi"]
         }
     iclass_map[IClass.I_CAP] = list(chain(*iclass_map.values()))
