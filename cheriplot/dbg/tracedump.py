@@ -219,15 +219,22 @@ class TraceDumpParser(MultiprocessCallbackParser, ConfigurableComponent):
             else:
                 self.out.write("%s = $%s\n" % (loc, inst.cd.name))
 
-        if (entry.gpr_number() != -1):
-            gpr_value = inst.cd.value
-            gpr_name = inst.cd.name
-            self.out.write("$%s = %x\n" % (gpr_name, gpr_value))
-        elif (entry.capreg_number() != -1):
-            cap_name = inst.cd.name
-            cap_value = inst.cd.value
-            self.out.write("$%s = %s\n" % (
-                cap_name, self.dump_cap(cap_value)))
+        if inst.op0.is_register:
+            if (inst.op0.gpr_index != -1):
+                gpr_value = inst.op0.value
+                gpr_name = inst.op0.name
+                if gpr_value is not None:
+                    self.out.write("$%s = %x\n" % (gpr_name, gpr_value))
+                else:
+                    self.out.write("$%s = Unknown\n" % gpr_name)
+            elif (inst.op0.cap_index != -1 or inst.op0.caphw_index != -1):
+                cap_name = inst.op0.name
+                cap_value = inst.op0.value
+                if cap_value is not None:
+                    self.out.write("$%s = %s\n" % (
+                        cap_name, self.dump_cap(cap_value)))
+                else:
+                    self.out.write("$%s = Unknown\n" % cap_name)
 
     def dump_kernel_user_switch(self, entry):
         if self._kernel_mode != entry.is_kernel():
@@ -367,7 +374,12 @@ class TraceDumpParser(MultiprocessCallbackParser, ConfigurableComponent):
                     old_inst, idx = self._entry_history.popleft()
                     self.do_dump(old_inst, old_inst.entry, old_inst._regset,
                                  old_inst._prev_regset, idx)
-                self.do_dump(inst, entry, regs, last_regs, idx)
+                try:
+                    self.do_dump(inst, entry, regs, last_regs, idx)
+                except Exception as e:
+                    logger.error("Can not dump instruction %s: %s",
+                                 inst, e)
+                    return True
                 self._dump_next = self.config.after
             else:
                 self._entry_history.append((inst, idx))

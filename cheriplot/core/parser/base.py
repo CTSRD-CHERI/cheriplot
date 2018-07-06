@@ -184,9 +184,9 @@ class Operand:
     def caphw_index(self):
         """Return the register number in the range 0-31 of an hardware capability register."""
         if not (self.is_register and self.info.register_number >= 96):
-            logger.error("Operand %s is not a capability hw register,"
+            logger.debug("Operand %s is not a capability hw register,"
                          " can not get register number", self)
-            raise IndexError("Operand is not a capability hardware register")
+            return -1
         return self.info.register_number - 96
 
     @property
@@ -194,18 +194,18 @@ class Operand:
         """Return the register number in the range 0-31"""
         if not (self.is_register and self.info.register_number < 96 and
                 self.info.register_number >= 64):
-            logger.error("Operand %s is not a capability register,"
+            logger.debug("Operand %s is not a capability register,"
                          " can not get register number", self)
-            raise IndexError("Operand is not a capability register")
+            return -1
         return self.info.register_number - 64
 
     @property
     def gpr_index(self):
         """Return the register number in the range 0-31"""
         if not (self.is_register and self.info.register_number < 32):
-            logger.error("Operand %s is not a GPR register,"
+            logger.debug("Operand %s is not a GPR register,"
                          " can not get register number", self)
-            raise IndexError("Operand is not a GPR register")
+            return -1
         return self.info.register_number
 
     def __str__(self):
