@@ -61,8 +61,9 @@ class CheriCapPerm(IntFlag):
     CAP_STORE = 1 << 5
     CAP_STORE_LOCAL = 1 << 6
     SEAL = 1 << 7
-    # XXXAM qemu currently uses 8, spec says 10
-    SYSTEM_REGISTERS = 1 << 10 | 1 << 8
+    CCALL = 1 << 8
+    UNSEAL = 1 << 9
+    SYSTEM_REGISTERS = 1 << 10
 
     @classmethod
     def all(cls):
