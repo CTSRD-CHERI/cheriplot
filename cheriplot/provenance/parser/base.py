@@ -133,8 +133,12 @@ class RegisterSet:
     results from worker processes.
     """
 
-    cap_regfile_size = 32
-    """Number of capability registers in the register file."""
+    cap_regfile_size = (32 * 2)
+    """
+    Number of capability registers in the register file.
+    The low 32 registers are general purpose capability registers,
+    The high 32 registers are hardware registers accessed by c{read,write}hwr.
+    """
 
     def __init__(self, pgm):
         """
@@ -260,13 +264,37 @@ class RegisterSet:
         return self.reg_nodes[index]
 
     def get_pcc(self):
-        return self.get_reg(32)
+        return self.get_reg(64)
 
     def set_pcc(self, value, time):
-        self.set_reg(32, value, time)
+        self.set_reg(64, value, time)
 
     def has_pcc(self, expected, time, allow_root=False):
-        return self.has_reg(32, expected, time, allow_root)
+        return self.has_reg(64, expected, time, allow_root)
+
+    def set_epcc(self, value, time):
+        self.set_reg(63, value, time)
+
+    def get_epcc(self):
+        return self.get_reg(63)
+
+    def set_kcc(self, value, time):
+        return self.set_reg(61, value, time)
+
+    def get_kcc(self):
+        return self.get_reg(61)
+
+    def set_kdc(self, value, time):
+        return self.set_reg(62, value, time)
+
+    def get_kdc(self):
+        return self.get_reg(62)
+
+    def set_ddc(self, value, time):
+        self.set_reg(32, value, time)
+
+    def get_ddc(self, value, time):
+        self.get_reg(32)
 
     def has_reg(self, idx, expected, time, allow_root=False):
         """

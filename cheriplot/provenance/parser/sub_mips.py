@@ -869,18 +869,18 @@ class CapabilityBranchSubparser:
                     # not committed, epcc = pcc_before_jmp
                     # XXX this assumes that nothing as been done with epcc
                     # between the exception and the mfc0 instruction
-                    assert (self.regset.get_reg(31).out_degree() ==
+                    assert (self.regset.get_epcc().out_degree() ==
                             len(self._saved_epcc_out_neighbours))
                     # unregister the free-time of the saved_pcc since it was not
                     # really out of scope.
                     data = self.pgm.data[self._saved_pcc]
                     data.cap.t_free = -1
-                    self.regset.set_reg(31, self._saved_pcc, entry.cycles)
+                    self.regset.set_epcc(self._saved_pcc, entry.cycles)
             self._saved_addr = None
         elif self._save_first_mfc and inst.op1.gpr_index == 8:
             self._save_first_mfc = False
             self._initial_badvaddr = inst.op0.value
-            self._initial_epcc = self.regset.get_reg(31)
+            self._initial_epcc = self.regset.get_epcc()
         return False
 
     def scan_eret(self, inst, entry, regs, last_regs, idx):
@@ -1139,9 +1139,11 @@ class SyscallSubparser:
         logger.debug("except {%d}: update epcc %s, update pcc %s",
                      entry.cycles,
                      self.pgm.data[self.regset.get_pcc()],
-                     self.pgm.data[self.regset.get_reg(29)])
-        self.regset.set_reg(31, self.regset.get_pcc(), entry.cycles) # saved pcc
-        self.regset.set_pcc(self.regset.get_reg(29), entry.cycles) # pcc <- kcc
+                     self.pgm.data[self.regset.get_kcc()])
+        # saved pcc
+        self.regset.set_epcc(self.regset.get_pcc(), entry.cycles)
+        # pcc <- kcc
+        self.regset.set_pcc(self.regset.get_kcc(), entry.cycles)
         return False
 
     # def scan_syscall(self, inst, entry, regs, last_regs, idx):
@@ -1200,10 +1202,10 @@ class SyscallSubparser:
 
         logger.debug("eret {%d}: update pcc %s, update kcc %s",
                      entry.cycles,
-                     self.pgm.data[self.regset.get_reg(31)],
+                     self.pgm.data[self.regset.get_epcc()],
                      self.pgm.data[self.regset.get_pcc()])
         # restore saved pcc
-        self.regset.set_pcc(self.regset.get_reg(31), entry.cycles)
+        self.regset.set_pcc(self.regset.get_epcc(), entry.cycles)
         return False
 
 
@@ -1403,6 +1405,26 @@ class PointerProvenanceSubparser:
     #                 self.unpause_all()
     #     return False
 
+    def scan_creadhwr(self, inst, entry, regs, last_regs, idx):
+        """
+        Read capability hardware register
+        """
+        if self.paused:
+            return False
+        assert inst.op1.caphw_index != -1, "creadhwr operand 1 is not an hardware register"
+        self._handle_cpreg_get(inst.op0, inst.op1, inst, entry)
+        return False
+    
+    def scan_cwritehwr(self, inst, entry, regs, last_regs, idx):
+        """
+        Write capability hardware register
+        """
+        if self.paused:
+            return False
+        assert inst.op0.caphw_index != -1, "cwritehwr operand 0 is not an hardware register"
+        self._handle_cpreg_set(inst.op0, inst.op1, entry)
+        return False
+
     def scan_cseal(self, inst, entry, regs, last_regs, idx):
         """
         Scan sealing instruction, this is a marker to notify that
@@ -1456,14 +1478,17 @@ class PointerProvenanceSubparser:
         raise NotImplementedError("cclearregs not yet supported")
         return False
 
-    def _handle_cpreg_get(self, regnum, inst, entry):
+    def _handle_cpreg_get(self, op_dst, op_hwr, inst, entry):
         """
         When a cget<reg> is found, propagate the node from the special
         register <reg> (i.e. kcc, kdc, ...) to the destination or create a
         new node if nothing was there.
 
-        :param regnum: the index of the special register in the register set
-        :type regnum: int
+        :param op_dst: destination capability operand
+        :type op_dst: Operand
+
+        :param op_hwr: source hardware register operand
+        :type op_hwr: Operand
 
         :param inst: parsed instruction
         :type inst: :class:`cheriplot.core.parser.Instruction`
@@ -1471,97 +1496,55 @@ class PointerProvenanceSubparser:
         :parm entry: trace entry
         :type entry: :class:`pycheritrace.trace_entry`
         """
-        if not self.regset.has_reg(regnum, inst.op0.value, entry.cycles,
+        # offset the index by 32 because the first
+        # 32 entries are GP capability registers
+        hwreg_num = op_hwr.caphw_index + 32
+
+        if not self.regset.has_reg(hwreg_num, op_dst.value, entry.cycles,
                                    allow_root=True):
             # no node was ever created for the register, it contained something
             # invalid
-            node = self.make_root_node(entry, inst.op0.value,
-                                       time=entry.cycles)
-            self.regset.set_reg(regnum, node, entry.cycles)
-            logger.debug("cpreg_get: new node from $c%d %s",
-                         regnum, self.pgm.data[node])
+            node = self.make_root_node(entry, op_dst.value, time=entry.cycles)
+            self.regset.set_reg(hwreg_num, node, entry.cycles)
+            logger.debug("cpreg_get: new node from $chwr%d %s",
+                         op_hwr.caphw_index, self.pgm.data[node])
         # XXX consistency checks
-        src_data = self.pgm.data[self.regset.get_reg(regnum)]
-        src = inst.op0.value
-        assert src is not None, "{} {}".format(src_data, inst)
-        assert src_data.cap.base == src.base, "{} {}".format(src_data, inst)
-        assert src_data.cap.length == src.length, "{} {}".format(src_data, inst)
+        src_data = self.pgm.data[self.regset.get_reg(hwreg_num)]
+        dst = op_dst.value
+        assert dst is not None, "{} {}".format(src_data, inst)
+        assert src_data.cap.base == dst.base, "{} {}".format(src_data, inst)
+        assert src_data.cap.length == dst.length, "{} {}".format(src_data, inst)
         assert (src_data.cap.permissions == \
-                CheriCapPerm(src.permissions)), "{} {}".format(src_data, inst)
-        self.regset.set_reg(inst.op0.cap_index, self.regset.get_reg(regnum),
+                CheriCapPerm(dst.permissions)), "{} {}".format(src_data, inst)
+        self.regset.set_reg(op_dst.cap_index,
+                            self.regset.get_reg(hwreg_num),
                             entry.cycles)
 
-    def _handle_cpreg_set(self, regnum, inst, entry):
+    def _handle_cpreg_set(self, op_hwr, op_src, entry):
         """
         When a cset<reg> is found, propagate the node to the special
         register <reg> (i.e. kcc, kdc, ...) or create a new node.
 
-        :param regnum: the index of the special register in the register set
-        :type regnum: int
+        :param op_hwr: destination hardware register operand
+        :type op_hwr: Operand
 
-        :param inst: parsed instruction
-        :type inst: :class:`cheriplot.core.parser.Instruction`
+        :param op_src: source register operand
+        :type op_src: Operand
 
         :parm entry: trace entry
         :type entry: :class:`pycheritrace.trace_entry`
         """
-        if not self.regset.has_reg(inst.op1.cap_index, inst.op1.value,
+        if not self.regset.has_reg(op_src.cap_index, op_src.value,
                                    entry.cycles, allow_root=True):
-            node = self.make_root_node(entry, inst.op0.value,
-                                       time=entry.cycles)
-            self.regset.set_reg(inst.op1.cap_index, node, entry.cycles)
-            logger.debug("cpreg_set: new node from c<%d> %s",
-                         regnum, self.pgm.data[node])
-        self.regset.set_reg(regnum, self.regset.get_reg(inst.op1.cap_index),
-                            entry.cycles)
-
-    def scan_cgetepcc(self, inst, entry, regs, last_regs, idx):
-        if self.paused:
-            return False
-        self._handle_cpreg_get(31, inst, entry)
-        return False
-
-    def scan_csetepcc(self, inst, entry, regs, last_regs, idx):
-        if self.paused:
-            return False
-        self._handle_cpreg_set(31, inst, entry)
-        return False
-
-    def scan_cgetkcc(self, inst, entry, regs, last_regs, idx):
-        if self.paused:
-            return False
-        self._handle_cpreg_get(29, inst, entry)
-        return False
-
-    def scan_csetkcc(self, inst, entry, regs, last_regs, idx):
-        if self.paused:
-            return False
-        self._handle_cpreg_set(29, inst, entry)
-        return False
-
-    def scan_cgetkdc(self, inst, entry, regs, last_regs, idx):
-        self._handle_cpreg_get(30, inst, entry)
-        if self.paused:
-            return False
-        return False
-
-    def scan_csetkdc(self, inst, entry, regs, last_regs, idx):
-        if self.paused:
-            return False
-        self._handle_cpreg_set(30, inst, entry)
-        return False
-
-    def scan_cgetdefault(self, inst, entry, regs, last_regs, idx):
-        if self.paused:
-            return False
-        self._handle_cpreg_get(0, inst, entry)
-        return False
-
-    def scan_csetdefault(self, inst, entry, regs, last_regs, idx):
-        if self.paused:
-            return False
-        self._handle_cpreg_set(0, inst, entry)
-        return False
+            node = self.make_root_node(entry, op_hwr.value, time=entry.cycles)
+            self.regset.set_reg(op_src.cap_index, node, entry.cycles)
+            logger.debug("cpreg_set: new node from $chwr<%d> %s",
+                         op_hwr.caphw_index, self.pgm.data[node])
+            # offset the index by 32 because the first
+            # 32 entries are GP capability registers
+            self.regset.set_reg(op_hwr.caphw_index + 32,
+                                self.regset.get_reg(op_src.cap_index),
+                                entry.cycles)
 
     def scan_cgetpcc(self, inst, entry, regs, last_regs, idx):
         if self.paused:
@@ -2319,18 +2302,19 @@ class CallgraphSubparser:
         """
         Scan eret instructions to properly restore pcc from epcc
         and capture syscall return values.
+        Note that EPCC is an hardware register
         """
         if self.parser.paused:
             return False
         self.exception_depth -= 1
         if (self._in_syscall and self.exception_depth == 0 and
             not inst.has_exception):
-            epcc_valid = regs.valid_caps[31]
+            epcc_valid = regs.valid_hwcaps[31]
             if not epcc_valid:
                 msg = "eret without valid epcc register"
                 logger.error(msg)
                 raise UnexpectedOperationError(msg)
-            epcc = regs.cap_reg[31]
+            epcc = regs.cap_hwreg[31]
             self._in_syscall = False
             self._make_syscall_return(entry, epcc.base + epcc.offset, regs)
         elif self.exception_depth < 0:
@@ -2393,9 +2377,17 @@ class CallgraphSubparser:
             if reg_idx >= self.regset.cap_regfile_size:
                 # reg_nodes contains also special hw registers, e.g. pcc
                 break
-            if u is None or not regs.valid_caps[reg_idx]:
+            if u is None:
                 continue
-            offset = regs.cap_reg[reg_idx].offset
+            elif reg_idx < 32 and regs.valid_caps[reg_idx]:
+                # GP capability register
+                offset = regs.cap_reg[reg_idx].offset
+            elif reg_idx >= 32 and regs.valid_hwcaps[reg_idx - 32]:
+                # hardware capability register
+                offset = regs.cap_hwreg[reg_idx - 32].offset
+            else:
+                # register not valid
+                continue
             with suppress(KeyError):
                 # u is already linked to the called frame, check if
                 # the offset matches

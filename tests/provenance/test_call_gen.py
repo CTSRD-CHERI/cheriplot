@@ -396,8 +396,8 @@ trace_syscall = (0x1000, (
                               parent="call-root", vid="syscall")
     }),
     # set epcc since it is required to successfuly parse the return.
-    ("cmove $c31, $c31", {
-        "c31": pct_cap(0x1000, 0x0c, 0x10000, perm),
+    ("csetepcc $c1", {
+        "chwr31": pct_cap(0x1000, 0x0c, 0x10000, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0x10000, perm)),
     }),
     ("eret", {
@@ -434,8 +434,8 @@ trace_syscall_extra_eret = (0x1000, (
     ("", {
         "cvertex": mk_cvertex(None, vid="call-root")
     }),
-    ("cmove $c31, $c31", {
-        "c31": pct_cap(0x1000, 0x0c, 0xf000, perm),
+    ("csetepcc $c1", {
+        "chwr31": pct_cap(0x1000, 0x0c, 0xf000, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm)),
     }),
     ("eret", {}),
@@ -460,13 +460,12 @@ trace_syscall_except = (0x1000, (
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0, 0xf000, perm_rw),
                               vid="v1000"),
     }),
-    ("cmove $c31, $c31", {
-        "c31": pct_cap(0x1000, 0x0c, 0xf000, perm),
+    ("csetepcc $c1", {
+        "chwr31": pct_cap(0x1000, 0x0c, 0xf000, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm), vid="epcc"),
     }),
     ("cld $at, $zero, 0x10($c2)", {
         "exc": 1,
-        "pfree": "epcc",
     }),
     ("nop", {}),
     ("eret", {}),
@@ -530,9 +529,9 @@ trace_syscall_mixed_0x10000 = (0x10000, (
     ("nop", {}),
 ))
 trace_syscall_mixed_0x20000 = (0x20000, (
-    # again c31 is required to have a value for the eret parser to succeed.
-    ("cmove $c31, $c17", {
-        "c31": pct_cap(0x1000, 0x18, 0xf000, perm),
+    # again epcc is required to have a value for the eret parser to succeed.
+    ("csetepcc $c17", {
+        "chwr31": pct_cap(0x1000, 0x18, 0xf000, perm),
     }),
     ("eret", {
         "cret": mk_cvertex_ret("syscall", "call-fn_a", "call-fn_b"),
@@ -549,12 +548,12 @@ trace_syscall_epcc_update = (0x1000, (
         "c1": start_cap,
         "pvertex": mk_pvertex(start_cap, vid="start")
     }),
-    ("cmove $c30, $c30", {
-        "c30": kdc_default,
+    ("csetkdc $c3", {
+        "chwr30": kdc_default,
         "pvertex": mk_pvertex(kdc_default, vid="kdc")
     }),
-    ("cmove $c31, $c31", {
-        "c31": pcc,
+    ("csetepcc $c4", {
+        "chwr31": pcc,
         "pvertex": mk_pvertex(pcc, vid="pcc")
     }),
     ("eret", {}), # set pcc to epcc internally
@@ -569,11 +568,11 @@ trace_syscall_epcc_update = (0x1000, (
             vid="mmap",
             visible=[
                 mk_cvertex_visible("start", 0x0, 1),
-                mk_cvertex_visible("kdc", 0x0, 30),
-                mk_cvertex_visible("pcc", 0x0, 31),
+                mk_cvertex_visible("kdc", 0x0, 62),
+                mk_cvertex_visible("pcc", 0x0, 63),
             ]),
     }),
-    ("cincoffset $c1, $kdc, $zero", {
+    ("cgetkdc $c1", {
         "c1": kdc_default,
         "pfree": "start",
     }),
@@ -592,9 +591,15 @@ trace_syscall_epcc_update = (0x1000, (
         "c3": pct_cap(0x1000, 0xf00, 0x1000, CheriCapPerm.all())
     }),
     # epcc address should match the expected return
-    ("lui $at, 0x14", {"1": 0x18}),
-    ("csetoffset $c31, $c31, $at", {
-        "c31": pct_cap(0x1000, 0x18, 0x1000, perm),
+    ("lui $at, 0x18", {"1": 0x18}),
+    ("cgetepcc $c5", {
+        "c5": pct_cap(0x1000, 0x0c, 0x1000, perm),
+    }),
+    ("csetoffset $c5, $c5, $at", {
+        "c5": pct_cap(0x1000, 0x18, 0x1000, perm),
+    }),
+    ("csetepcc $c5", {
+        "chwr31": pct_cap(0x1000, 0x18, 0x1000, perm),
     }),
     ("eret", {
         "cret": mk_cvertex_ret("mmap", offset=0xf00, retid="v1000"),
@@ -690,8 +695,8 @@ trace_syscall_eret_return_confusion = (0x1000, (
     ("lui $26, 0xdead", {"26": 0xdead}),
     ("jr $26", {}),
     ("nop", {}),
-    ("cmove $c31, $c31", {
-        "c31": pct_cap(0x1000, 0x0c, 0xf000, perm),
+    ("csetepcc $c5", {
+        "chwr31": pct_cap(0x1000, 0x0c, 0xf000, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm), vid="epcc"),
     }),
     ("eret", {
@@ -711,8 +716,8 @@ trace_syscall_nested_eret_exc = (0x1000, (
                               parent="call-root", vid="syscall")
     }),
     ("nop", {}),
-    ("cmove $c31, $c31", {
-        "c31": pct_cap(0x1000, 0x0c, 0xf000, perm),
+    ("csetepcc $c5", {
+        "chwr31": pct_cap(0x1000, 0x0c, 0xf000, perm),
         "pvertex": mk_pvertex(pct_cap(0x1000, 0x0c, 0xf000, perm), vid="epcc"),
     }),
     ("eret", {

@@ -159,12 +159,18 @@ class Operand:
             elif reg_num < 64:
                 logger.warning("Floating point registers not yet supported")
                 return 0
-            else:
+            elif reg_num < 96:
                 if not regset.valid_caps[reg_num - 64]:
                     logger.debug("Taking CAP value $c%d from invalid register",
                                    reg_num - 64)
                     return None
                 return regset.cap_reg[reg_num - 64]
+            else:
+                if not regset.valid_hwcaps[reg_num - 96]:
+                    logger.debug("Taking CAP value $chwr%d from invalid register",
+                                   reg_num - 96)
+                    return None
+                return regset.cap_hwreg[reg_num - 96]
         else:
             logger.error("Operand type not supported")
             raise ValueError("Operand type not supported")
@@ -175,9 +181,19 @@ class Operand:
         return self.is_register and self.info.register_number >= 64
 
     @property
+    def caphw_index(self):
+        """Return the register number in the range 0-31 of an hardware capability register."""
+        if not (self.is_register and self.info.register_number >= 96):
+            logger.error("Operand %s is not a capability hw register,"
+                         " can not get register number", self)
+            raise IndexError("Operand is not a capability hardware register")
+        return self.info.register_number - 96
+
+    @property
     def cap_index(self):
         """Return the register number in the range 0-31"""
-        if not (self.is_register and self.info.register_number >= 64):
+        if not (self.is_register and self.info.register_number < 96 and
+                self.info.register_number >= 64):
             logger.error("Operand %s is not a capability register,"
                          " can not get register number", self)
             raise IndexError("Operand is not a capability register")
@@ -254,18 +270,26 @@ class Instruction:
         self.opcode = parts[1]
         """Instruction opcode"""
 
+    def _get_target_operand_index(self):
+        """
+        Return the index of the target operand for this instruction
+        """
+        return 0
+
     @cached_property
     def operands(self):
         op_list = []
+        dst_op_index = self._get_target_operand_index()
         for idx, op in enumerate(self.inst.operands):
-            is_target = (idx == 0)
+            is_target = (idx == dst_op_index)
             op_list.append(Operand(op, self, is_target))
         return op_list
 
     def _op_n(self, n):
         """Shorthand getter for operand N."""
+        dst_op_index = self._get_target_operand_index()
         if len(self.inst.operands) > n:
-            is_target = (n == 0)
+            is_target = (n == dst_op_index)
             return Operand(self.inst.operands[n], self, is_target)
         return None
 
@@ -515,7 +539,7 @@ class CallbackTraceParser(TraceParser):
         self._subparsers.append(sub)
         self._cbk_manager.gather_callbacks(sub)
 
-    def _parse_exception(self, entry, regs, disasm, idx):
+    def _parse_exception(self, ex, entry, regs, disasm, idx):
         """
         Callback invoked when an instruction could not be parsed
         XXX make this debug because the mul instruction always fails
@@ -523,6 +547,7 @@ class CallbackTraceParser(TraceParser):
         """
         logger.debug("Error parsing instruction #%d pc:0x%x: %s raw: 0x%x",
                      entry.cycles, entry.pc, disasm.name, entry.inst)
+        return False
 
     def parse(self, start=None, end=None, direction=0):
         """
@@ -575,9 +600,8 @@ class CallbackTraceParser(TraceParser):
                 inst = Instruction(disasm, entry, regs, self._last_regs, self._last_instr)
                 self._last_instr = disasm
             except Exception as e:
-                self._parse_exception(entry, regs, disasm, idx)
                 self._last_instr = disasm
-                return False
+                return self._parse_exception(e, entry, nregs, disasm, idx)
 
             ret = False
             try:

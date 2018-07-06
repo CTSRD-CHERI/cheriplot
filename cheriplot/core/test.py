@@ -79,7 +79,9 @@ class MockTraceWriter:
         else:
             # GP or capability register
             entry.reg_value_set(val)
-            if key[0] == "c":
+            if key.startswith("chwr"):
+                reg_num = int(key[4:]) + 96
+            elif key[0] == "c":
                 reg_num = int(key[1:]) + 64
             elif key[0] == "f":
                 reg_num = int(key[1:]) + 32
