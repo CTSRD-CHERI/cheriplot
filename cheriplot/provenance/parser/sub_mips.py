@@ -1453,7 +1453,10 @@ class PointerProvenanceSubparser:
         """
         if self.paused:
             return False
-        raise NotImplementedError("cclearhi not yet supported")
+        mask = inst.op0.value
+        for bit in range(16):
+            if (mask >> bit) & 0x1:
+                self.regset.set_reg(bit + 16, None, entry.cycles)
         return False
 
     def scan_cclearlo(self, inst, entry, regs, last_regs, idx):
@@ -1464,7 +1467,14 @@ class PointerProvenanceSubparser:
         """
         if self.paused:
             return False
-        raise NotImplementedError("cclearlo not yet supported")
+        mask = inst.op0.value
+        for bit in range(16):
+            if (mask >> bit) & 0x1:
+                if bit == 0:
+                    # clear DDC, c0 is already cnull
+                    self.regset.set_reg(32, None, entry.cycles)
+                else:
+                    self.regset.set_reg(bit, None, entry.cycles)
         return False
 
     def scan_cclearregs(self, inst, entry, regs, last_regs, idx):
@@ -1499,6 +1509,12 @@ class PointerProvenanceSubparser:
         # offset the index by 32 because the first
         # 32 entries are GP capability registers
         hwreg_num = op_hwr.caphw_index + 32
+        src_data = self.pgm.data[self.regset.get_reg(hwreg_num)]
+        dst = op_dst.value
+
+        if dst is None and src_data.origin == CheriNodeOrigin.PARTIAL:
+            logger.debug("Unknown register content unchanged %s", inst)
+            return
 
         if not self.regset.has_reg(hwreg_num, op_dst.value, entry.cycles,
                                    allow_root=True):
@@ -1508,14 +1524,17 @@ class PointerProvenanceSubparser:
             self.regset.set_reg(hwreg_num, node, entry.cycles)
             logger.debug("cpreg_get: new node from $chwr%d %s",
                          op_hwr.caphw_index, self.pgm.data[node])
-        # XXX consistency checks
-        src_data = self.pgm.data[self.regset.get_reg(hwreg_num)]
-        dst = op_dst.value
-        assert dst is not None, "{} {}".format(src_data, inst)
-        assert src_data.cap.base == dst.base, "{} {}".format(src_data, inst)
-        assert src_data.cap.length == dst.length, "{} {}".format(src_data, inst)
-        assert (src_data.cap.permissions == \
-                CheriCapPerm(dst.permissions)), "{} {}".format(src_data, inst)
+        # consistency checks
+        if dst is not None:
+            # these are performed only if the dst register in the entry
+            # is valid, if not the register was probably unchanged and
+            # we know the value because we picked it up from another
+            # readhwr
+            src_data = self.pgm.data[self.regset.get_reg(hwreg_num)]
+            assert src_data.cap.base == dst.base, "{} {}".format(src_data, inst)
+            assert src_data.cap.length == dst.length, "{} {}".format(src_data, inst)
+            assert (src_data.cap.permissions == \
+                    CheriCapPerm(dst.permissions)), "{} {}".format(src_data, inst)
         self.regset.set_reg(op_dst.cap_index,
                             self.regset.get_reg(hwreg_num),
                             entry.cycles)
@@ -1540,11 +1559,22 @@ class PointerProvenanceSubparser:
             self.regset.set_reg(op_src.cap_index, node, entry.cycles)
             logger.debug("cpreg_set: new node from $chwr<%d> %s",
                          op_hwr.caphw_index, self.pgm.data[node])
-            # offset the index by 32 because the first
-            # 32 entries are GP capability registers
-            self.regset.set_reg(op_hwr.caphw_index + 32,
-                                self.regset.get_reg(op_src.cap_index),
-                                entry.cycles)
+        # offset the index by 32 because the first
+        # 32 entries are GP capability registers
+        self.regset.set_reg(op_hwr.caphw_index + 32,
+                            self.regset.get_reg(op_src.cap_index),
+                            entry.cycles)
+
+    def scan_cgetnull(self, inst, entry, regs, last_regs, idx):
+        """
+        Handle getting cnull in a register as a special case
+        """
+        if self.paused:
+            return False
+
+        assert inst.op0.cap_index != -1, "cgetnull with non capability register"
+        self.regset.set_reg(inst.op0.cap_index, None, entry.cycles)
+        return False
 
     def scan_cgetpcc(self, inst, entry, regs, last_regs, idx):
         if self.paused:
@@ -1603,6 +1633,8 @@ class PointerProvenanceSubparser:
         recodred as a new node in the provenance tree.
         The destination register is associated to the new node
         in the register set.
+        Note cfromddc is also encoded as a cfromptr but the source register c0
+        is treated as chwr_ddc.
 
         cfromptr:
         Operand 0 is the register with the new node
@@ -1616,9 +1648,16 @@ class PointerProvenanceSubparser:
                         last_regs, idx, True),
                 entry.pc)
             return False
-        node = self.make_node(entry, inst, origin=CheriNodeOrigin.FROMPTR)
+        if inst.op1.cap_index == 0:
+            # cfromddc variant, src_reg_index=chwr_ddc
+            node = self.make_node(entry, inst, origin=CheriNodeOrigin.FROMPTR,
+                                  src_reg_index=32)
+        else:
+            node = self.make_node(entry, inst, origin=CheriNodeOrigin.FROMPTR)
         self.regset.set_reg(inst.op0.cap_index, node, entry.cycles)
         return False
+
+    scan_cfromddc = scan_cfromptr
 
     def scan_candperm(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
@@ -1711,17 +1750,18 @@ class PointerProvenanceSubparser:
             if src_vertex:
                 # XXX this is a good place to add a safety-check
                 # to validate the fact that the vertex in the regset
-                # matches the values in the trace entry.
+                # is compatible with the destination.
                 reg_src = self.regset.get_reg(src.cap_index)
-                if reg_src is not None and src.value is not None:
-                    src_data = self.pgm.data[reg_src]
-                    assert src_data.cap.base == src.value.base,\
-                        "{} {}".format(src_data, inst)
-                    assert src_data.cap.length == src.value.length,\
-                        "{} {}".format(src_data, inst)
-                    assert (src_data.cap.permissions == \
-                            CheriCapPerm(src.value.permissions)),\
-                            "{} {}".format(src_data, inst)
+                # XXX-AM: temporarily disabled due to a suspected qemu bug
+                # if reg_src is not None and src.value is not None:
+                #     src_data = self.pgm.data[reg_src]
+                #     assert src_data.cap.base == dst.value.base,\
+                #         "{} {}".format(src_data, inst)
+                #     assert src_data.cap.length == dst.value.length,\
+                #         "{} {}".format(src_data, inst)
+                #     assert (src_data.cap.permissions == \
+                #             CheriCapPerm(dst.value.permissions)),\
+                #             "{} {}".format(src_data, inst)
                 self.regset.set_reg(dst.cap_index,
                                     self.regset.get_reg(src.cap_index),
                                     entry.cycles)
@@ -1895,6 +1935,7 @@ class PointerProvenanceSubparser:
 
     scan_clcr = scan_clc
     scan_clci = scan_clc
+    scan_clcbi = scan_clc
 
     def scan_csc(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
@@ -1947,6 +1988,7 @@ class PointerProvenanceSubparser:
 
     scan_cscr = scan_csc
     scan_csci = scan_csc
+    scan_cscbi = scan_csc
 
     def mem_overwrite(self, time, addr, new_vertex):
         """
@@ -1997,7 +2039,7 @@ class PointerProvenanceSubparser:
         self.pgm.layer_prov[vertex] = True
         return vertex
 
-    def make_node(self, entry, inst, origin=None, src_op_index=1, dst_op_index=0):
+    def make_node(self, entry, inst, origin=None, src_op_index=1, dst_op_index=0, src_reg_index=None):
         """
         Create a node in the provenance tree.
         The parent is fetched from the register set depending on the source
@@ -2005,26 +2047,42 @@ class PointerProvenanceSubparser:
 
         :param entry: trace entry info object
         :type entry: :class:`pycheritrace.trace_entry`
+
         :param inst: instruction parsed
         :type inst: :class:`cheriplot.core.parser.Instruction`
+
         :param origin: the instruction/construction that originated the node
         :type origin: :class:`cheriplot.core.provenance.CheriNodeOrigin`
+
         :param src_op_index: index of the instruction operand that
         associated with the parent node
         :type src_op_index: int
+
         :param dst_op_index: index of the instruction operand with
         the node data
         :type dst_op_index: int
+
+        :param src_reg_index: index of the source operand in the register set,
+        this overrides the src_op_index
+        :type src_reg_index: int
+
         :return: the new node
         :rtype: :class:`graph_tool.Vertex`
         """
         data = ProvenanceVertexData.from_operand(inst.operands[dst_op_index])
         data.origin = origin
         # try to get a parent node
-        op = inst.operands[src_op_index]
-        if self.regset.has_reg(op.cap_index, op.value, entry.cycles,
+        if src_reg_index is None:
+            op = inst.operands[src_op_index]
+            src_index = op.cap_index
+            src_expect = op.value
+        else:
+            src_index = src_reg_index
+            src_expect = self.regset.get_reg(src_index)
+
+        if self.regset.has_reg(src_index, src_expect, entry.cycles,
                                allow_root=False):
-            parent = self.regset.get_reg(op.cap_index)
+            parent = self.regset.get_reg(src_index)
         else:
             logger.error("Missing parent for %s, src_operand=%d %s, "
                          "dst_operand=%d %s", data,
@@ -2310,8 +2368,14 @@ class CallgraphSubparser:
         if (self._in_syscall and self.exception_depth == 0 and
             not inst.has_exception):
             epcc_valid = regs.valid_hwcaps[31]
-            if not epcc_valid:
-                msg = "eret without valid epcc register"
+            epcc_vertex = self.regset.get_epcc()
+            # if epcc is invalid in the regset it may be that it was written with
+            # a writehwr but the register was unchanged so cheritrace never
+            # recorded the update.
+            if (not epcc_valid and
+                (epcc_vertex is None or
+                 self.pgm.data[epcc_vertex].origin == CheriNodeOrigin.PARTIAL)):
+                msg = "eret without valid epcc register %s" % inst
                 logger.error(msg)
                 raise UnexpectedOperationError(msg)
             epcc = regs.cap_hwreg[31]

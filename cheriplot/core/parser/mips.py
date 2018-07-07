@@ -43,12 +43,14 @@ class CheriMipsCallbacksManager(CallbacksManager):
     iclass_map = {
         IClass.I_CAP_LOAD: list(chain(
             exrex.generate("cl[dc][ri]?|cl[bhw][u]?[ri]?"),
-            exrex.generate("cll[cd]|cll[bhw][u]?"))),
+            exrex.generate("cll[cd]|cll[bhw][u]?"),
+            ["clcbi"])),
         IClass.I_CAP_STORE: list(chain(
             exrex.generate("cs[bhwdc][ri]?"),
-            exrex.generate("csc[cbhwd]"))),
+            exrex.generate("csc[cbhwd]"),
+            ["cscbi"])),
         IClass.I_CAP_CAST: [
-            "ctoptr", "cfromptr"],
+            "ctoptr", "cfromptr", "cfromddc"],
         IClass.I_CAP_ARITH: [
             "cincoffset", "csetoffset", "csub", "cmove"],
         IClass.I_CAP_BOUND: [
@@ -69,6 +71,7 @@ class CheriMipsCallbacksManager(CallbacksManager):
             "ccleartag", "cclearregs",
             "cgetcause", "csetcause", "ccheckperm", "cchecktype",
             "clearlo", "clearhi", "cclearlo", "cclearhi",
-            "fpclearlo", "fpclearhi"]
+            "fpclearlo", "fpclearhi", "creadhwr", "cwritehwr",
+            "cgetnull"]
         }
     iclass_map[IClass.I_CAP] = list(chain(*iclass_map.values()))
