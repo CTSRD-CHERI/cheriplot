@@ -57,6 +57,8 @@ class LabelManager:
     Automatically adjust label position to avoid overlapping labels
     """
 
+    fix_deltas = None
+
     def __init__(self, direction="horizontal"):
 
         self.sort_direction = None
@@ -222,7 +224,10 @@ class LabelManager:
             logger.warning("Label manager can not adjust labels: %s", result.message)
             return
 
-        deltas = result.x[n:]
+        if self.fix_deltas:
+            deltas = self.fix_deltas
+        else:
+            deltas = result.x[n:]
         x_result = x_start + align_fixup + deltas
         for idx, label in enumerate(self.labels):
             if self.sort_direction == "h":

@@ -396,6 +396,11 @@ class AddressSpaceXAxis(axis.XAxis):
     Custom XAxis for the AddressSpace projection
     """
 
+    def __init__(self, *args, **kwargs):
+        super(AddressSpaceXAxis, self).__init__(*args, **kwargs)
+
+        self.label_manager = LabelManager
+
     def _get_tick(self, major):
         """
         Force labels to be vertical
@@ -412,7 +417,7 @@ class AddressSpaceXAxis(axis.XAxis):
 
     def _update_ticks(self, renderer):
         ticks = super(AddressSpaceXAxis, self)._update_ticks(renderer)
-        mgr = LabelManager(direction="h")
+        mgr = self.label_manager(direction="h")
         mgr.add_labels([t.label1 for t in ticks])
         mgr.update_label_position(renderer)
         return ticks
