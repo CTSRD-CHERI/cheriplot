@@ -3,3 +3,8 @@ __pycache__
 venv
 *.egg-info
 *.trace
+
+.cache
+.pytest_cache
+build
+dist
