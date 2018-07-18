@@ -519,6 +519,7 @@ class ProvenanceGraphManager:
         pgm = cls(source)
         with ProgressTimer("Load graph ({})".format(source), logger):
             pgm.graph = load_graph(source)
+            pgm.graph.set_directed(True)
         pgm._init_props()
         return pgm
 
@@ -531,7 +532,7 @@ class ProvenanceGraphManager:
         self.outfile = outfile
         """Output graph file."""
 
-        self.graph = Graph()
+        self.graph = Graph(directed=True)
         """The graph instance."""
 
         # XXX unless graph-tool support uint64_t vertex properties
