@@ -101,6 +101,9 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     full_info = Option(
         action="store_true",
         help="Show the full vertex information")
+    annotations = Option(
+        action="store_true",
+        help="Show vertex annotations created by graphfilter.")
     # call layer filters
     target = Option(
         help="Show calls to the given target address or symbol name.")
@@ -267,6 +270,18 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
                 "type": lambda t: str(ProvenanceVertexData.EventType(t))
             })
             str_vertex.write("Event table:\n{}\n".format(frame_str))
+        if self.config.annotations:
+            # Display annotated_XXX properties
+            str_vertex.write(" annotations: { ")
+            for key in self.pgm.graph.vp.keys():
+                if not key.startswith("annotated_"):
+                    continue
+                name = key.split("_")[1]
+                property_map = self.pgm.graph.vp[key]
+                if property_map[v]:
+                    # vertes is in the property map
+                    str_vertex.write("{} ".format(name.upper()))
+            str_vertex.write("}")
         return str_vertex.getvalue()
 
     def _dump_call_vertex(self, edge, v):
