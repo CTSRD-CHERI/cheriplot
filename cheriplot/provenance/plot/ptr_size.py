@@ -300,7 +300,7 @@ class PtrBoundCdf:
     Model of the CDF that the PatchBuilder can draw
     """
 
-    def __init__(self, pgm):
+    def __init__(self, pgm, absolute=False):
         self.pgm = pgm
         """The graph manager"""
 
@@ -321,6 +321,9 @@ class PtrBoundCdf:
 
         self.num_ignored = 0
         """Number of vertices that matched the ignore condition."""
+
+        self.absolute = absolute
+        """Do not normalize the number of capabilities on the y axis."""
 
     def ignore_mask(self, mask, invalid_value, force_base=None,
                     force_bound=None):
@@ -356,7 +359,10 @@ class PtrBoundCdf:
                 ptr_sizes.append(size)
             size_freq = stats.itemfreq(ptr_sizes)
             #logger.debug(size_freq)
-            size_pdf = size_freq[:,1] / len(ptr_sizes)
+            if not self.absolute:
+                size_pdf = size_freq[:,1] / len(ptr_sizes)
+            else:
+                size_pdf = size_freq[:,1]
             y = np.concatenate(([0, 0], np.cumsum(size_pdf)))
             x = np.concatenate(([0, size_freq[0,0]], size_freq[:,0]))
             self.size_cdf = np.column_stack((x,y))
@@ -385,7 +391,7 @@ class CdfPatchBuilder(PatchBuilder):
     lengths.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, absolute=False, **kwargs):
         super().__init__(**kwargs)
 
         self.cdf = []
@@ -394,12 +400,16 @@ class CdfPatchBuilder(PatchBuilder):
         self.colormap = None
         """Colors to use for the lines"""
 
+        self.absolute = absolute
+        """Do not normalize the count of capabilities on the Y axis"""
+
         self._bbox = Bbox.from_extents(1, 0, 0, 1)
         """Bbox of the plot"""
 
     def inspect(self, cdf):
         self.cdf.append(cdf)
         self._bbox.x1 = max(self._bbox.xmax, max(cdf.size_cdf[:,0]))
+        self._bbox.y1 = max(self._bbox.ymax, max(cdf.size_cdf[:,1]))
 
     def get_patches(self, axes):
         self.colormap = [plt.cm.Dark2(i) for i in
@@ -430,6 +440,8 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
 
     outfile = Option(help="Output file", default="ptrsize_cdf.pdf")
     publish = Option(help="Adjust plot for publication", action="store_true")
+    absolute = Option(help="Do not normalize y axis, show absolute count"
+                      " of capabilities", action="store_true")
 
     filters = Option(
         default=[],
@@ -438,6 +450,8 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
         choices=("stack", "mmap", "malloc"),
         help="set of possible elements to modify for the CDF, assume"
         "that the size of the given elements is the maximum possible.")
+    # invert = Option(help="Invert filter", action="store_true")
+
 
     def __init__(self, pgm_list, vmmap, **kwargs):
         super().__init__(**kwargs)
@@ -483,14 +497,18 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
                 stack_vm_entry = vme
 
         for idx, pgm in enumerate(self.pgm_list):
-            cdf = PtrBoundCdf(pgm)
+            cdf = PtrBoundCdf(pgm, self.config.absolute)
+
+            # cdf.filter(pgm.annotation_stack, pgm.annotation_from_malloc, pgm.annotation_to_malloc,
+            #            pgm.annotation_nx, pgm.annotation_x)
+
             # prevent the ignored count in legend for these
             cdf.num_ignored = -1
             cdf.build_cdf()
             datasets.append(cdf)
         for filter_set in self.config.filters:
             pgm = self.pgm_list[0]
-            cdf = PtrBoundCdf(pgm)
+            cdf = PtrBoundCdf(pgm, self.config.absolute)
             cdf.name = ""
             if "stack" in filter_set:
                 if stack_vm_entry is None:
@@ -514,5 +532,6 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
                 cdf.name += " no-malloc-all"
             cdf.build_cdf()
             datasets.append(cdf)
-        self.register_patch_builder(datasets, CdfPatchBuilder())
+        self.register_patch_builder(
+            datasets, CdfPatchBuilder(self.config.absolute))
         self.process(out_file=self.config.outfile)
