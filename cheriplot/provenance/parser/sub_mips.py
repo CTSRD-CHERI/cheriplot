@@ -1783,6 +1783,10 @@ class PointerProvenanceSubparser:
         Store offset at time of dereference of a given capability.
         """
         if inst.has_exception and entry.exception != 0 and not maybe_call:
+            if not (entry.is_load or entry.is_store):
+                # if the trace did not record a load or a store, this did not commit
+                return False
+            # otherwise it may have committed
             self.maybe_scan(
                 partial(self._handle_dereference, inst, entry, ptr_reg, True),
                 entry.memory_address)
@@ -1804,7 +1808,9 @@ class PointerProvenanceSubparser:
         # instead of the capability register offset we use the
         # entry memory_address so we capture any extra offset in
         # the instruction as well
-        is_cap = inst.opcode.startswith("clc") or inst.opcode.startswith("csc")
+        is_cap = (inst.opcode.startswith("clc") or inst.opcode == "csc" or
+                  inst.opcode == "cscbi")
+
         if entry.is_load:
             node_data.add_deref_load(entry.cycles, entry.memory_address,
                                      is_cap)
@@ -1893,6 +1899,10 @@ class PointerProvenanceSubparser:
         if self.paused:
             return False
         if inst.has_exception and entry.exception != 0 and not maybe_call:
+            if not entry.is_load:
+                # if the trace did not record a load or a store, this did not commit
+                return False
+            # otherwise it may have committed
             self.maybe_scan(
                 partial(self.scan_clc, inst, entry, regs, last_regs, idx, True),
                 entry.memory_address)
@@ -1954,6 +1964,10 @@ class PointerProvenanceSubparser:
         if self.paused:
             return False
         if inst.has_exception and entry.exception != 0 and not maybe_call:
+            if not entry.is_store:
+                # if the trace did not record a load or a store, this did not commit
+                return False
+            # otherwise it may have committed
             self.maybe_scan(
                 partial(self.scan_csc, inst, entry, regs, last_regs, idx, True),
                 entry.memory_address)
@@ -2302,12 +2316,14 @@ class CallgraphSubparser:
     def _do_scan_cjr(self, inst, entry, regs, last_regs, idx):
         """
         Attempt to register a return.
-        This have the same assumptions as scan_cjalr.
-        cjr cap_ret
+        This have the same assumptions as scan_cjalr. Note that we
+        specifically look for c17 as cjr is used with other registers
+        for jumping.
+        cjr c17
         """
         return_cap = inst.op0.value
         return_addr = return_cap.base + return_cap.offset
-        if not inst.has_exception:
+        if not inst.has_exception and inst.op0.cap_index == 17:
             self._make_call_return(entry, return_addr, regs)
         return False
 
