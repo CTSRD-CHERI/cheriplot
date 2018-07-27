@@ -35,7 +35,8 @@ from cheriplot.core import (
 from cheriplot.vmmap import VMMapFileParser
 from cheriplot.provenance.plot import (
     AddressMapPlotDriver, AddressMapDerefPlotDriver, PtrSizeDerefDriver,
-    PtrSizeBoundDriver, PtrSizeCdfDriver, AddressMapAccessPlotDriver)
+    PtrSizeBoundDriver, PtrSizeCdfDriver, AddressMapAccessPlotDriver,
+    PtrHeadroomPlotDriver)
 from cheriplot.provenance.model import ProvenanceGraphManager
 from cheriplot.provenance.stats import ProvenanceStatsDriver
 from cheriplot.provenance.visit import GraphFilterDriver
@@ -66,6 +67,7 @@ class GraphAnalysisDriver(BaseToolTaskDriver):
     ptrsize_bound = SubCommand(PtrSizeBoundDriver)
     ptrsize_deref = SubCommand(PtrSizeDerefDriver)
     stats = SubCommand(ProvenanceStatsDriver)
+    headroom = SubCommand(PtrHeadroomPlotDriver)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
