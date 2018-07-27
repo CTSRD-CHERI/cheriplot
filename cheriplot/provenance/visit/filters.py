@@ -34,9 +34,57 @@ based on different properties such as origin and bounds.
 import logging
 
 from cheriplot.provenance.visit import MaskBFSVisit, DecorateBFSVisit
-from cheriplot.provenance.model import CheriNodeOrigin, EdgeOperation
+from cheriplot.provenance.model import CheriNodeOrigin, EdgeOperation, ProvenanceVertexData, CheriCapPerm
 
 logger = logging.getLogger(__name__)
+
+
+class FilterBeforeExecve(MaskBFSVisit):
+    """
+    Remova all vertices that come before the last call to execve.
+    This assumes that the program does not execve.
+    """
+
+    description = "Mask pre-execve capabilities"
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+        self.execve_time = self.find_last()
+
+    def _get_progress_range(self, graph):
+        return (0, graph.num_edges())
+
+    def find_last(self):
+        """
+        Find last SYSCALL to execve
+        """
+        execve_code = 0x3b
+        last_syscall = 0
+        for e in self.pgm.graph.edges():
+            src = e.source()
+            dst = e.target()
+            if self.pgm.edge_operation[e] == EdgeOperation.SYSCALL:
+                data = self.pgm.data[dst]
+                if data.address == execve_code and data.t_return > last_syscall:
+                    logger.info("Found execve syscall, returning at %d", data.t_return)
+                    last_syscall = self.pgm.edge_time[e]
+        logger.info("Execve return set at %d", last_syscall)
+        return last_syscall
+
+    def examine_edge(self, e):
+        self.progress.advance()
+        src = e.source()
+        dst = e.target()
+        if self.pgm.layer_call[src] and self.pgm.layer_call[dst]:
+            # call or syscall
+            if self.pgm.edge_time[e] < self.execve_time:
+                self.vertex_mask[src] = False
+                self.vertex_mask[dst] = False
+
+    def examine_vertex(self, v):
+        if self.pgm.layer_prov[v]:
+            if self.pgm.data[v].cap.t_alloc < self.execve_time:
+                self.vertex_mask[v] = False
 
 
 class FilterNullVertices(MaskBFSVisit):
@@ -156,28 +204,147 @@ class FilterSyscallDerived(MaskBFSVisit):
     pass
 
 
-class DecorateStack(DecorateBFSVisit):
-    """Mark capabilities that point to the stack."""
+class DecorateStackStrict(DecorateBFSVisit):
+    """
+    Mark capabilities that point to the stack.
+    This marks all successors of the stack capability(es).
+    """
 
-    description = "Mark capabilities to stack objects in a new vertex property"
+    description = "Mark capabilities derived from the user stack "\
+                  "capability in a new vertex property"
 
-    mask_name = "in_stack"
+    mask_name = "annotated_usr_stack"
     mask_type = "bool"
 
     def __init__(self, pgm, stack_begin, stack_end):
         super().__init__(pgm)
 
+        # self.stack_capability = pgm.stack_capability
+        self.stack_capability = None
         self.stack_begin = stack_begin
         self.stack_end = stack_end
 
-    def examine_vertex(self, u):
-        self.progress.advance()
-        if not self.pgm.layer_prov[u]:
+    def _get_progress_range(self, graph):
+        return (0, graph.num_edges())
+
+    def is_stack_root(self, src):
+        """
+        Check whether the given vertex is the expected root for the stack.
+        """
+        if (self.pgm.data[src].cap.base >= 0x7fff000000 and
+            self.pgm.data[src].cap.base < 0x8000000000 and
+            self.pgm.data[src].cap.length >= 0x80000 and
+            self.vertex_mask[src] == False):
+            logger.info("Guessing stack root at %s", self.pgm.data[src])
+            return True
+        return False
+
+    def examine_vertex(self, v):
+        if not self.pgm.layer_prov[v]:
             return
-        data = self.pgm.data[u]
-        if (data.cap.base >= self.stack_begin and
-            data.cap.bound <= self.stack_end):
-            self.vertex_mask[u] = True
+        if self.is_stack_root(v):
+            logger.debug("Mark NEW stack root %s", self.pgm.data[v])
+            self.vertex_mask[v] = True
+
+    def examine_edge(self, e):
+        self.progress.advance()
+        src = e.source()
+        dst = e.target()
+        if self.pgm.layer_prov[src] and self.pgm.layer_prov[dst]:
+            logger.debug("Edge %s -> %s", self.pgm.data[src], self.pgm.data[dst])
+            if self.vertex_mask[src]:
+                self.vertex_mask[dst] = True
+
+
+class DecorateStackAll(DecorateBFSVisit):
+    """
+    Mark capabilities that point to the stack.
+    This marks all capabilities that land in the stack capability but are
+    not necessarily successors of the stack pointer.
+    This includes kernel pointers to the user stack region.
+    """
+
+    description = "Mark capabilities to stack objects in a new vertex property"
+
+    mask_name = "annotated_stack"
+    mask_type = "bool"
+
+    def __init__(self, pgm, stack_begin, stack_end):
+        super().__init__(pgm)
+
+        self.stack_capability = pgm.stack_capability
+        self.stack_begin = stack_begin
+        self.stack_end = stack_end
+
+    def examine_vertex(self, v):
+        if not self.pgm.layer_prov[v]:
+            return
+        data = self.pgm.data[v]
+        if (data.cap.base >= self.stack_capability.base and
+            data.cap.bound <= self.stack_capability.bound):
+            self.vertex_mask[v] = True
+
+
+class DecorateMalloc(DecorateBFSVisit):
+    """
+    Mark capabilities that are returned from malloc or are descendants
+    descendants of those.
+    """
+
+    description = "Mark capabilities to malloc-returned objects"
+    mask_name = "annotated_malloc"
+    mask_type = "bool"
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+
+    def examine_vertex(self, v):
+        self.progress.advance()
+        if self.pgm.layer_prov[v]:
+            # find call vertices that link to this
+            for eout in v.out_edges():
+                dst = eout.target()
+                if (self.pgm.layer_call[dst] and
+                    self.pgm.edge_operation[eout] == EdgeOperation.RETURN):
+                    data = self.pgm.data[dst]
+                    if data.symbol and (
+                            data.symbol == "__malloc" or
+                            data.symbol == "__calloc" or
+                            data.symbol == "__je_malloc" or
+                            data.symbol == "__je_calloc" or
+                            data.symbol == "malloc" or
+                            data.symbol == "calloc"):
+                        self.vertex_mask[v] = True
+
+    def examine_edge(self, e):
+        src = e.source()
+        dst = e.target()
+        if self.pgm.layer_prov[src] and self.pgm.layer_prov[dst]:
+            logger.debug("Edge %s -> %s", self.pgm.data[src], self.pgm.data[dst])
+            if self.vertex_mask[src]:
+                self.vertex_mask[dst] = True
+
+
+class DecorateExecutable(DecorateBFSVisit):
+    """
+    Mark executable capabilities, non-executable capabilities are
+    implicitly marked as well since annotated_exec is set to False
+    for those.
+    """
+
+    description = "Mark executable capabilities"
+    mask_name = "annotated_exec"
+    mask_type = "bool"
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+
+    def examine_vertex(self, v):
+        self.progress.advance()
+        if self.pgm.layer_prov[v]:
+            data = self.pgm.data[v]
+            if data.cap.has_perm(CheriCapPerm.EXEC):
+                self.vertex_mask[v] = True
 
 
 class DecorateHeap(DecorateBFSVisit):
@@ -257,7 +424,7 @@ class DecorateMmapReturn(DecorateBFSVisit):
                 self.vertex_mask[dst] = self.vertex_mask[src]
 
 
-class DecorateMalloc(DecorateBFSVisit):
+class DecorateMalloc_Deprecated(DecorateBFSVisit):
     """Mark all malloc calls."""
 
     description = "Mark malloc calls"

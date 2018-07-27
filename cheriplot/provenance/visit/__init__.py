@@ -7,9 +7,11 @@ from .base import (
 from .vertex_merge import MergeCfromptr
 from .filters import (
     FilterNullVertices, FilterKernelVertices, FilterCfromptr,
-    FilterStackVertices, DecorateStack, DecorateMmap, DecorateMmapReturn,
+    FilterStackVertices, DecorateMmap, DecorateMmapReturn,
     DecorateMalloc, DecorateMallocReturn, FilterCandperm, FilterRootVertices,
-    DecorateHeap)
+    DecorateHeap, DecorateStackStrict, DecorateStackAll, DecorateExecutable,
+    FilterBeforeExecve)
+
 from .symbols import ResolveSymbolsGraphVisit
 from .slice import ProvGraphTimeSlice
 from .driver import GraphFilterDriver

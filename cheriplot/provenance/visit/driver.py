@@ -84,15 +84,24 @@ class GraphFilterDriver(BaseToolTaskDriver):
     no_roots = Option(
         action="store_true",
         help="Filter root vertices")
-    mark_stack = Option(
+    annotate_stack = Option(
         action="store_true",
         help="Mark vertices pointing to the stack")
-    mark_malloc = Option(
+    annotate_malloc = Option(
         action="store_true",
         help="Mark vertices derived from malloc")
-    mark_mmap = Option(
+    annotate_malloc_ancestors = Option(
+        action="store_true",
+        help="Mark vertices that are used to derive malloc capabilities.")
+    annotate_mmap = Option(
         action="store_true",
         help="Mark vertices derived from mmap")
+    annotate_xnx = Option(
+        action="store_true",
+        help="Mark executable and non executable vertices")
+    remove_qtrace_execve = Option(
+        action="store_true",
+        help="Mask out vertices that are created before the return from the last execve() issued in qtrace.")
     aggregate_ptrbounds = Option(
         action="store_true",
         help="Merge sequences of cfromptr+csetbounds. This is not reversible.")
@@ -135,6 +144,8 @@ class GraphFilterDriver(BaseToolTaskDriver):
     def _get_filter(self, pgm):
         """Get a combined filter for a given graph manager."""
         filters = ChainGraphVisit(pgm)
+        if self.config.remove_qtrace_execve:
+            filters += FilterBeforeExecve(pgm)
         if self.config.no_null:
             filters += FilterNullVertices(pgm)
         if self.config.no_roots:
@@ -154,6 +165,9 @@ class GraphFilterDriver(BaseToolTaskDriver):
                 logger.error("no-stack filter requires vmmap argument")
                 raise RuntimeError("np-stack filter requires vmmap argument")
             filters += FilterStackVertices(pgm, entry.start, entry.end)
+        if self.config.no_kernel:
+            filters += FilterKernelVertices(pgm)
+
         if self.config.tslice:
             start, end = self.config.tslice_time
             deref = "deref" in self.config.tslice_mode
@@ -162,7 +176,8 @@ class GraphFilterDriver(BaseToolTaskDriver):
             filters += ProvGraphTimeSlice(
                 pgm, start, end, creation_time=create,
                 deref_time=deref, access_time=access)
-        if self.config.mark_stack:
+
+        if self.config.annotate_stack:
             vmmap = self._vmmap_parser.get_model()
             for entry in vmmap:
                 if entry.grows_down:
@@ -170,11 +185,14 @@ class GraphFilterDriver(BaseToolTaskDriver):
             else:
                 logger.error("mark-stack filter requires vmmap argument")
                 raise RuntimeError("mark-stack filter requires vmmap argument")
-            filters += DecorateStack(pgm, entry.start, entry.end)
-        if self.config.mark_mmap:
+            filters += DecorateStackStrict(pgm, entry.start, entry.end)
+            filters += DecorateStackAll(pgm, entry.start, entry.end)
+
+        if self.config.annotate_mmap:
             filters += DecorateMmap(pgm)
             filters += DecorateMmapReturn(pgm)
-        if self.config.mark_malloc:
+
+        if self.config.annotate_malloc:
             vmmap = self._vmmap_parser.get_model()
             min_addr = 2**64
             heap_entry = None
@@ -186,11 +204,13 @@ class GraphFilterDriver(BaseToolTaskDriver):
             if not heap_entry:
                 logger.error("mark-malloc filter requires vmmap argument")
                 raise RuntimeError("mark-malloc filter requires vmmap argument")
-            filters += DecorateHeap(pgm, heap_entry.start, heap_entry.end)
-            # filters += DecorateMalloc(pgm)
+            # filters += DecorateHeap(pgm, heap_entry.start, heap_entry.end)
+            filters += DecorateMalloc(pgm)
             # filters += DecorateMallocReturn(pgm)
-        if self.config.no_kernel:
-            filters += FilterKernelVertices(pgm)
+
+        if self.config.annotate_xnx:
+            filters += DecorateExecutable(pgm)
+
         return filters
 
     def run(self):
@@ -210,4 +230,3 @@ class GraphFilterDriver(BaseToolTaskDriver):
         if not self.config.no_output:
             with ProgressTimer("Write output graph", logger):
                 self.pgm.save(self._outfile)
-        
