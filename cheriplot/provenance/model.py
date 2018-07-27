@@ -69,7 +69,7 @@ class CheriCapPerm(IntFlag):
     def all(cls):
         return (cls.GLOBAL | cls.EXEC | cls.LOAD | cls.STORE |
                 cls.CAP_LOAD | cls.CAP_STORE | cls.CAP_STORE_LOCAL |
-                cls.SEAL | cls.SYSTEM_REGISTERS)
+                cls.SEAL | cls.SYSTEM_REGISTERS | cls.CCALL | cls.UNSEAL)
 
 
 class CheriNodeOrigin(IntFlag):
@@ -575,6 +575,7 @@ class ProvenanceGraphManager:
         self.edge_time = self.graph.ep.time
         self.edge_addr = self.graph.ep.addr
         self.edge_regs = self.graph.ep.regs
+        self.stack_capability = self.graph.gp.stack
 
     def prov_view(self):
         """Provenance graph layer."""
