@@ -28,6 +28,7 @@
 import logging
 import os
 import io
+import numpy as np
 
 from sortedcontainers import SortedDict
 from elftools.elf.elffile import ELFFile
@@ -57,6 +58,7 @@ class SymReader:
 
         with ProgressTimer("Load symbols", logger):
             self._load_mapped()
+            logger.debug("Symbol map %s", self)
 
     def _find_elf(self, vme_path):
         fname = os.path.basename(vme_path)
@@ -71,6 +73,17 @@ class SymReader:
         logger.debug("No ELF found for %s", bin_file)
         return None
 
+    def _map_base(self, vme_path):
+        """
+        Find the base address where this file has been mapped
+        in the vmmap
+        """
+        lower_addr = np.inf
+        for vme in self.vmmap.get_model():
+            if vme.path == vme_path and vme.start < lower_addr:
+                lower_addr = vme.start
+        return lower_addr
+
     def _load_mapped(self):
         loaded = []
         for vme in self.vmmap.get_model():
@@ -78,13 +91,38 @@ class SymReader:
             if bin_file is None or bin_file in loaded:
                 # is the file already been loaded?
                 continue
+
             loaded.append(bin_file)
             elf_file = ELFFile(open(bin_file, "rb"))
             symtab = elf_file.get_section_by_name(".symtab")
-            for sym in symtab.iter_symbols():
-                self._symbol_map[sym["st_value"]] = (sym.name, bin_file)
 
-    def __repr__(self):
+            # do we need to relocate the addresses?
+            if elf_file.header["e_type"] == "ET_DYN":
+                map_base = self._map_base(vme.path)
+            else:
+                map_base = 0
+
+            for sym in symtab.iter_symbols():
+                self._symbol_map[map_base + sym["st_value"]] = (sym.name, bin_file)
+        kern_image = self._find_elf("kernel")
+        kern_full = self._find_elf("kernel.full")
+        if kern_full is not None:
+            loaded.append(kern_full)
+            self._load_kernel(kern_full)
+        elif kern_image is not None:
+            loaded.append(kern_image)
+            self._load_kernel(kern_image)
+
+    def _load_kernel(self, path):
+        elf_file = ELFFile(open(path, "rb"))
+        symtab = elf_file.get_section_by_name(".symtab")
+
+        # the kernel should not be ET_DYN
+        assert elf_file.header["e_type"] != "ET_DYN"
+        for sym in symtab.iter_symbols():
+            self._symbol_map[sym["st_value"]] = (sym.name, path)
+
+    def __str__(self):
         data = io.StringIO()
         data.write("SymReader loaded symbols:\n")
         for addr, (sym, fname) in self._symbol_map.items():

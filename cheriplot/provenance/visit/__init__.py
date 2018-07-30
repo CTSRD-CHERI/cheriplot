@@ -10,7 +10,7 @@ from .filters import (
     FilterStackVertices, DecorateMmap, DecorateMmapReturn,
     DecorateMalloc, DecorateMallocReturn, FilterCandperm, FilterRootVertices,
     DecorateHeap, DecorateStackStrict, DecorateStackAll, DecorateExecutable,
-    FilterBeforeExecve)
+    FilterBeforeExecve, DetectStackCapability)
 
 from .symbols import ResolveSymbolsGraphVisit
 from .slice import ProvGraphTimeSlice

@@ -91,7 +91,8 @@ class ProgressPrinter:
         """
         if logger.getEffectiveLevel() < self.level:
             return
-        print("\n")
+        sys.stdout.write("\n\n")
+        sys.stdout.flush()
 
 
 class ProgressManager(Thread):

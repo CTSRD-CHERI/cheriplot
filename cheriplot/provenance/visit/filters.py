@@ -33,7 +33,9 @@ based on different properties such as origin and bounds.
 
 import logging
 
-from cheriplot.provenance.visit import MaskBFSVisit, DecorateBFSVisit
+from cached_property import cached_property
+
+from cheriplot.provenance.visit import MaskBFSVisit, DecorateBFSVisit, BFSGraphVisit
 from cheriplot.provenance.model import CheriNodeOrigin, EdgeOperation, ProvenanceVertexData, CheriCapPerm
 
 logger = logging.getLogger(__name__)
@@ -66,9 +68,10 @@ class FilterBeforeExecve(MaskBFSVisit):
             if self.pgm.edge_operation[e] == EdgeOperation.SYSCALL:
                 data = self.pgm.data[dst]
                 if data.address == execve_code and data.t_return > last_syscall:
-                    logger.info("Found execve syscall, returning at %d", data.t_return)
+                    logger.info("Found execve syscall, returning at %d",
+                                data.t_return)
                     last_syscall = self.pgm.edge_time[e]
-        logger.info("Execve return set at %d", last_syscall)
+        logger.info("Execve call set at %d", last_syscall)
         return last_syscall
 
     def examine_edge(self, e):
@@ -203,6 +206,88 @@ class FilterSyscallDerived(MaskBFSVisit):
     """
     pass
 
+class DetectStackCapability(BFSGraphVisit):
+    """
+    Find the stack capability by looking for a root capability
+    in a stack-like location before the last return from execve.
+
+    The stack capability vertex index is stored in the graph
+    stack_vertex property.
+    """
+
+    description = "Detect stack capability"
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+        self.execve_start = None
+        """Last execve call time"""
+
+        self.execve_end = None
+        """Last execve return time"""
+
+        self.stack_vertex = pgm.graph.new_graph_property("int", val=-1)
+        pgm.graph.gp["stack_vertex"] = self.stack_vertex
+
+        self.find_execve()
+
+    def find_execve(self):
+        """
+        Find last SYSCALL to execve
+        """
+        execve_code = 0x3b
+        last_vertex = None
+        last_call = 0
+        last_return = 0
+        for e in self.pgm.graph.edges():
+            src = e.source()
+            dst = e.target()
+            if self.pgm.edge_operation[e] == EdgeOperation.SYSCALL:
+                data = self.pgm.data[dst]
+                if data.address == execve_code:
+                    # check if this is later than the last
+                    if last_vertex is None or data.t_return > last_return:
+                        logger.info("Found execve syscall, returning at %d",
+                                    data.t_return)
+                        last_vertex = dst
+                        last_call = self.pgm.edge_time[e]
+                        last_return = data.t_return
+        self.execve_start = last_call
+        self.execve_end = last_return
+        logger.info("Last execve at call:%d return:%d", last_call, last_return)
+
+    def check_parent(self, v):
+        for e in v.in_edges():
+            parent = e.source()
+            if self.pgm.layer_prov[parent]:
+                if int(parent) == self.stack_vertex:
+                    return True
+                else:
+                    return self.check_parent(parent)
+        return False
+
+    def is_stack_root(self, v):
+        """
+        Check whether the given vertex is the expected root for the stack.
+        """
+        data = self.pgm.data[v]
+        if (data.cap.base >= 0x7fff000000 and
+            data.cap.base < 0x8000000000 and
+            data.cap.length >= 0x80000):
+            # possibly a root, check if it has ancestors that are already marked
+            if not self.check_parent(v):
+                logger.info("Guessing stack root at %s", data)
+                return True
+        return False
+
+    def examine_vertex(self, v):
+        if self.pgm.layer_prov[v]:
+            data = self.pgm.data[v]
+            if (data.cap.t_alloc >= self.execve_start and
+                data.cap.t_alloc <= self.execve_end and
+                self.is_stack_root(v)):
+                logger.info("Set stack root vertex %d", v)
+                self.stack_vertex = int(v)
+
 
 class DecorateStackStrict(DecorateBFSVisit):
     """
@@ -219,8 +304,6 @@ class DecorateStackStrict(DecorateBFSVisit):
     def __init__(self, pgm, stack_begin, stack_end):
         super().__init__(pgm)
 
-        # self.stack_capability = pgm.stack_capability
-        self.stack_capability = None
         self.stack_begin = stack_begin
         self.stack_end = stack_end
 
@@ -239,8 +322,22 @@ class DecorateStackStrict(DecorateBFSVisit):
             return True
         return False
 
+    @cached_property
+    def _has_stack_vertex(self):
+        # called on the first vertex, so we also set the first masked vertex
+        has_stack = ("stack_vertex" in self.pgm.graph.gp and
+                     self.pgm.graph.gp.stack_vertex >= 0)
+        if has_stack:
+            v = self.pgm.graph.gp.stack_vertex
+            logger.info("Decorate stack found stack capability at vertex %d %s",
+                        v, pgm.data[v])
+            self.vertex_mask[v] = True
+        return has_stack
+
     def examine_vertex(self, v):
-        if not self.pgm.layer_prov[v]:
+        if not self.pgm.layer_prov[v] or self._has_stack_vertex:
+            # disable automatic guessing of stack roots if we have
+            # a stack root detected in the graph properties
             return
         if self.is_stack_root(v):
             logger.debug("Mark NEW stack root %s", self.pgm.data[v])

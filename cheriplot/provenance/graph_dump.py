@@ -51,6 +51,9 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
                         "<start>- or <single_value>"
 
     graph = Argument(help="Path to the provenance graph file")
+    ignore_filter = Option(
+        action="store_true",
+        help="Ignore any graph filter in place")
     layer = Option(
         help="Graph layer to dump.",
         choices=("prov", "call", "all"),
@@ -276,7 +279,7 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             for key in self.pgm.graph.vp.keys():
                 if not key.startswith("annotated_"):
                     continue
-                name = key.split("_")[1]
+                name = key[len("annotated_"):]
                 property_map = self.pgm.graph.vp[key]
                 if property_map[v]:
                     # vertes is in the property map
@@ -383,6 +386,9 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
                 print("######")
 
     def run(self):
+        if self.config.ignore_filter:
+            self.pgm.graph.clear_filters()
+
         if self.config.layer == "all" or self.config.layer == "prov":
             self._dump_layer(self.pgm.prov_view())
         if self.config.layer == "all" or self.config.layer == "call":

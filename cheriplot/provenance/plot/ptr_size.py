@@ -36,6 +36,7 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from matplotlib.transforms import Bbox
 from matplotlib.font_manager import FontProperties
+from graph_tool.all import GraphView
 
 from cheriplot.core import (
     ProgressTimer, ProgressPrinter, ExternalLegendTopPlotBuilder,
@@ -300,11 +301,14 @@ class PtrBoundCdf:
     Model of the CDF that the PatchBuilder can draw
     """
 
-    def __init__(self, pgm, absolute=False):
+    def __init__(self, pgm, absolute=False, graph=None):
         self.pgm = pgm
         """The graph manager"""
 
-        self.graph = pgm.prov_view()
+        if graph is None:
+            self.graph = pgm.prov_view()
+        else:
+            self.graph = graph
         """The provenance graph."""
 
         self.size_cdf = None
@@ -313,21 +317,24 @@ class PtrBoundCdf:
         self.name = pgm.name
         """The CDF name"""
 
-        self.ignore_maps = []
+        self.pretend_maps = []
         """
-        List of vertex properties used to mask matching vertices.
+        List of vertex properties used to simulate a different size for matching vertices.
         [(vertex_map, new_base, new_bound), ..]
         """
 
         self.num_ignored = 0
         """Number of vertices that matched the ignore condition."""
 
+        self.slice_name = None
+        """Name of the slice of capabilities that make up this cdf, used for legend"""
+
         self.absolute = absolute
         """Do not normalize the number of capabilities on the y axis."""
 
-    def ignore_mask(self, mask, invalid_value, force_base=None,
+    def pretend_mask(self, mask, invalid_value, force_base=None,
                     force_bound=None):
-        self.ignore_maps.append((mask, invalid_value, force_base, force_bound))
+        self.pretend_maps.append((mask, invalid_value, force_base, force_bound))
 
     def _check_ignore(self, v):
         """
@@ -335,7 +342,7 @@ class PtrBoundCdf:
         something else.
         Return the new base and length, or None
         """
-        for ignore_mask, invalid, base, bound in self.ignore_maps:
+        for ignore_mask, invalid, base, bound in self.pretend_maps:
             if ignore_mask[v] != invalid:
                 self.num_ignored += 1
                 if base is None or bound is None:
@@ -422,6 +429,8 @@ class CdfPatchBuilder(PatchBuilder):
         for cdf, color in zip(self.cdf, self.colormap):
             if cdf.num_ignored >= 0:
                 label = "{} ({:d})".format(cdf.name, cdf.num_ignored)
+            elif cdf.slice_name is not None:
+                label = "{}-{}".format(cdf.name, cdf.slice_name)
             else:
                 label = "{}".format(cdf.name)
             handle = Line2D([], [], color=color, label=label)
@@ -450,7 +459,12 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
         choices=("stack", "mmap", "malloc"),
         help="set of possible elements to modify for the CDF, assume"
         "that the size of the given elements is the maximum possible.")
-    # invert = Option(help="Invert filter", action="store_true")
+
+    split = Option(
+        default=[],
+        action="append",
+        choices=("stack", "malloc", "exec"),
+        help="Separate the given vertices in a separate CDF")
 
 
     def __init__(self, pgm_list, vmmap, **kwargs):
@@ -498,14 +512,30 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
 
         for idx, pgm in enumerate(self.pgm_list):
             cdf = PtrBoundCdf(pgm, self.config.absolute)
-
-            # cdf.filter(pgm.annotation_stack, pgm.annotation_from_malloc, pgm.annotation_to_malloc,
-            #            pgm.annotation_nx, pgm.annotation_x)
-
             # prevent the ignored count in legend for these
             cdf.num_ignored = -1
             cdf.build_cdf()
             datasets.append(cdf)
+
+            # cdf.filter(pgm.annotation_stack, pgm.annotation_from_malloc, pgm.annotation_to_malloc,
+            #            pgm.annotation_nx, pgm.annotation_x)
+            for split_set in self.config.split:
+                if split_set == "stack":
+                    view = GraphView(pgm.graph, vfilt=pgm.graph.vp.annotated_stack)
+                elif split_set == "malloc":
+                    view = GraphView(pgm.graph, vfilt=pgm.graph.vp.annotated_malloc)
+                elif split_set == "exec":
+                    view = GraphView(pgm.graph, vfilt=pgm.graph.vp.annotated_exec)
+                else:
+                    logger.error("Invalid --split option value %s", split_set)
+                    raise ValueError("Invalid --split option value")
+                cdf = PtrBoundCdf(pgm, self.config.absolute, graph=view)
+                cdf.num_ignored = -1
+                cdf.slice_name = split_set
+                cdf.build_cdf()
+                datasets.append(cdf)
+
+        # handle the pretend filters
         for filter_set in self.config.filters:
             pgm = self.pgm_list[0]
             cdf = PtrBoundCdf(pgm, self.config.absolute)
@@ -515,23 +545,24 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
                     msg = "Need to specify a memory map to find the stack size."
                     logger.error(msg)
                     raise RuntimeError(msg)
-                cdf.ignore_mask(pgm.graph.vp.in_stack, False,
+                cdf.pretend_mask(pgm.graph.vp.in_stack, False,
                                 stack_vm_entry.start,
                                 stack_vm_entry.end)
                 cdf.name += " no-stack"
             if "mmap" in filter_set:
-                cdf.ignore_mask(pgm.graph.vp.from_mmap, -1)
+                cdf.pretend_mask(pgm.graph.vp.from_mmap, -1)
                 cdf.name += " no-mmap"
             # if "malloc" in filter_set:
-            #     cdf.ignore_mask(pgm.graph.vp.from_malloc, -1)
+            #     cdf.pretend_mask(pgm.graph.vp.from_malloc, -1)
             #     cdf.name += " no-malloc"
             if "malloc" in filter_set:
-                cdf.ignore_mask(pgm.graph.vp.in_jemalloc, False,
+                cdf.pretend_mask(pgm.graph.vp.in_jemalloc, False,
                                 heap_entry.start,
                                 heap_entry.end)
                 cdf.name += " no-malloc-all"
             cdf.build_cdf()
             datasets.append(cdf)
+
         self.register_patch_builder(
             datasets, CdfPatchBuilder(self.config.absolute))
         self.process(out_file=self.config.outfile)
