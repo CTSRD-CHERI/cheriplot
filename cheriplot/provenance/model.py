@@ -494,7 +494,9 @@ class ProvenanceGraphManager:
 
       * operation (int): :class:`EdgeOperation` type for the operation
         represented by the edge
-      * time (object): integer (uint64_t) marking the time of the event
+      * time (object): integer (uint64_t) meaning depends on the operation:
+        * CALL/SYSCALL: marking the time of the event
+        * VISIBLE/RETURN: index of the register where the visible capability was found
       * addr (object): integer (uint64_t) meaning depends on the operation:
         * CALL/SYSCALL: address of the call instruction
         * VISIBLE: offset of the capability that is visible (source vertex)

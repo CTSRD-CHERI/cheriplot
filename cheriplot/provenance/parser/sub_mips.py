@@ -2479,7 +2479,7 @@ class CallgraphSubparser:
             edge = self.pgm.graph.add_edge(u, vertex)
             visible_edges[(u, offset)] = edge
             self.pgm.edge_operation[edge] = EdgeOperation.VISIBLE
-            self.pgm.edge_time[edge] = entry.cycles
+            self.pgm.edge_time[edge] = reg_idx
             self.pgm.edge_addr[edge] = offset
             self.pgm.edge_regs[edge].append(reg_idx)
 
