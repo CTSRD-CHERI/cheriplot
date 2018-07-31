@@ -138,6 +138,7 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
         ]
         self.call_filters = [
             self._match_call_type,
+            self._match_call_target,
         ]
 
     def _check_origin_arg(self, match_origin):
@@ -254,6 +255,11 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             return eop == self.match_origin
         return None
 
+    def _match_call_target(self, edge, vdata):
+        if self.config.target:
+            return (vdata.symbol == self.config.target)
+        return None
+
     def _dump_prov_vertex(self, edge, v):
         vdata = self.pgm.data[v]
         str_vertex = StringIO()
@@ -343,12 +349,17 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     def _dump_related(self, v):
         if not self.config.related or not self.pgm.layer_call[v]:
             return
-        for edge in v.in_edges():
+        u = self.pgm.graph.vertex(v)
+        for edge in u.in_edges():
             if not self.pgm.layer_prov[edge.source()]:
                 continue
-            eop = self.pgm.edge_operation[edge]
+            eop = EdgeOperation(self.pgm.edge_operation[edge])
+            if eop == EdgeOperation.RETURN:
+                regno = "3"
+            else:
+                regno = self.pgm.edge_time[edge]
             src = self.pgm.data[edge.source()]
-            print("[{}] +-> {}".format(eop, src))
+            print("[{}] @ c{} +-> {}".format(eop.name, regno, src))
 
     def _get_parent(self, view, v):
         """
