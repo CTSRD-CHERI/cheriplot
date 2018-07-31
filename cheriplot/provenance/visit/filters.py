@@ -225,8 +225,8 @@ class DetectStackCapability(BFSGraphVisit):
         self.execve_end = None
         """Last execve return time"""
 
-        self.stack_vertex = pgm.graph.new_graph_property("int", val=-1)
-        pgm.graph.gp["stack_vertex"] = self.stack_vertex
+        stack_vertex = pgm.graph.new_graph_property("int", val=-1)
+        pgm.graph.gp["stack_vertex"] = stack_vertex
 
         self.find_execve()
 
@@ -259,7 +259,7 @@ class DetectStackCapability(BFSGraphVisit):
         for e in v.in_edges():
             parent = e.source()
             if self.pgm.layer_prov[parent]:
-                if int(parent) == self.stack_vertex:
+                if int(parent) == self.pgm.graph.gp.stack_vertex:
                     return True
                 else:
                     return self.check_parent(parent)
@@ -286,7 +286,7 @@ class DetectStackCapability(BFSGraphVisit):
                 data.cap.t_alloc <= self.execve_end and
                 self.is_stack_root(v)):
                 logger.info("Set stack root vertex %d", v)
-                self.stack_vertex = int(v)
+                self.pgm.graph.gp.stack_vertex = int(v)
 
 
 class DecorateStackStrict(DecorateBFSVisit):
@@ -330,8 +330,11 @@ class DecorateStackStrict(DecorateBFSVisit):
         if has_stack:
             v = self.pgm.graph.gp.stack_vertex
             logger.info("Decorate stack found stack capability at vertex %d %s",
-                        v, pgm.data[v])
+                        v, self.pgm.data[v])
             self.vertex_mask[v] = True
+        else:
+            logger.info("No stack capability found (%s), guessing",
+                        self.pgm.graph.gp.get("stack_vertex", None))
         return has_stack
 
     def examine_vertex(self, v):
@@ -369,7 +372,6 @@ class DecorateStackAll(DecorateBFSVisit):
     def __init__(self, pgm, stack_begin, stack_end):
         super().__init__(pgm)
 
-        self.stack_capability = pgm.stack_capability
         self.stack_begin = stack_begin
         self.stack_end = stack_end
 
@@ -377,8 +379,8 @@ class DecorateStackAll(DecorateBFSVisit):
         if not self.pgm.layer_prov[v]:
             return
         data = self.pgm.data[v]
-        if (data.cap.base >= self.stack_capability.base and
-            data.cap.bound <= self.stack_capability.bound):
+        if (data.cap.base >= self.stack_begin and
+            data.cap.bound <= self.stack_end):
             self.vertex_mask[v] = True
 
 
