@@ -1695,7 +1695,7 @@ class PointerProvenanceSubparser:
         dst = inst.op0
         src = inst.op1
         assert dst.is_capability and src.is_capability
-        if CheriCap(dst.value) == CheriCap(src.value):
+        if CheriCap(dst.value) == CheriCap(src.value) and inst.op2.value != 0:
             # conditional move occurred
             self.scan_cap_arith(inst, entry, regs, last_regs, idx)
         return False
@@ -1715,7 +1715,7 @@ class PointerProvenanceSubparser:
         dst = inst.op0
         src = inst.op1
         assert dst.is_capability and src.is_capability
-        if CheriCap(dst.value) == CheriCap(src.value):
+        if CheriCap(dst.value) == CheriCap(src.value) and inst.op2.value == 0:
             # conditional move occurred
             self.scan_cap_arith(inst, entry, regs, last_regs, idx)
         return False
@@ -2115,6 +2115,13 @@ class PointerProvenanceSubparser:
                          dst_op_index, inst.operands[dst_op_index])
             raise MissingParentError("Missing parent for %s" % data)
 
+        # sanity check monotonicity
+        pdata = self.pgm.data[parent]
+        if (pdata.cap.valid and data.cap.valid and (
+                pdata.cap.base > data.cap.base or pdata.cap.bound < data.cap.bound or
+                data.cap.permissions & ~pdata.cap.permissions)):
+            logger.error("Monotonicity violation: %s -> %s", pdata, data)
+            raise UnexpectedOperationError("Monotonicity violation")
         # create the vertex in the graph and assign the data to it
         vertex = self.pgm.graph.add_vertex()
         self.pgm.graph.add_edge(parent, vertex)
