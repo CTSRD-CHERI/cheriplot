@@ -1648,7 +1648,7 @@ class PointerProvenanceSubparser:
                         last_regs, idx, True),
                 entry.pc)
             return False
-        if inst.op1.cap_index == 0:
+        if inst.op1.cap_index == -1 and inst.op1.caphw_index == 0:
             # cfromddc variant, src_reg_index=chwr_ddc
             node = self.make_node(entry, inst, origin=CheriNodeOrigin.FROMPTR,
                                   src_reg_index=32)

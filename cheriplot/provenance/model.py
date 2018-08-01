@@ -472,10 +472,7 @@ class EdgeOperation(IntEnum):
     """Capability visible (from the register set) in a called function."""
 
     RETURN = auto()
-    """
-    Capability used as return value in a called function
-    (or at least present in c3).
-    """
+    """Capability visible at the time of return."""
 
 
 class ProvenanceGraphManager:
