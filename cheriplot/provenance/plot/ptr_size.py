@@ -463,7 +463,7 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
     split = Option(
         default=[],
         action="append",
-        choices=("stack", "malloc", "exec"),
+        choices=("stack", "malloc", "exec", "glob"),
         help="Separate the given vertices in a separate CDF")
 
 
@@ -509,16 +509,15 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
                 heap_entry = vme
             if vme.grows_down:
                 stack_vm_entry = vme
-
+        
         for idx, pgm in enumerate(self.pgm_list):
             cdf = PtrBoundCdf(pgm, self.config.absolute)
             # prevent the ignored count in legend for these
             cdf.num_ignored = -1
+            cdf.name = pgm.name
             cdf.build_cdf()
             datasets.append(cdf)
 
-            # cdf.filter(pgm.annotation_stack, pgm.annotation_from_malloc, pgm.annotation_to_malloc,
-            #            pgm.annotation_nx, pgm.annotation_x)
             for split_set in self.config.split:
                 if split_set == "stack":
                     view = GraphView(pgm.graph, vfilt=pgm.graph.vp.annotated_stack)
@@ -526,16 +525,23 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
                     view = GraphView(pgm.graph, vfilt=pgm.graph.vp.annotated_malloc)
                 elif split_set == "exec":
                     view = GraphView(pgm.graph, vfilt=pgm.graph.vp.annotated_exec)
+                elif split_set == "glob":
+                    # any global pointers or pointers derived from global pointers
+                    combined = pgm.graph.new_vertex_property("bool")
+                    combined.a = (pgm.graph.vp.annotated_globptr.a |
+                                  pgm.graph.vp.annotated_globderived.a)
+                    view = GraphView(pgm.graph, vfilt=combined)
                 else:
                     logger.error("Invalid --split option value %s", split_set)
                     raise ValueError("Invalid --split option value")
                 cdf = PtrBoundCdf(pgm, self.config.absolute, graph=view)
                 cdf.num_ignored = -1
+                cdf.name = pgm.name
                 cdf.slice_name = split_set
                 cdf.build_cdf()
                 datasets.append(cdf)
 
-        # handle the pretend filters
+        # handle the pretend filters XXX-AM: these are deprecated and should be removed
         for filter_set in self.config.filters:
             pgm = self.pgm_list[0]
             cdf = PtrBoundCdf(pgm, self.config.absolute)
