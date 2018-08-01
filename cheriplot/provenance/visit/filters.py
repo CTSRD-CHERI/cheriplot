@@ -43,52 +43,90 @@ from cheriplot.provenance.model import CheriNodeOrigin, EdgeOperation, Provenanc
 logger = logging.getLogger(__name__)
 
 
+class FindLastExecve(BFSGraphVisit):
+    """
+    Find last execve call, presumibly from qtrace.
+    """
+
+    description = "Find last execve"
+
+    execve_code = 0x3b
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+
+        self.last_execve = -1
+        self.execve_vertex = -1
+        self.execve_call = -1
+        self.execve_return = -1
+
+    def _get_progress_range(self, graph):
+        return (0, graph.num_edges())
+
+    def examine_edge(self, e):
+        self.progress.advance()
+        src = e.source()
+        dst = e.target()
+        if (self.pgm.layer_call[src] and self.pgm.layer_call[dst] and
+            self.pgm.edge_operation[e] == EdgeOperation.SYSCALL):
+            data = self.pgm.data[dst]
+            if data.address == self.execve_code and data.t_return > self.last_execve:
+                self.last_execve = self.pgm.edge_time[e]
+                logger.info("Found execve syscall [%d, %d]",
+                            self.last_execve, data.t_return)
+                self.execve_call = self.last_execve
+                self.execve_return = data.t_return
+                self.execve_vertex = int(dst)
+
+    def finalize(self, graph_view):
+        # save the execve information in graph properties for later use
+        execve_vertex = self.pgm.graph.new_graph_property(
+            "long", int(self.execve_vertex))
+        execve_call = self.pgm.graph.new_graph_property(
+            "long", self.execve_call)
+        execve_return = self.pgm.graph.new_graph_property(
+            "long", self.execve_return)
+        self.pgm.graph.gp["execve_vertex"] = execve_vertex
+        self.pgm.graph.gp["execve_call"] = execve_call
+        self.pgm.graph.gp["execve_return"] = execve_return
+        logger.info("Last execve syscall [%d, %d]",
+                    self.execve_call, self.execve_return)
+        return graph_view
+
+
 class FilterBeforeExecve(MaskBFSVisit):
     """
     Remova all vertices that come before the last call to execve.
     This assumes that the program does not execve.
+
+    Depends on FindLastExecve.
     """
 
     description = "Mask pre-execve capabilities"
 
     def __init__(self, pgm):
         super().__init__(pgm)
-        self.execve_time = self.find_last()
+
+        self.execve_time = None
 
     def _get_progress_range(self, graph):
         return (0, graph.num_edges())
-
-    def find_last(self):
-        """
-        Find last SYSCALL to execve
-        """
-        execve_code = 0x3b
-        last_syscall = 0
-        for e in self.pgm.graph.edges():
-            src = e.source()
-            dst = e.target()
-            if self.pgm.edge_operation[e] == EdgeOperation.SYSCALL:
-                data = self.pgm.data[dst]
-                if data.address == execve_code and data.t_return > last_syscall:
-                    logger.info("Found execve syscall, returning at %d",
-                                data.t_return)
-                    last_syscall = self.pgm.edge_time[e]
-        logger.info("Execve call set at %d", last_syscall)
-        return last_syscall
 
     def examine_edge(self, e):
         self.progress.advance()
         src = e.source()
         dst = e.target()
         if self.pgm.layer_call[src] and self.pgm.layer_call[dst]:
+            execve_time = self.pgm.graph.gp.execve_call
             # call or syscall
-            if self.pgm.edge_time[e] < self.execve_time:
+            if self.pgm.edge_time[e] < execve_time:
                 self.vertex_mask[src] = False
                 self.vertex_mask[dst] = False
 
     def examine_vertex(self, v):
         if self.pgm.layer_prov[v]:
-            if self.pgm.data[v].cap.t_alloc < self.execve_time:
+            execve_time = self.pgm.graph.gp.execve_call
+            if self.pgm.data[v].cap.t_alloc < execve_time:
                 self.vertex_mask[v] = False
 
 
@@ -202,13 +240,6 @@ class FilterRootVertices(MaskBFSVisit):
             self.vertex_mask[u] = False
 
 
-class FilterSyscallDerived(MaskBFSVisit):
-    """
-    Filter out all vertices derived from a system call.
-    """
-    pass
-
-
 class DetectStackCapability(BFSGraphVisit):
     """
     Find the stack capability by looking for a root capability
@@ -216,47 +247,17 @@ class DetectStackCapability(BFSGraphVisit):
 
     The stack capability vertex index is stored in the graph
     stack_vertex property.
+
+    Depends on FindLastExecve
     """
 
     description = "Detect stack capability"
 
     def __init__(self, pgm):
         super().__init__(pgm)
-        self.execve_start = None
-        """Last execve call time"""
-
-        self.execve_end = None
-        """Last execve return time"""
 
         stack_vertex = pgm.graph.new_graph_property("int", val=-1)
         pgm.graph.gp["stack_vertex"] = stack_vertex
-
-        self.find_execve()
-
-    def find_execve(self):
-        """
-        Find last SYSCALL to execve
-        """
-        execve_code = 0x3b
-        last_vertex = None
-        last_call = 0
-        last_return = 0
-        for e in self.pgm.graph.edges():
-            src = e.source()
-            dst = e.target()
-            if self.pgm.edge_operation[e] == EdgeOperation.SYSCALL:
-                data = self.pgm.data[dst]
-                if data.address == execve_code:
-                    # check if this is later than the last
-                    if last_vertex is None or data.t_return > last_return:
-                        logger.info("Found execve syscall, returning at %d",
-                                    data.t_return)
-                        last_vertex = dst
-                        last_call = self.pgm.edge_time[e]
-                        last_return = data.t_return
-        self.execve_start = last_call
-        self.execve_end = last_return
-        logger.info("Last execve at call:%d return:%d", last_call, last_return)
 
     def check_parent(self, v):
         for e in v.in_edges():
@@ -284,12 +285,43 @@ class DetectStackCapability(BFSGraphVisit):
 
     def examine_vertex(self, v):
         if self.pgm.layer_prov[v]:
+            execve_start = self.pgm.graph.gp.execve_call
+            execve_end = self.pgm.graph.gp.execve_return
             data = self.pgm.data[v]
-            if (data.cap.t_alloc >= self.execve_start and
-                data.cap.t_alloc <= self.execve_end and
+            if (data.cap.t_alloc >= execve_start and
+                data.cap.t_alloc <= execve_end and
                 self.is_stack_root(v)):
                 logger.info("Set stack root vertex %d", v)
                 self.pgm.graph.gp.stack_vertex = int(v)
+
+
+class DecorateKernelCapabilities(DecorateBFSVisit):
+    """
+    Find capabilities that originate from the kernel but are
+    visible in registers from userspace when returning from eret.
+    """
+
+    description = "Detect kernel-originated capabilities"
+
+    mask_name = "annotated_korigin"
+    mask_type = "bool"
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+
+    def examine_edge(self, e):
+        pass
+
+
+class DecorateAccessdInUserspace(DecorateBFSVisit):
+    """
+    Detect capabilities that are accessed from code in user space.
+    XXX-AM: this needs more support from the tracing and more thinkering
+    because we want to see whether the capability ever floats to userspace,
+    meaning it is used or even visible from there.
+    """
+
+    description = ""
 
 
 class DecorateGlobalPointers(DecorateBFSVisit):
@@ -310,6 +342,12 @@ class DecorateGlobalPointers(DecorateBFSVisit):
 
         self._captable_mappings = SortedDict()
         """Hold capability table mappings as start => (end, file)"""
+
+        self.captblptr = self.pgm.graph.new_vertex_property("bool", val=False)
+        self.pgm.graph.vp["annotated_captblptr"] = self.captblptr
+
+        self.globderived = self.pgm.graph.new_vertex_property("bool", val=False)
+        self.pgm.graph.vp["annotated_globderived"] = self.globderived
 
         self._fetch_cap_tables()
 
@@ -345,26 +383,37 @@ class DecorateGlobalPointers(DecorateBFSVisit):
         if not self.pgm.layer_prov[v]:
             return
         data = self.pgm.data[v]
+        # has this vertex ever been stored/loaded in the cap table?
         mask = ((data.event_tbl["type"] == ProvenanceVertexData.EventType.LOAD) |
                 (data.event_tbl["type"] == ProvenanceVertexData.EventType.STORE))
         for idx, evt in data.event_tbl[mask].iterrows():
             if self._get_captable(evt["addr"]) is not None:
                 self.vertex_mask[v] = True
-                # we just need to see one dereference for it to be
-                # a global ptr
-                return
+                # we just need to see one dereference for it
+                # to be a global ptr
+                break
+        # has this vertex ever loaded/stored something in the cap table?
+        load_type = (ProvenanceVertexData.EventType.DEREF_LOAD |
+                     ProvenanceVertexData.EventType.DEREF_IS_CAP)
+        store_type = (ProvenanceVertexData.EventType.DEREF_STORE |
+                      ProvenanceVertexData.EventType.DEREF_IS_CAP)
+        mask = ((data.event_tbl["type"] == load_type) |
+                (data.event_tbl["type"] == store_type))
+        for idx, evt in data.event_tbl[mask].iterrows():
+            if self._get_captable(evt["addr"]) is not None:
+                self.captblptr[v] = True
+                # we just need to see one dereference for it
+                # to be a pointer to captable
+                break
 
+    def examine_edge(self, e):
+        # check if the dst is global-derived
+        src = e.source()
+        tgt = e.target()
+        if self.pgm.layer_prov[src] and self.pgm.layer_prov[tgt]:
+            if self.vertex_mask[src] or self.globderived[src]:
+                self.globderived[tgt] = True
 
-class DecorateCapTablePointers(DecorateBFSVisit):
-    """
-    Find pointers that are dereferenced inside a cap table
-    """
-
-    description = "Find pointers to cap table"
-
-    def __init__(self):
-        pass
-                
 
 class DecorateStackStrict(DecorateBFSVisit):
     """

@@ -5,12 +5,7 @@ from .base import (
     GraphVisitBase, ChainGraphVisit, BFSGraphVisit, DFSGraphVisit,
     MaskBFSVisit, MaskDFSVisit, DecorateBFSVisit)
 from .vertex_merge import MergeCfromptr
-from .filters import (
-    FilterNullVertices, FilterKernelVertices, FilterCfromptr,
-    FilterStackVertices, DecorateMmap, DecorateMmapReturn,
-    DecorateMalloc, DecorateMallocReturn, FilterCandperm, FilterRootVertices,
-    DecorateHeap, DecorateStackStrict, DecorateStackAll, DecorateExecutable,
-    FilterBeforeExecve, DetectStackCapability, DecorateGlobalPointers)
+from .filters import *
 
 from .symbols import ResolveSymbolsGraphVisit
 from .slice import ProvGraphTimeSlice

@@ -93,8 +93,8 @@ class UserGraphPreprocessDriver(BaseToolTaskDriver):
 
     def _get_visit_chain(self):
         vchain = ChainGraphVisit(self.pgm)
-
         vchain += ResolveSymbolsGraphVisit(self.pgm, self.symreader, None)
+        vchain += FindLastExecve(self.pgm)
         vchain += DetectStackCapability(self.pgm)
         stack_begin, stack_end = self._get_stack_map()
         vchain += DecorateStackStrict(self.pgm, stack_begin, stack_end)
@@ -102,6 +102,7 @@ class UserGraphPreprocessDriver(BaseToolTaskDriver):
         vchain += DecorateMalloc(self.pgm)
         vchain += DecorateExecutable(self.pgm)
         vchain += DecorateGlobalPointers(self.pgm, self.symreader)
+        # vchain += DecorateKernelCapabilities(self.pgm)
         vchain += FilterBeforeExecve(self.pgm)
         vchain += FilterNullVertices(self.pgm)
         vchain += FilterKernelVertices(self.pgm)
