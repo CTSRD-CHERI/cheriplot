@@ -101,6 +101,7 @@ class UserGraphPreprocessDriver(BaseToolTaskDriver):
         vchain += DecorateStackAll(self.pgm, stack_begin, stack_end)
         vchain += DecorateMalloc(self.pgm)
         vchain += DecorateExecutable(self.pgm)
+        vchain += DecorateGlobalPointers(self.pgm, self.symreader)
         vchain += FilterBeforeExecve(self.pgm)
         vchain += FilterNullVertices(self.pgm)
         vchain += FilterKernelVertices(self.pgm)

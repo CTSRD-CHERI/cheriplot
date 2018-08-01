@@ -53,8 +53,11 @@ class SymReader:
         self.paths = path
         """Search paths for binaries that contain symbols."""
 
-        self._symbol_map = {}
+        self._symbol_map = SortedDict()
         """Internal mapping of address to symbol name"""
+
+        self.loaded = []
+        """List of loaded executables"""
 
         with ProgressTimer("Load symbols", logger):
             self._load_mapped()
@@ -73,7 +76,7 @@ class SymReader:
         logger.debug("No ELF found for %s", bin_file)
         return None
 
-    def _map_base(self, vme_path):
+    def map_base(self, vme_path):
         """
         Find the base address where this file has been mapped
         in the vmmap
@@ -85,20 +88,19 @@ class SymReader:
         return lower_addr
 
     def _load_mapped(self):
-        loaded = []
         for vme in self.vmmap.get_model():
             bin_file = self._find_elf(vme.path)
-            if bin_file is None or bin_file in loaded:
+            if bin_file is None or bin_file in self.loaded:
                 # is the file already been loaded?
                 continue
 
-            loaded.append(bin_file)
+            self.loaded.append(bin_file)
             elf_file = ELFFile(open(bin_file, "rb"))
             symtab = elf_file.get_section_by_name(".symtab")
 
             # do we need to relocate the addresses?
             if elf_file.header["e_type"] == "ET_DYN":
-                map_base = self._map_base(vme.path)
+                map_base = self.map_base(vme.path)
             else:
                 map_base = 0
 
@@ -107,10 +109,10 @@ class SymReader:
         kern_image = self._find_elf("kernel")
         kern_full = self._find_elf("kernel.full")
         if kern_full is not None:
-            loaded.append(kern_full)
+            self.loaded.append(kern_full)
             self._load_kernel(kern_full)
         elif kern_image is not None:
-            loaded.append(kern_image)
+            self.loaded.append(kern_image)
             self._load_kernel(kern_image)
 
     def _load_kernel(self, path):
@@ -163,6 +165,13 @@ class SymReader:
         """
         Return the symbol and file of the function containing the
         given address, if possible.
-        XXX TODO
         """
-        raise NotImplementedError("Not yet implemented")
+        index = self._symbol_map.bisect(addr) - 1
+        if index < 0:
+            return None
+        key = self._symbol_map.iloc[index]
+        sym, fname = self._symbol_map[key]
+        return (sym, os.path.basename(fname))
+
+
+            

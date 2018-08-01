@@ -34,6 +34,8 @@ based on different properties such as origin and bounds.
 import logging
 
 from cached_property import cached_property
+from sortedcontainers import SortedDict
+from elftools.elf.elffile import ELFFile
 
 from cheriplot.provenance.visit import MaskBFSVisit, DecorateBFSVisit, BFSGraphVisit
 from cheriplot.provenance.model import CheriNodeOrigin, EdgeOperation, ProvenanceVertexData, CheriCapPerm
@@ -206,6 +208,7 @@ class FilterSyscallDerived(MaskBFSVisit):
     """
     pass
 
+
 class DetectStackCapability(BFSGraphVisit):
     """
     Find the stack capability by looking for a root capability
@@ -288,6 +291,80 @@ class DetectStackCapability(BFSGraphVisit):
                 logger.info("Set stack root vertex %d", v)
                 self.pgm.graph.gp.stack_vertex = int(v)
 
+
+class DecorateGlobalPointers(DecorateBFSVisit):
+    """
+    Find pointers that are loaded or stored in a cap table.
+    This also marks the descendants of these pointers.
+    """
+
+    description = "Find pointers to global objects"
+
+    mask_name = "annotated_globptr"
+    mask_type = "bool"
+
+    def __init__(self, pgm, symreader):
+        super().__init__(pgm)
+
+        self.symreader = symreader
+
+        self._captable_mappings = SortedDict()
+        """Hold capability table mappings as start => (end, file)"""
+
+        self._fetch_cap_tables()
+
+    def _fetch_cap_tables(self):
+        for path in self.symreader.loaded:
+            elf = ELFFile(open(path, "rb"))
+            if elf.header["e_type"] == "ET_DYN":
+                map_base = self.symreader.map_base(path)
+            else:
+                map_base = 0
+            # grab section with given name
+            captable = elf.get_section_by_name(".cap_table")
+            if captable is None:
+                logger.info("No capability table for %s", path)
+                continue
+            sec_start = captable["sh_addr"] + map_base
+            sec_end = sec_start + captable["sh_size"]
+            logger.info("Found capability table %s @ [0x%x, 0x%x]",
+                        path, sec_start, sec_end)
+            self._captable_mappings[sec_start] = {"end": sec_end, "path": path}
+
+    def _get_captable(self, addr):
+        index = self._captable_mappings.bisect(addr) - 1
+        if index < 0:
+            return None
+        key = self._captable_mappings.iloc[index]
+        if addr > self._captable_mappings[key]["end"]:
+            return None
+        return self._captable_mappings[key]["path"]
+
+    def examine_vertex(self, v):
+        self.progress.advance()
+        if not self.pgm.layer_prov[v]:
+            return
+        data = self.pgm.data[v]
+        mask = ((data.event_tbl["type"] == ProvenanceVertexData.EventType.LOAD) |
+                (data.event_tbl["type"] == ProvenanceVertexData.EventType.STORE))
+        for idx, evt in data.event_tbl[mask].iterrows():
+            if self._get_captable(evt["addr"]) is not None:
+                self.vertex_mask[v] = True
+                # we just need to see one dereference for it to be
+                # a global ptr
+                return
+
+
+class DecorateCapTablePointers(DecorateBFSVisit):
+    """
+    Find pointers that are dereferenced inside a cap table
+    """
+
+    description = "Find pointers to cap table"
+
+    def __init__(self):
+        pass
+                
 
 class DecorateStackStrict(DecorateBFSVisit):
     """
