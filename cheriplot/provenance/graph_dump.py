@@ -33,8 +33,10 @@ from itertools import repeat
 import numpy as np
 
 from cheriplot.core import (
-    BaseToolTaskDriver, Argument, Option, option_range_validator,
-    any_int_validator)
+    BaseToolTaskDriver, Argument, Option, NestedConfig, option_range_validator,
+    any_int_validator, file_path_validator)
+from cheriplot.vmmap import VMMapFileParser
+from cheriplot.dbg.symbols import SymReader
 from cheriplot.provenance.model import (
     CheriNodeOrigin, ProvenanceVertexData, ProvenanceGraphManager,
     EdgeOperation)
@@ -107,6 +109,12 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     annotations = Option(
         action="store_true",
         help="Show vertex annotations created by graphfilter.")
+    vmmap = NestedConfig(VMMapFileParser)
+    elfpath = Option(
+        nargs="+",
+        type=file_path_validator,
+        default=[],
+        help="Paths where to look for ELF files with symbols")
     # call layer filters
     target = Option(
         help="Show calls to the given target address or symbol name.")
@@ -140,6 +148,14 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             self._match_call_type,
             self._match_call_target,
         ]
+
+        if self.config.vmmap and self.config.elfpath:
+            self.vmmap = VMMapFileParser(config=self.config.vmmap)
+            self.vmmap.parse()
+            self.symreader = SymReader(vmmap=self.vmmap, path=self.config.elfpath)
+        else:
+            self.vmmap = None
+            self.symreader = None
 
     def _check_origin_arg(self, match_origin):
         if match_origin == None:
@@ -260,6 +276,15 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             return (vdata.symbol == self.config.target)
         return None
 
+    def _find_function_for_pc(self, pc):
+        if self.symreader is not None:
+            rt = self.symreader.find_function(pc)
+            if rt is None:
+                return rt
+            # return file:symbol
+            return "{}:{}".format(rt[1], rt[0])
+        return None
+
     def _dump_prov_vertex(self, edge, v):
         vdata = self.pgm.data[v]
         str_vertex = StringIO()
@@ -291,6 +316,9 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
                     # vertes is in the property map
                     str_vertex.write("{} ".format(name.upper()))
             str_vertex.write("}")
+            sym = self._find_function_for_pc(vdata.pc)
+            if sym:
+                str_vertex.write(" {}".format(sym))
         return str_vertex.getvalue()
 
     def _dump_call_vertex(self, edge, v):
