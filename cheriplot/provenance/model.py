@@ -217,50 +217,56 @@ class CheriCap:
         return not self == other
 
 
+class EventType(IntFlag):
+    LOAD = auto()
+    """Vertex loaded from memory."""
+
+    STORE = auto()
+    """Vertex stored to memory."""
+
+    DEREF_LOAD = auto()
+    """Load via this vertex."""
+
+    DEREF_STORE = auto()
+    """Store via this vertex."""
+
+    DEREF_CALL = auto()
+    """Call via this vertex."""
+
+    DEREF_IS_CAP = auto()
+    """Dereference via this vertex targets a capability."""
+
+    DELETE = auto()
+    """Vertex removed from a memory location."""
+
+    USR = auto()
+    """If this bit is set, the event occurred in userspace, kernel otherwise"""
+
+    @classmethod
+    def memop_mask(cls):
+        """
+        Return a mask of flags used to qualify events that
+        represent a memory operation on this capability.
+        """
+        return (cls.LOAD | cls.STORE | cls.DELETE)
+
+    @classmethod
+    def deref_mask(cls):
+        """
+        Return a mask of flags used to qualify events that
+        represent a dereference via this capability.
+        """
+        return (cls.DEREF_LOAD | cls.DEREF_STORE |
+                cls.DEREF_CALL | cls.DEREF_IS_CAP)
+    
+
 class ProvenanceVertexData:
     """
     All the data associated with a node in the capability
     graph.
     """
-
-    class EventType(IntFlag):
-        LOAD = auto()
-        """Vertex loaded from memory."""
-
-        STORE = auto()
-        """Vertex stored to memory."""
-
-        DEREF_LOAD = auto()
-        """Load via this vertex."""
-
-        DEREF_STORE = auto()
-        """Store via this vertex."""
-
-        DEREF_CALL = auto()
-        """Call via this vertex."""
-
-        DEREF_IS_CAP = auto()
-        """Dereference via this vertex targets a capability."""
-
-        DELETE = auto()
-        """Vertex removed from a memory location."""
-
-        @classmethod
-        def memop_mask(cls):
-            """
-            Return a mask of flags used to qualify events that
-            represent a memory operation on this capability.
-            """
-            return (cls.LOAD | cls.STORE | cls.DELETE)
-
-        @classmethod
-        def deref_mask(cls):
-            """
-            Return a mask of flags used to qualify events that
-            represent a dereference via this capability.
-            """
-            return (cls.DEREF_LOAD | cls.DEREF_STORE |
-                    cls.DEREF_CALL | cls.DEREF_IS_CAP)
+    # For backward compatibility
+    EventType = EventType
 
     @classmethod
     def from_operand(cls, op):
@@ -335,21 +341,23 @@ class ProvenanceVertexData:
         df = df.astype({"time": "u8", "addr": "u8", "type": "u4"}, copy=False)
         return df
 
-    def add_event(self, time, addr, type_):
+    def add_event(self, time, addr, is_kernel, type_):
         """Append an event to the event table."""
+        if not is_kernel:
+            type_ |= ProvenanceVertexData.EventType.USR
         self.events["time"].append(time)
         self.events["addr"].append(addr)
         self.events["type"].append(type_)
         # invalidate cached property
         with suppress(KeyError):
             del self.__dict__["event_tbl"]
-        if type_ == ProvenanceVertexData.EventType.STORE:
+        if (type_ & ProvenanceVertexData.EventType.STORE):
             self._active_memory[addr] = len(self.events["time"]) - 1
-        elif type_ == ProvenanceVertexData.EventType.DELETE:
+        elif (type_ & ProvenanceVertexData.EventType.DELETE):
             with suppress(KeyError):
                 del self._active_memory[addr]
 
-    def add_deref(self, time, addr, cap, type_):
+    def add_deref(self, time, addr, pc, cap, type_):
         """
         Append a dereference event.
 
@@ -361,7 +369,7 @@ class ProvenanceVertexData:
         """
         if cap:
             type_ |= ProvenanceVertexData.EventType.DEREF_IS_CAP
-        self.add_event(time, addr, type_)
+        self.add_event(time, addr, pc, type_)
 
     def get_active_memory(self):
         """
