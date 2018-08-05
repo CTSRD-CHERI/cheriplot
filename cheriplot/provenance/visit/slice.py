@@ -35,7 +35,7 @@ from graph_tool.all import GraphView
 
 from cheriplot.provenance.visit import BFSGraphVisit
 from cheriplot.provenance.model import (
-    CheriNodeOrigin, ProvenanceVertexData, CheriCap)
+    CheriNodeOrigin, ProvenanceVertexData, CheriCap, EventType)
 
 logger = logging.getLogger(__name__)
 
@@ -94,11 +94,11 @@ class ProvGraphTimeSlice(BFSGraphVisit):
         return times.between(self.start, self.end).any()
 
     def _filter_deref_time(self, v):
-        mask = ProvenanceVertexData.EventType.deref_mask()
+        mask = EventType.deref_mask()
         return self._filter_event_time(v, mask)
 
     def _filter_access_time(self, v):
-        mask = ProvenanceVertexData.EventType.memop_mask()
+        mask = EventType.memop_mask()
         return self._filter_event_time(v, mask)
 
     def examine_vertex(self, v):
