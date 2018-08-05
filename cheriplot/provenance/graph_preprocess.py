@@ -26,13 +26,16 @@
 #
 
 import logging
+from contextlib import suppress
 
 from cheriplot.core import (
-    BaseToolTaskDriver, Argument, Option, NestedConfig, file_path_validator, ProgressTimer)
+    BaseToolTaskDriver, Argument, Option, NestedConfig, file_path_validator,
+    ProgressTimer, SubCommand)
 from cheriplot.vmmap import VMMapFileParser
 from cheriplot.dbg.symbols import SymReader
 from cheriplot.provenance.model import ProvenanceGraphManager
 from cheriplot.provenance.visit import *
+from cheriplot.provenance.plot import *
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +45,18 @@ class UserGraphPreprocessDriver(BaseToolTaskDriver):
     Prepare graph that represent a single user process trace captured with qtrace.
     This will perform the following:
     - Annotate graph with symbols
-    - Find the stack pointer and set graph.gp.stack_vertex
+    - Find the last execve where we enter the process and find the stack pointer.
     - Annotate successors of the stack pointer (annotated_stack)
+    - Annotate anything dereferenced in the stack map
     - Annotate vertices returned by malloc (annotated_malloc)
     - Annotate executable vertices (annotated_exec)
+    - Annotate global pointers and pointers used to load from captable
+    - Annotate pointers that are returned from syscalls
+    - Annotate pointers that originated in the kernel and are loaded from memory
     - Mask out all vertices and calls that are created before the last call to execve()
+      and have not been marked
     - Mask out NULL capabilities
-    - Mask out kernel capabilities
+    - Mask out kernel capabilities that have not been marked
     """
 
     elfpath = Option(
@@ -68,6 +76,9 @@ class UserGraphPreprocessDriver(BaseToolTaskDriver):
     display_name = Option(
         default=None,
         help="New display-name for the graph")
+
+    # available plots
+    ptrsize_cdf = SubCommand(PtrSizeCdfDriver)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -95,17 +106,19 @@ class UserGraphPreprocessDriver(BaseToolTaskDriver):
         vchain = ChainGraphVisit(self.pgm)
         vchain += ResolveSymbolsGraphVisit(self.pgm, self.symreader, None)
         vchain += FindLastExecve(self.pgm)
-        vchain += DetectStackCapability(self.pgm)
+        # vchain += DetectStackCapability(self.pgm)
         stack_begin, stack_end = self._get_stack_map()
-        vchain += DecorateStackStrict(self.pgm, stack_begin, stack_end)
+        vchain += DecorateStackCapabilities(self.pgm)
         vchain += DecorateStackAll(self.pgm, stack_begin, stack_end)
         vchain += DecorateMalloc(self.pgm)
         vchain += DecorateExecutable(self.pgm)
         vchain += DecorateGlobalPointers(self.pgm, self.symreader)
-        # vchain += DecorateKernelCapabilities(self.pgm)
+        vchain += DecorateCapRelocs(self.pgm, self.symreader)
+        vchain += DecorateKernelCapabilities(self.pgm)
+        vchain += DecorateAccessedInUserspace(self.pgm)
         vchain += FilterBeforeExecve(self.pgm)
         vchain += FilterNullVertices(self.pgm)
-        vchain += FilterKernelVertices(self.pgm)
+        vchain += FilterUnusedKernelVertices(self.pgm)
         return vchain
         
     def run(self):
@@ -128,3 +141,10 @@ class UserGraphPreprocessDriver(BaseToolTaskDriver):
         # write out the graph
         with ProgressTimer("Write output graph", logger):
             self.pgm.save(self.outfile)
+
+        with suppress(AttributeError):
+            if self.config.subcommand_class:
+                # generate plot (would be nice to support more than 1 per run)
+                plot = self.config.subcommand_class([self.pgm], self.vmmap,
+                                                    config=self.config)
+                plot.run()
