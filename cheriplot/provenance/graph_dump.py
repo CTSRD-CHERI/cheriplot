@@ -39,7 +39,7 @@ from cheriplot.vmmap import VMMapFileParser
 from cheriplot.dbg.symbols import SymReader
 from cheriplot.provenance.model import (
     CheriNodeOrigin, ProvenanceVertexData, ProvenanceGraphManager,
-    EdgeOperation)
+    EdgeOperation, EventType)
 
 logger = logging.getLogger(__name__)
 
@@ -106,9 +106,6 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
     full_info = Option(
         action="store_true",
         help="Show the full vertex information")
-    annotations = Option(
-        action="store_true",
-        help="Show vertex annotations created by graphfilter.")
     vmmap = NestedConfig(VMMapFileParser)
     elfpath = Option(
         nargs="+",
@@ -285,40 +282,61 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             return "{}:{}".format(rt[1], rt[0])
         return None
 
+    def _find_symbol_at(self, addr):
+        if self.symreader is not None:
+            rt = self.symreader.find_address(addr)
+            if rt is None:
+                return None
+            # return file:symbol
+            return "{}:{}".format(rt[1], rt[0])
+        return None
+
     def _dump_prov_vertex(self, edge, v):
         vdata = self.pgm.data[v]
         str_vertex = StringIO()
         str_vertex.write("(provenance) {} ".format(vdata))
+
+        # Display annotated_XXX properties
+        str_vertex.write(" annotations: { ")
+        for key in self.pgm.graph.vp.keys():
+            if not key.startswith("annotated_"):
+                continue
+            name = key[len("annotated_"):]
+            property_map = self.pgm.graph.vp[key]
+            if property_map[v]:
+                # vertes is in the property map
+                str_vertex.write("{} ".format(name.upper()))
+        str_vertex.write("} ")
+
+        # Dump event table
         events = vdata.event_tbl
-        n_load = (events["type"] & ProvenanceVertexData.EventType.DEREF_LOAD).sum()
-        n_store = (events["type"] & ProvenanceVertexData.EventType.DEREF_STORE).sum()
+        n_load = (events["type"] & EventType.DEREF_LOAD).sum()
+        n_store = (events["type"] & EventType.DEREF_STORE).sum()
         str_vertex.write(
-            "deref-load: {:d} deref-store: {:d} ".format(n_load, n_store))
-        n_loaded = (events["type"] & ProvenanceVertexData.EventType.LOAD).sum()
-        n_stored = (events["type"] & ProvenanceVertexData.EventType.STORE).sum()
-        str_vertex.write("load: {:d} store: {:d}".format(n_loaded, n_stored))
+            "deref-load:{:d} deref-store:{:d} ".format(n_load, n_store))
+        n_loaded = (events["type"] & EventType.LOAD).sum()
+        n_stored = (events["type"] & EventType.STORE).sum()
+        str_vertex.write("load:{:d} store:{:d}".format(n_loaded, n_stored))
+
+        # Display symbol name
+        symbol = self._find_symbol_at(vdata.cap.base)
+        if symbol:
+            str_vertex.write(" to:{}".format(symbol))
+
+        # Display function at PC
+        fn_sym = self._find_function_for_pc(vdata.pc)
+        if fn_sym:
+            str_vertex.write(" {}".format(fn_sym))
+        
+        # Dump event table details
         if self.config.full_info:
             str_vertex.write("\n")
             frame_str = vdata.event_tbl.to_string(formatters={
                 "addr": "0x{0:x}".format,
-                "type": lambda t: str(ProvenanceVertexData.EventType(t))
+                "type": lambda t: str(EventType(t))
             })
             str_vertex.write("Event table:\n{}\n".format(frame_str))
-        if self.config.annotations:
-            # Display annotated_XXX properties
-            str_vertex.write(" annotations: { ")
-            for key in self.pgm.graph.vp.keys():
-                if not key.startswith("annotated_"):
-                    continue
-                name = key[len("annotated_"):]
-                property_map = self.pgm.graph.vp[key]
-                if property_map[v]:
-                    # vertes is in the property map
-                    str_vertex.write("{} ".format(name.upper()))
-            str_vertex.write("}")
-            sym = self._find_function_for_pc(vdata.pc)
-            if sym:
-                str_vertex.write(" {}".format(sym))
+
         return str_vertex.getvalue()
 
     def _dump_call_vertex(self, edge, v):
@@ -375,19 +393,29 @@ class ProvenanceGraphDumpDriver(BaseToolTaskDriver):
             print("{}+- {}".format(space, self._dump_vertex(edge, s)))
 
     def _dump_related(self, v):
-        if not self.config.related or not self.pgm.layer_call[v]:
+        if not self.config.related:
             return
-        u = self.pgm.graph.vertex(v)
-        for edge in u.in_edges():
-            if not self.pgm.layer_prov[edge.source()]:
-                continue
-            eop = EdgeOperation(self.pgm.edge_operation[edge])
-            if eop == EdgeOperation.RETURN:
-                regno = "3"
-            else:
-                regno = self.pgm.edge_time[edge]
-            src = self.pgm.data[edge.source()]
-            print("[{}] @ c{} +-> {}".format(eop.name, regno, src))
+        if self.pgm.layer_prov[v]:
+            # dump call vertices where this vertex is visible either
+            # at CALL or RETURN time
+            u = self.pgm.graph.vertex(v)
+            for edge in u.out_edges():
+                if not self.pgm.layer_call[edge.target()]:
+                    continue
+                eop = EdgeOperation(self.pgm.edge_operation[edge])
+                regno = ", ".join(map(str, self.pgm.edge_regs[edge]))
+                dst = self.pgm.data[edge.target()]
+                print("[{}] @ c{} +-> {}".format(eop.name, regno, dst))
+        if self.pgm.layer_call[v]:
+            # dump visible vertices at CALL and RETURN time
+            u = self.pgm.graph.vertex(v)
+            for edge in u.in_edges():
+                if not self.pgm.layer_prov[edge.source()]:
+                    continue
+                eop = EdgeOperation(self.pgm.edge_operation[edge])
+                regno = ", ".join(map(str, self.pgm.edge_regs[edge]))
+                src = self.pgm.data[edge.source()]
+                print("[{}] @ c{} +-> {}".format(eop.name, regno, src))
 
     def _get_parent(self, view, v):
         """
