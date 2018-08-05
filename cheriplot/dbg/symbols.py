@@ -28,10 +28,13 @@
 import logging
 import os
 import io
+import struct
 import numpy as np
 
 from sortedcontainers import SortedDict
 from elftools.elf.elffile import ELFFile
+from elftools.elf.enums import ENUM_ST_SHNDX
+from cached_property import cached_property
 
 from cheriplot.core import ProgressTimer
 
@@ -44,8 +47,6 @@ class SymReader:
     """
 
     def __init__(self, vmmap, path):
-        """
-        """
 
         self.vmmap = vmmap
         """Memory map used to locate the start address of sections."""
@@ -55,6 +56,17 @@ class SymReader:
 
         self._symbol_map = SortedDict()
         """Internal mapping of address to symbol name"""
+
+        self.caprelocs = {}
+        """Capability relocations, populated by fetch caprelocs"""
+
+        self.captable_mappings = SortedDict()
+        """Hold capability table mappings as start => (end, file)"""
+
+        self._capreloc_fmt = struct.Struct(">5Q")
+        """
+        5 uint64 in order: reloc_target, object, offset, size, perms
+        """
 
         self.loaded = []
         """List of loaded executables"""
@@ -83,8 +95,11 @@ class SymReader:
         """
         lower_addr = np.inf
         for vme in self.vmmap.get_model():
-            if vme.path == vme_path and vme.start < lower_addr:
+            if (os.path.basename(vme.path) == os.path.basename(vme_path) and
+                vme.start < lower_addr):
                 lower_addr = vme.start
+        if lower_addr == np.inf:
+            return None
         return lower_addr
 
     def _load_mapped(self):
@@ -105,7 +120,8 @@ class SymReader:
                 map_base = 0
 
             for sym in symtab.iter_symbols():
-                self._symbol_map[map_base + sym["st_value"]] = (sym.name, bin_file)
+                if sym["st_shndx"] != ENUM_ST_SHNDX["SHN_UNDEF"]:
+                    self._symbol_map[map_base + sym["st_value"]] = (sym.name, bin_file)
         kern_image = self._find_elf("kernel")
         kern_full = self._find_elf("kernel.full")
         if kern_full is not None:
@@ -130,6 +146,61 @@ class SymReader:
         for addr, (sym, fname) in self._symbol_map.items():
             data.write("0x{:x} {} {}\n".format(addr, fname, sym))
         return data.getvalue()
+
+    def fetch_caprelocs(self):
+        """
+        Populate the caprelocs map
+        """
+        for bin_file in self.loaded:
+            elf_file = ELFFile(open(bin_file, "rb"))
+            # grab __cap_relocs section
+            relocs = elf_file.get_section_by_name("__cap_relocs")
+            if relocs is None:
+                logger.info("No capability relocations for %s", bin_file)
+                continue
+
+            # do we need to relocate the addresses?
+            if elf_file.header["e_type"] == "ET_DYN":
+                map_base = self.map_base(bin_file)
+            else:
+                map_base = 0
+
+            unpacked_relocs = self._capreloc_fmt.iter_unpack(relocs.data())
+            nrelocs = 0
+            for reloc in unpacked_relocs:
+                # caprelocs[target] = [base, offset, length, perms]
+                nrelocs += 1
+                self.caprelocs[map_base + reloc[0]] = reloc[1:]
+            logger.info("Found caprelocs for %s, %d entries",
+                        bin_file, nrelocs)
+
+    def fetch_cap_tables(self):
+        for path in self.loaded:
+            elf = ELFFile(open(path, "rb"))
+            if elf.header["e_type"] == "ET_DYN":
+                map_base = self.map_base(path)
+            else:
+                map_base = 0
+            assert map_base is not None
+            # grab section with given name
+            captable = elf.get_section_by_name(".cap_table")
+            if captable is None:
+                logger.info("No capability table for %s", path)
+                continue
+            sec_start = captable["sh_addr"] + map_base
+            sec_end = sec_start + captable["sh_size"]
+            logger.info("Found capability table %s @ [0x%x, 0x%x]",
+                        path, sec_start, sec_end)
+            self.captable_mappings[sec_start] = {"end": sec_end, "path": path}
+
+    def get_captable(self, addr):
+        index = self.captable_mappings.bisect(addr) - 1
+        if index < 0:
+            return None
+        key = self.captable_mappings.iloc[index]
+        if addr > self.captable_mappings[key]["end"]:
+            return None
+        return self.captable_mappings[key]["path"]
 
     def find_file(self, addr):
         """
@@ -172,6 +243,3 @@ class SymReader:
         key = self._symbol_map.iloc[index]
         sym, fname = self._symbol_map[key]
         return (sym, os.path.basename(fname))
-
-
-            
