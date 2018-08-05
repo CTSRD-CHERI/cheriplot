@@ -38,7 +38,7 @@ from sortedcontainers import SortedDict
 from elftools.elf.elffile import ELFFile
 
 from cheriplot.provenance.visit import MaskBFSVisit, DecorateBFSVisit, BFSGraphVisit
-from cheriplot.provenance.model import CheriNodeOrigin, EdgeOperation, ProvenanceVertexData, CheriCapPerm
+from cheriplot.provenance.model import CheriNodeOrigin, EdgeOperation, ProvenanceVertexData, CheriCapPerm, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class FindLastExecve(BFSGraphVisit):
     description = "Find last execve"
 
     execve_code = 0x3b
+    stc_register = 11
 
     def __init__(self, pgm):
         super().__init__(pgm)
@@ -76,7 +77,7 @@ class FindLastExecve(BFSGraphVisit):
                             self.last_execve, data.t_return)
                 self.execve_call = self.last_execve
                 self.execve_return = data.t_return
-                self.execve_vertex = int(dst)
+                self.execve_vertex = dst
 
     def finalize(self, graph_view):
         # save the execve information in graph properties for later use
@@ -85,12 +86,21 @@ class FindLastExecve(BFSGraphVisit):
         execve_call = self.pgm.graph.new_graph_property(
             "long", self.execve_call)
         execve_return = self.pgm.graph.new_graph_property(
-            "long", self.execve_return)
+            "long", int(self.execve_return))
         self.pgm.graph.gp["execve_vertex"] = execve_vertex
         self.pgm.graph.gp["execve_call"] = execve_call
         self.pgm.graph.gp["execve_return"] = execve_return
         logger.info("Last execve syscall [%d, %d]",
                     self.execve_call, self.execve_return)
+
+        # now grab the stack pointer and annotate it
+        stack_vertex = self.pgm.graph.new_graph_property("int", val=-1)
+        self.pgm.graph.gp["stack_vertex"] = stack_vertex
+        for edge in self.execve_vertex.in_edges():
+            if (self.pgm.edge_operation[edge] == EdgeOperation.RETURN and
+                self.stc_register in self.pgm.edge_regs[edge]):
+                self.pgm.graph.gp["stack_vertex"] = int(edge.source())
+
         return graph_view
 
 
@@ -145,9 +155,351 @@ class FilterNullVertices(MaskBFSVisit):
                 not data.cap.valid):
                 self.vertex_mask[u] = False
 
-class FilterKernelVertices(MaskBFSVisit):
+
+class DecorateKernelCapabilities(DecorateBFSVisit):
     """
-    Generate a graph_view that masks all kernel vertices and NULL capabilities.
+    Find capabilities that originate from the kernel but are
+    visible in registers from userspace when returning from eret.
+
+    Depends on FindLastExecve.
+    """
+
+    description = "Detect kernel-originated capabilities"
+
+    mask_name = "annotated_ksyscall"
+    mask_type = "bool"
+
+    def _get_progress_range(self, graph):
+        return (0, graph.num_edges())
+
+    def examine_edge(self, e):
+        self.progress.advance()
+        if self.pgm.edge_operation[e] == EdgeOperation.SYSCALL:
+            dst = e.target()
+            # We avoid marking any capabilities for which the
+            # RETURN is before the last execve call,
+            # or if the call is before the last execve.
+            if self.pgm.data[dst].t_return:
+                if self.pgm.data[dst].t_return < self.pgm.graph.gp.execve_call:
+                    return
+            elif self.pgm.edge_time[e] < self.pgm.graph.gp.execve_call:
+                return
+            # find related provenance vertices that are visible at return
+            # but were not visible at call.
+            call_visible = set()
+            ret_visible = set()
+            for ein in dst.in_edges():
+                eop = self.pgm.edge_operation[ein]
+                if eop == EdgeOperation.RETURN or eop == EdgeOperation.VISIBLE:
+                    assert self.pgm.layer_prov[ein.source()]
+                    data = self.pgm.data[ein.source()]
+                    # check that source is kernel-originated and is not
+                    # in a reserved register.
+                    # The max index is set to the index of chwr_userlocal
+                    # in the register set.
+                    if (any(map(lambda x: x < 34, self.pgm.edge_regs[ein])) and
+                        data.is_kernel):
+                        if eop == EdgeOperation.VISIBLE:
+                            call_visible.add(ein.source())
+                        else:
+                            ret_visible.add(ein.source())
+            new_visible = ret_visible.difference(call_visible)
+            for v in new_visible:
+                self.vertex_mask[v] = True
+
+
+class DecorateAccessedInUserspace(DecorateBFSVisit):
+    """
+    Detect capabilities that are accessed from code in user space.
+    If the first userspace operation on a vertex is to load it
+    from memory (and the vertex was created in the kernel),
+    then this is marked korigin.
+
+    Depends on FindLastExecve, DecorateKernelCapabilities.
+    """
+
+    description = "Detect kernel-originated capabilities that are loaded from userspace"
+
+    mask_name = "annotated_korigin"
+    mask_type = "bool"
+
+    def examine_vertex(self, v):
+        self.progress.advance()
+        if not self.pgm.layer_prov[v]:
+            return
+        data = self.pgm.data[v]
+        if data.is_kernel:
+            # find USR markers for load/stores that happen after the return from execve
+            usr_mask = (
+                ((data.event_tbl["type"] & EventType.USR) != 0) &
+                (data.event_tbl["time"] > self.pgm.graph.gp.execve_return))
+            for index, row in data.event_tbl[usr_mask].iterrows():
+                evt_type = EventType(row["type"])
+                if (evt_type & EventType.LOAD) != 0:
+                    # we found a load as first operation, mark the vertex
+                    self.vertex_mask[v] = True
+                    return
+                if (evt_type & EventType.STORE) != 0:
+                    # we found a store as first operation, so we must have
+                    # already had access to this capability, assert that it
+                    # is ksyscall
+                    assert self.pgm.graph.vp.annotated_ksyscall[v]
+                    # if we found a store, successive loads do not make this korigin
+                    # so return
+                    return
+
+
+class DecorateCapRelocs(DecorateBFSVisit):
+    """
+    Find pointers that are stored to targets of capability relocations.
+    This finds also capability relocations that are not in the capability
+    table.
+
+    Annotate vertices that are stored to an address identified as a
+    capability relocation target as capreloc.
+    Annotate vertices that are used to store a capability to
+    a capability relocation target as caprelocptr.
+    """
+
+    description = "Find capability relocations"
+
+    mask_name = "annotated_capreloc"
+    mask_type = "bool"
+
+    def __init__(self, pgm, symreader):
+        super().__init__(pgm)
+        self.symreader = symreader
+
+        self.caprelocptr = self.pgm.graph.new_vertex_property("bool", val=False)
+        self.pgm.graph.vp["annotated_caprelocptr"] = self.caprelocptr
+
+        symreader.fetch_caprelocs()
+
+    def examine_vertex(self, v):
+        self.progress.advance()
+        if not self.pgm.layer_prov[v]:
+            return
+        data = self.pgm.data[v]
+
+        # has this vertex ever been stored to a capreloc target?
+        mask = ((data.event_tbl["type"] & EventType.STORE) != 0)
+        for idx, evt in data.event_tbl[mask].iterrows():
+            if evt["addr"] in self.symreader.caprelocs:
+                self.vertex_mask[v] = True
+                # we just need to see a store for it to
+                # be a capability relocation
+                break
+
+        # has this vertex ever stored something to a capreloc target?
+        mask = ((data.event_tbl["type"] &
+                 (EventType.DEREF_STORE | EventType.DEREF_IS_CAP)) != 0)
+        for idx, evt in data.event_tbl[mask].iterrows():
+            if evt["addr"] in self.symreader.caprelocs:
+                self.caprelocptr[v] = True
+                # we just need to see a store for it to
+                # be a capability relocation
+                break
+
+
+class DecorateGlobalPointers(DecorateBFSVisit):
+    """
+    Find pointers that are loaded or stored in a cap table.
+    This also marks the descendants of these pointers.
+    """
+
+    description = "Find pointers to global objects"
+
+    mask_name = "annotated_globptr"
+    mask_type = "bool"
+
+    def __init__(self, pgm, symreader):
+        super().__init__(pgm)
+
+        self.symreader = symreader
+
+        self.captblptr = self.pgm.graph.new_vertex_property("bool", val=False)
+        self.pgm.graph.vp["annotated_captblptr"] = self.captblptr
+
+        self.globderived = self.pgm.graph.new_vertex_property("bool", val=False)
+        self.pgm.graph.vp["annotated_globderived"] = self.globderived
+
+        self.symreader.fetch_cap_tables()
+
+    def _get_captable(self, addr):
+        return self.symreader.get_captable(addr)
+
+    def examine_vertex(self, v):
+        self.progress.advance()
+        if not self.pgm.layer_prov[v]:
+            return
+        data = self.pgm.data[v]
+
+        # has this vertex ever been stored/loaded in the cap table?
+        mask = (((data.event_tbl["type"] & EventType.LOAD) != 0) |
+                ((data.event_tbl["type"] & EventType.STORE) != 0))
+        for idx, evt in data.event_tbl[mask].iterrows():
+            if self._get_captable(evt["addr"]) is not None:
+                self.vertex_mask[v] = True
+                # we just need to see one dereference for it
+                # to be a global ptr
+                break
+
+        # if this vertex loads something from the capability table,
+        # this is used as global pointer, so mark it captblptr
+        load_type = (EventType.DEREF_LOAD |
+                     EventType.DEREF_IS_CAP)
+        mask_type = ((data.event_tbl["type"] & load_type) != 0)
+        for idx, evt in data.event_tbl[mask].iterrows():
+            if self._get_captable(evt["addr"]) is not None:
+                self.captblptr[v] = True
+                # we just need to see one dereference for it
+                # to be a pointer to captable
+                break
+
+    def examine_edge(self, e):
+        # check if the dst is global-derived
+        src = e.source()
+        tgt = e.target()
+        if self.pgm.layer_prov[src] and self.pgm.layer_prov[tgt]:
+            if self.vertex_mask[src] or self.globderived[src]:
+                self.globderived[tgt] = True
+
+
+class DecorateStackCapabilities(DecorateBFSVisit):
+    """
+    Mark capabilities that point to the stack.
+    This marks all successors of the stack capability which is identified
+    as c11 from the return from execve.
+
+    Depends on FindLastExecve
+    """
+
+    description = "Mark capabilities derived from the user stack "\
+                  "capability in a new vertex property"
+
+    mask_name = "annotated_usr_stack"
+    mask_type = "bool"
+
+    def _get_progress_range(self, graph):
+        return (0, graph.num_edges())
+
+    def examine_edge(self, e):
+        self.progress.advance()
+        src = e.source()
+        dst = e.target()
+        if int(src) == self.pgm.graph.gp.stack_vertex:
+            self.vertex_mask[src] = True
+        if self.pgm.layer_prov[src] and self.pgm.layer_prov[dst]:
+            logger.debug("Edge %s -> %s", self.pgm.data[src], self.pgm.data[dst])
+            if self.vertex_mask[src]:
+                self.vertex_mask[dst] = True
+
+
+class DecorateStackAll(DecorateBFSVisit):
+    """
+    Mark capabilities that point to the stack.
+    This marks all capabilities that land in the stack capability but are
+    not necessarily successors of the stack pointer.
+    This includes kernel pointers to the user stack region.
+    """
+
+    description = "Mark capabilities to stack objects in a new vertex property"
+
+    mask_name = "annotated_stack"
+    mask_type = "bool"
+
+    def __init__(self, pgm, stack_begin, stack_end):
+        super().__init__(pgm)
+
+        self.stack_begin = stack_begin
+        self.stack_end = stack_end
+
+    def examine_vertex(self, v):
+        self.progress.advance()
+        if not self.pgm.layer_prov[v]:
+            return
+        data = self.pgm.data[v]
+        type_mask = ((data.event_tbl["type"] &
+                      (EventType.DEREF_LOAD | EventType.DEREF_STORE)) != 0)
+        addr_mask = ((data.event_tbl["addr"] >= self.stack_begin) &
+                     (data.event_tbl["addr"] <= self.stack_end))
+        # check if there are any dereferences in the stack
+        self.vertex_mask[v] = (type_mask & addr_mask).any()
+
+
+class DecorateMalloc(DecorateBFSVisit):
+    """
+    Mark capabilities that are returned from malloc or are descendants
+    descendants of those.
+    """
+
+    description = "Mark capabilities to malloc-returned objects"
+    mask_name = "annotated_malloc"
+    mask_type = "bool"
+
+    abi_retcap = 3
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+
+    def examine_vertex(self, v):
+        self.progress.advance()
+        if self.pgm.layer_prov[v]:
+            # find call vertices that link to this
+            for eout in v.out_edges():
+                dst = eout.target()
+                if (self.pgm.layer_call[dst] and
+                    self.pgm.edge_operation[eout] == EdgeOperation.RETURN and
+                    self.abi_retcap in self.pgm.edge_regs[eout]):
+                    data = self.pgm.data[dst]
+                    if data.symbol and (
+                            data.symbol == "__malloc" or
+                            data.symbol == "__calloc" or
+                            data.symbol == "__realloc" or
+                            data.symbol == "__je_malloc" or
+                            data.symbol == "__je_calloc" or
+                            data.symbol == "malloc" or
+                            data.symbol == "calloc" or
+                            data.symbol == "realloc"):
+                        self.vertex_mask[v] = True
+
+    def examine_edge(self, e):
+        src = e.source()
+        dst = e.target()
+        if self.pgm.layer_prov[src] and self.pgm.layer_prov[dst]:
+            logger.debug("Edge %s -> %s", self.pgm.data[src], self.pgm.data[dst])
+            if self.vertex_mask[src]:
+                self.vertex_mask[dst] = True
+
+
+class DecorateExecutable(DecorateBFSVisit):
+    """
+    Mark executable capabilities, non-executable capabilities are
+    implicitly marked as well since annotated_exec is set to False
+    for those.
+    """
+
+    description = "Mark executable capabilities"
+    mask_name = "annotated_exec"
+    mask_type = "bool"
+
+    def __init__(self, pgm):
+        super().__init__(pgm)
+
+    def examine_vertex(self, v):
+        self.progress.advance()
+        if self.pgm.layer_prov[v]:
+            data = self.pgm.data[v]
+            if data.cap.has_perm(CheriCapPerm.EXEC):
+                self.vertex_mask[v] = True
+
+
+class FilterUnusedKernelVertices(MaskBFSVisit):
+    """
+    Generate a graph_view that masks all kernel vertices that
+    are not used directly by userspace.
+
+    Depends on DecorateKernelCapabilities, DecorateAccessedInUserspace
     """
 
     description = "Mask Kernel capabilities"
@@ -156,88 +508,13 @@ class FilterKernelVertices(MaskBFSVisit):
         self.progress.advance()
         if self.pgm.layer_prov[u]:
             data = self.pgm.data[u]
-            if data.pc != 0 and data.is_kernel:
+            if (data.is_kernel and
+                not self.pgm.graph.vp.annotated_korigin[u] and
+                not self.pgm.graph.vp.annotated_ksyscall[u]):
                 self.vertex_mask[u] = False
 
 
-class FilterStackVertices(MaskBFSVisit):
-    """
-    Mask capabilities that point to the stack.
-    """
-
-    description = "Mask capabilities to stack objects"
-
-    def __init__(self, pgm, stack_begin, stack_end):
-        super().__init__(pgm)
-
-        self.stack_begin = stack_begin
-        self.stack_end = stack_end
-
-    def examine_vertex(self, u):
-        self.progress.advance()
-        if not self.pgm.layer_prov[u]:
-            return
-        data = self.pgm.data[u]
-        if data.cap.base >= self.stack_begin and data.cap.bound <= self.stack_end:
-            self.vertex_mask[u] = False
-
-
-class FilterCfromptr(MaskBFSVisit):
-    """
-    Transform that removes cfromptr vertices that are never stored
-    in memory nor used for dereferencing.
-    """
-
-    description = "Filter temporary cfromptr"
-
-    def examine_vertex(self, u):
-        self.progress.advance()
-        if not self.pgm.layer_prov[u]:
-            return
-        data = self.pgm.data[u]
-        if data.origin == CheriNodeOrigin.FROMPTR:
-            self.vertex_mask[u] = False
-            # if (data.origin == CheriNodeOrigin.FROMPTR and
-            #     len(data.address) == 0 and
-            #     len(data.deref["load"]) == 0 and
-            #     len(data.deref["load"]) == 0):
-            #     # remove cfromptr that are never stored or used in
-            #     # a dereference
-            #     self.vertex_mask[u] = True
-
-
-class FilterCandperm(MaskBFSVisit):
-    """
-    Transform that removes cfromptr vertices that are never stored
-    in memory nor used for dereferencing.
-    """
-
-    description = "Filter candperm derived vertices"
-
-    def examine_vertex(self, u):
-        self.progress.advance()
-        if not self.pgm.layer_prov[u]:
-            return
-        data = self.pgm.data[u]
-        if data.origin == CheriNodeOrigin.ANDPERM:
-            self.vertex_mask[u] = False
-
-
-class FilterRootVertices(MaskBFSVisit):
-    """
-    Transform that removes root vertices.
-    """
-
-    description = "Filter root vertices"
-
-    def examine_vertex(self, u):
-        self.progress.advance()
-        if not self.pgm.layer_prov[u]:
-            return
-        data = self.pgm.data[u]
-        if (data.origin == CheriNodeOrigin.ROOT or
-            data.origin == CheriNodeOrigin.INITIAL_ROOT):
-            self.vertex_mask[u] = False
+################################ DEPRECATED
 
 
 class DetectStackCapability(BFSGraphVisit):
@@ -284,6 +561,7 @@ class DetectStackCapability(BFSGraphVisit):
         return False
 
     def examine_vertex(self, v):
+        self.progress.advance()
         if self.pgm.layer_prov[v]:
             execve_start = self.pgm.graph.gp.execve_call
             execve_end = self.pgm.graph.gp.execve_return
@@ -295,124 +573,32 @@ class DetectStackCapability(BFSGraphVisit):
                 self.pgm.graph.gp.stack_vertex = int(v)
 
 
-class DecorateKernelCapabilities(DecorateBFSVisit):
+class DecorateStackAll_Old(DecorateBFSVisit):
     """
-    Find capabilities that originate from the kernel but are
-    visible in registers from userspace when returning from eret.
+    Mark capabilities that point to the stack.
+    This marks all capabilities that land in the stack capability but are
+    not necessarily successors of the stack pointer.
+    This includes kernel pointers to the user stack region.
     """
 
-    description = "Detect kernel-originated capabilities"
+    description = "Mark capabilities to stack objects in a new vertex property"
 
-    mask_name = "annotated_korigin"
+    mask_name = "annotated_stack"
     mask_type = "bool"
 
-    def __init__(self, pgm):
+    def __init__(self, pgm, stack_begin, stack_end):
         super().__init__(pgm)
 
-    def examine_edge(self, e):
-        pass
-
-
-class DecorateAccessdInUserspace(DecorateBFSVisit):
-    """
-    Detect capabilities that are accessed from code in user space.
-    XXX-AM: this needs more support from the tracing and more thinkering
-    because we want to see whether the capability ever floats to userspace,
-    meaning it is used or even visible from there.
-    """
-
-    description = ""
-
-
-class DecorateGlobalPointers(DecorateBFSVisit):
-    """
-    Find pointers that are loaded or stored in a cap table.
-    This also marks the descendants of these pointers.
-    """
-
-    description = "Find pointers to global objects"
-
-    mask_name = "annotated_globptr"
-    mask_type = "bool"
-
-    def __init__(self, pgm, symreader):
-        super().__init__(pgm)
-
-        self.symreader = symreader
-
-        self._captable_mappings = SortedDict()
-        """Hold capability table mappings as start => (end, file)"""
-
-        self.captblptr = self.pgm.graph.new_vertex_property("bool", val=False)
-        self.pgm.graph.vp["annotated_captblptr"] = self.captblptr
-
-        self.globderived = self.pgm.graph.new_vertex_property("bool", val=False)
-        self.pgm.graph.vp["annotated_globderived"] = self.globderived
-
-        self._fetch_cap_tables()
-
-    def _fetch_cap_tables(self):
-        for path in self.symreader.loaded:
-            elf = ELFFile(open(path, "rb"))
-            if elf.header["e_type"] == "ET_DYN":
-                map_base = self.symreader.map_base(path)
-            else:
-                map_base = 0
-            # grab section with given name
-            captable = elf.get_section_by_name(".cap_table")
-            if captable is None:
-                logger.info("No capability table for %s", path)
-                continue
-            sec_start = captable["sh_addr"] + map_base
-            sec_end = sec_start + captable["sh_size"]
-            logger.info("Found capability table %s @ [0x%x, 0x%x]",
-                        path, sec_start, sec_end)
-            self._captable_mappings[sec_start] = {"end": sec_end, "path": path}
-
-    def _get_captable(self, addr):
-        index = self._captable_mappings.bisect(addr) - 1
-        if index < 0:
-            return None
-        key = self._captable_mappings.iloc[index]
-        if addr > self._captable_mappings[key]["end"]:
-            return None
-        return self._captable_mappings[key]["path"]
+        self.stack_begin = stack_begin
+        self.stack_end = stack_end
 
     def examine_vertex(self, v):
-        self.progress.advance()
         if not self.pgm.layer_prov[v]:
             return
         data = self.pgm.data[v]
-        # has this vertex ever been stored/loaded in the cap table?
-        mask = ((data.event_tbl["type"] == ProvenanceVertexData.EventType.LOAD) |
-                (data.event_tbl["type"] == ProvenanceVertexData.EventType.STORE))
-        for idx, evt in data.event_tbl[mask].iterrows():
-            if self._get_captable(evt["addr"]) is not None:
-                self.vertex_mask[v] = True
-                # we just need to see one dereference for it
-                # to be a global ptr
-                break
-        # has this vertex ever loaded/stored something in the cap table?
-        load_type = (ProvenanceVertexData.EventType.DEREF_LOAD |
-                     ProvenanceVertexData.EventType.DEREF_IS_CAP)
-        store_type = (ProvenanceVertexData.EventType.DEREF_STORE |
-                      ProvenanceVertexData.EventType.DEREF_IS_CAP)
-        mask = ((data.event_tbl["type"] == load_type) |
-                (data.event_tbl["type"] == store_type))
-        for idx, evt in data.event_tbl[mask].iterrows():
-            if self._get_captable(evt["addr"]) is not None:
-                self.captblptr[v] = True
-                # we just need to see one dereference for it
-                # to be a pointer to captable
-                break
-
-    def examine_edge(self, e):
-        # check if the dst is global-derived
-        src = e.source()
-        tgt = e.target()
-        if self.pgm.layer_prov[src] and self.pgm.layer_prov[tgt]:
-            if self.vertex_mask[src] or self.globderived[src]:
-                self.globderived[tgt] = True
+        if (data.cap.base >= self.stack_begin and
+            data.cap.bound <= self.stack_end):
+            self.vertex_mask[v] = True
 
 
 class DecorateStackStrict(DecorateBFSVisit):
@@ -482,18 +668,12 @@ class DecorateStackStrict(DecorateBFSVisit):
                 self.vertex_mask[dst] = True
 
 
-class DecorateStackAll(DecorateBFSVisit):
+class FilterStackVertices(MaskBFSVisit):
     """
-    Mark capabilities that point to the stack.
-    This marks all capabilities that land in the stack capability but are
-    not necessarily successors of the stack pointer.
-    This includes kernel pointers to the user stack region.
+    Mask capabilities that point to the stack.
     """
 
-    description = "Mark capabilities to stack objects in a new vertex property"
-
-    mask_name = "annotated_stack"
-    mask_type = "bool"
+    description = "Mask capabilities to stack objects"
 
     def __init__(self, pgm, stack_begin, stack_end):
         super().__init__(pgm)
@@ -501,75 +681,86 @@ class DecorateStackAll(DecorateBFSVisit):
         self.stack_begin = stack_begin
         self.stack_end = stack_end
 
-    def examine_vertex(self, v):
-        if not self.pgm.layer_prov[v]:
+    def examine_vertex(self, u):
+        self.progress.advance()
+        if not self.pgm.layer_prov[u]:
             return
-        data = self.pgm.data[v]
-        if (data.cap.base >= self.stack_begin and
-            data.cap.bound <= self.stack_end):
-            self.vertex_mask[v] = True
+        data = self.pgm.data[u]
+        if data.cap.base >= self.stack_begin and data.cap.bound <= self.stack_end:
+            self.vertex_mask[u] = False
 
 
-class DecorateMalloc(DecorateBFSVisit):
+class FilterKernelVertices(MaskBFSVisit):
     """
-    Mark capabilities that are returned from malloc or are descendants
-    descendants of those.
+    Generate a graph_view that masks all kernel vertices and NULL capabilities.
     """
 
-    description = "Mark capabilities to malloc-returned objects"
-    mask_name = "annotated_malloc"
-    mask_type = "bool"
+    description = "Mask Kernel capabilities"
 
-    def __init__(self, pgm):
-        super().__init__(pgm)
-
-    def examine_vertex(self, v):
+    def examine_vertex(self, u):
         self.progress.advance()
-        if self.pgm.layer_prov[v]:
-            # find call vertices that link to this
-            for eout in v.out_edges():
-                dst = eout.target()
-                if (self.pgm.layer_call[dst] and
-                    self.pgm.edge_operation[eout] == EdgeOperation.RETURN):
-                    data = self.pgm.data[dst]
-                    if data.symbol and (
-                            data.symbol == "__malloc" or
-                            data.symbol == "__calloc" or
-                            data.symbol == "__je_malloc" or
-                            data.symbol == "__je_calloc" or
-                            data.symbol == "malloc" or
-                            data.symbol == "calloc"):
-                        self.vertex_mask[v] = True
-
-    def examine_edge(self, e):
-        src = e.source()
-        dst = e.target()
-        if self.pgm.layer_prov[src] and self.pgm.layer_prov[dst]:
-            logger.debug("Edge %s -> %s", self.pgm.data[src], self.pgm.data[dst])
-            if self.vertex_mask[src]:
-                self.vertex_mask[dst] = True
+        if self.pgm.layer_prov[u]:
+            data = self.pgm.data[u]
+            if data.pc != 0 and data.is_kernel:
+                self.vertex_mask[u] = False
 
 
-class DecorateExecutable(DecorateBFSVisit):
+class FilterCfromptr(MaskBFSVisit):
     """
-    Mark executable capabilities, non-executable capabilities are
-    implicitly marked as well since annotated_exec is set to False
-    for those.
+    Transform that removes cfromptr vertices that are never stored
+    in memory nor used for dereferencing.
     """
 
-    description = "Mark executable capabilities"
-    mask_name = "annotated_exec"
-    mask_type = "bool"
+    description = "Filter temporary cfromptr"
 
-    def __init__(self, pgm):
-        super().__init__(pgm)
-
-    def examine_vertex(self, v):
+    def examine_vertex(self, u):
         self.progress.advance()
-        if self.pgm.layer_prov[v]:
-            data = self.pgm.data[v]
-            if data.cap.has_perm(CheriCapPerm.EXEC):
-                self.vertex_mask[v] = True
+        if not self.pgm.layer_prov[u]:
+            return
+        data = self.pgm.data[u]
+        if data.origin == CheriNodeOrigin.FROMPTR:
+            self.vertex_mask[u] = False
+            # if (data.origin == CheriNodeOrigin.FROMPTR and
+            #     len(data.address) == 0 and
+            #     len(data.deref["load"]) == 0 and
+            #     len(data.deref["load"]) == 0):
+            #     # remove cfromptr that are never stored or used in
+            #     # a dereference
+            #     self.vertex_mask[u] = True
+
+
+class FilterCandperm(MaskBFSVisit):
+    """
+    Transform that removes cfromptr vertices that are never stored
+    in memory nor used for dereferencing.
+    """
+
+    description = "Filter candperm derived vertices"
+
+    def examine_vertex(self, u):
+        self.progress.advance()
+        if not self.pgm.layer_prov[u]:
+            return
+        data = self.pgm.data[u]
+        if data.origin == CheriNodeOrigin.ANDPERM:
+            self.vertex_mask[u] = False
+
+
+class FilterRootVertices(MaskBFSVisit):
+    """
+    Transform that removes root vertices.
+    """
+
+    description = "Filter root vertices"
+
+    def examine_vertex(self, u):
+        self.progress.advance()
+        if not self.pgm.layer_prov[u]:
+            return
+        data = self.pgm.data[u]
+        if (data.origin == CheriNodeOrigin.ROOT or
+            data.origin == CheriNodeOrigin.INITIAL_ROOT):
+            self.vertex_mask[u] = False
 
 
 class DecorateHeap(DecorateBFSVisit):

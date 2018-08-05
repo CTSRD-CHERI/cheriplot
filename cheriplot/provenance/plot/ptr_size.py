@@ -30,6 +30,9 @@ import pandas as pd
 import logging
 import os
 
+import matplotlib.colors as colors
+import matplotlib.cm as colormap
+
 from scipy import stats
 from matplotlib import pyplot as plt
 from matplotlib.patches import Patch
@@ -370,9 +373,12 @@ class PtrBoundCdf:
                 size_pdf = size_freq[:,1] / len(ptr_sizes)
             else:
                 size_pdf = size_freq[:,1]
-            y = np.concatenate(([0, 0], np.cumsum(size_pdf)))
-            x = np.concatenate(([0, size_freq[0,0]], size_freq[:,0]))
-            self.size_cdf = np.column_stack((x,y))
+            if len(size_freq):
+                y = np.concatenate(([0, 0], np.cumsum(size_pdf)))
+                x = np.concatenate(([0, size_freq[0,0]], size_freq[:,0]))
+                self.size_cdf = np.column_stack((x,y))
+            else:
+                self.size_cdf = np.zeros((1,2))
 
 
 class BaselineCdf:
@@ -404,7 +410,7 @@ class CdfPatchBuilder(PatchBuilder):
         self.cdf = []
         """Set of cdf to draw"""
 
-        self.colormap = None
+        self.colors = []
         """Colors to use for the lines"""
 
         self.absolute = absolute
@@ -413,27 +419,34 @@ class CdfPatchBuilder(PatchBuilder):
         self._bbox = Bbox.from_extents(1, 0, 0, 1)
         """Bbox of the plot"""
 
+        self.norm_axes = None
+        """Optionally, twin axes with the normalized scale, only if absolute"""
+
     def inspect(self, cdf):
         self.cdf.append(cdf)
         self._bbox.x1 = max(self._bbox.xmax, max(cdf.size_cdf[:,0]))
         self._bbox.y1 = max(self._bbox.ymax, max(cdf.size_cdf[:,1]))
 
     def get_patches(self, axes):
-        self.colormap = [plt.cm.Dark2(i) for i in
-                         np.linspace(0, 0.9, len(self.cdf))]
-        for cdf, color in zip(self.cdf, self.colormap):
-            axes.plot(cdf.size_cdf[:,0], cdf.size_cdf[:,1], color=color)
+        c_map = plt.get_cmap("tab20")
+        c_norm = colors.Normalize(vmin=0, vmax=len(self.cdf))
+        scalar_map = colormap.ScalarMappable(norm=c_norm, cmap=c_map)
+        for idx, cdf in enumerate(self.cdf):
+            color = scalar_map.to_rgba(idx)
+            self.colors.append(color)
+            axes.plot(cdf.size_cdf[:,0], cdf.size_cdf[:,1], color=color, lw=2.0)
 
     def get_legend(self, handles):
         handles = []
-        for cdf, color in zip(self.cdf, self.colormap):
+        for cdf, color in zip(self.cdf, self.colors):
             if cdf.num_ignored >= 0:
                 label = "{} ({:d})".format(cdf.name, cdf.num_ignored)
             elif cdf.slice_name is not None:
                 label = "{}-{}".format(cdf.name, cdf.slice_name)
             else:
                 label = "{}".format(cdf.name)
-            handle = Line2D([], [], color=color, label=label)
+
+            handle = Patch(color=color, label=label)
             handles.append(handle)
         return handles
 
@@ -441,7 +454,7 @@ class CdfPatchBuilder(PatchBuilder):
         return self._bbox
 
 
-class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
+class PtrSizeCdfDriver(TaskDriver, ExternalLegendTopPlotBuilder):
 
     title = "CDF of the size of capabilities created"
     x_label = "Size"
@@ -463,7 +476,8 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
     split = Option(
         default=[],
         action="append",
-        choices=("stack", "malloc", "exec", "glob"),
+        choices=("stack", "stack-all", "malloc", "exec",
+                 "glob", "kern", "caprelocs", "caprelocs-only"),
         help="Separate the given vertices in a separate CDF")
 
 
@@ -475,8 +489,22 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
         self.vmmap = vmmap
         """VMmap model of the process memory mapping."""
 
+        self.datasets = []
+
         if self.config.publish:
             self._style["font"] = FontProperties(size=25)
+
+        if self.config.absolute:
+            self.y_label = "Number of capabilities"
+
+        self.title += " in {}".format(",".join([pgm.name for pgm in self.pgm_list]))
+
+    def _get_title_kwargs(self):
+        kw = super()._get_title_kwargs()
+        if self.config.publish:
+            # suppress the title so we have more space
+            kw.update({"visible": False})
+        return kw
 
     def _get_savefig_kwargs(self):
         kw = super()._get_figure_kwargs()
@@ -485,7 +513,7 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
 
     def _get_axes_rect(self):
         if self.config.publish:
-            return [0.1, 0.15, 0.85, 0.8]
+            return [0.125, 0.08, 0.85, 0.8]
         return super()._get_axes_rect()
 
     def _get_legend_kwargs(self):
@@ -497,78 +525,73 @@ class PtrSizeCdfDriver(TaskDriver, BasePlotBuilder):
         super().make_plot()
         self.ax.set_xscale("log", basex=2)
 
-    def run(self):
-        datasets = []
-        # grab the stack location in the addrspace
-        min_addr = 2**64
-        heap_entry = None
-        stack_vm_entry = None
-        for vme in self.vmmap:
-            if vme.end < min_addr:
-                min_addr = vme.end
-                heap_entry = vme
-            if vme.grows_down:
-                stack_vm_entry = vme
-        
-        for idx, pgm in enumerate(self.pgm_list):
+    def _make_cdf_dataset(self, pgm, vfilt, setname):
+        if vfilt is not None:
+            view = GraphView(pgm.graph, vfilt=vfilt)
+            cdf = PtrBoundCdf(pgm, self.config.absolute, graph=view)
+        else:
             cdf = PtrBoundCdf(pgm, self.config.absolute)
-            # prevent the ignored count in legend for these
-            cdf.num_ignored = -1
-            cdf.name = pgm.name
-            cdf.build_cdf()
-            datasets.append(cdf)
+        cdf.num_ignored = -1
+        cdf.name = setname
+        cdf.slice_name = None
+        cdf.build_cdf()
+        self.datasets.append(cdf)
+
+    def _get_legend_kwargs(self):
+        """
+        Change layout of the number of colums in the legend
+        """
+        kw = super()._get_legend_kwargs()
+        kw.update({
+            "bbox_to_anchor": (-0.125, 1.009, 1.125, 0.102),
+            "ncol": 6,
+            "labelspacing": 0.5,
+            "borderpad": 0.1
+        })
+        return kw
+
+    def run(self):
+        for idx, pgm in enumerate(self.pgm_list):
+            self._make_cdf_dataset(pgm, None, "all")
 
             for split_set in self.config.split:
                 if split_set == "stack":
-                    view = GraphView(pgm.graph, vfilt=pgm.graph.vp.annotated_stack)
+                    self._make_cdf_dataset(pgm, pgm.graph.vp.annotated_usr_stack,
+                                           split_set)
+                elif split_set == "stack-all":
+                    self._make_cdf_dataset(pgm, pgm.graph.vp.annotated_usr_stack,
+                                           "stack")
+                    self._make_cdf_dataset(pgm, pgm.graph.vp.annotated_stack,
+                                           "stack-deref")
                 elif split_set == "malloc":
-                    view = GraphView(pgm.graph, vfilt=pgm.graph.vp.annotated_malloc)
+                    self._make_cdf_dataset(pgm, pgm.graph.vp.annotated_malloc,
+                                           split_set)
                 elif split_set == "exec":
-                    view = GraphView(pgm.graph, vfilt=pgm.graph.vp.annotated_exec)
+                    self._make_cdf_dataset(pgm, pgm.graph.vp.annotated_exec,
+                                           split_set)
+                elif split_set == "caprelocs":
+                    self._make_cdf_dataset(pgm, pgm.graph.vp.annotated_capreloc,
+                                           "relocs")
+                elif split_set == "caprelocs-only":
+                    difference = pgm.graph.new_vertex_property("bool")
+                    difference.a = (pgm.graph.vp.annotated_capreloc.a &
+                                    ~pgm.graph.vp.annotated_globptr.a)                    
+                    self._make_cdf_dataset(pgm, difference, "relocs-only")
                 elif split_set == "glob":
                     # any global pointers or pointers derived from global pointers
                     combined = pgm.graph.new_vertex_property("bool")
                     combined.a = (pgm.graph.vp.annotated_globptr.a |
                                   pgm.graph.vp.annotated_globderived.a)
-                    view = GraphView(pgm.graph, vfilt=combined)
+                    self._make_cdf_dataset(pgm, combined, split_set)
+                    self._make_cdf_dataset(pgm, pgm.graph.vp.annotated_captblptr, "captbl")
+                elif split_set == "kern":
+                    # kernel originated and syscall originated vertices
+                    self._make_cdf_dataset(pgm, pgm.graph.vp.annotated_ksyscall, "syscall")
+                    self._make_cdf_dataset(pgm, pgm.graph.vp.annotated_korigin, "kern")
                 else:
                     logger.error("Invalid --split option value %s", split_set)
                     raise ValueError("Invalid --split option value")
-                cdf = PtrBoundCdf(pgm, self.config.absolute, graph=view)
-                cdf.num_ignored = -1
-                cdf.name = pgm.name
-                cdf.slice_name = split_set
-                cdf.build_cdf()
-                datasets.append(cdf)
-
-        # handle the pretend filters XXX-AM: these are deprecated and should be removed
-        for filter_set in self.config.filters:
-            pgm = self.pgm_list[0]
-            cdf = PtrBoundCdf(pgm, self.config.absolute)
-            cdf.name = ""
-            if "stack" in filter_set:
-                if stack_vm_entry is None:
-                    msg = "Need to specify a memory map to find the stack size."
-                    logger.error(msg)
-                    raise RuntimeError(msg)
-                cdf.pretend_mask(pgm.graph.vp.in_stack, False,
-                                stack_vm_entry.start,
-                                stack_vm_entry.end)
-                cdf.name += " no-stack"
-            if "mmap" in filter_set:
-                cdf.pretend_mask(pgm.graph.vp.from_mmap, -1)
-                cdf.name += " no-mmap"
-            # if "malloc" in filter_set:
-            #     cdf.pretend_mask(pgm.graph.vp.from_malloc, -1)
-            #     cdf.name += " no-malloc"
-            if "malloc" in filter_set:
-                cdf.pretend_mask(pgm.graph.vp.in_jemalloc, False,
-                                heap_entry.start,
-                                heap_entry.end)
-                cdf.name += " no-malloc-all"
-            cdf.build_cdf()
-            datasets.append(cdf)
 
         self.register_patch_builder(
-            datasets, CdfPatchBuilder(self.config.absolute))
+            self.datasets, CdfPatchBuilder(self.config.absolute))
         self.process(out_file=self.config.outfile)
