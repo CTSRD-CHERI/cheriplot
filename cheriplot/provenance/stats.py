@@ -33,7 +33,7 @@ from functools import reduce
 from cheriplot.core import NestedConfig, TaskDriver, ProgressTimer, CumulativeTimer
 from cheriplot.vmmap import VMMapFileParser
 from cheriplot.provenance.model import (
-    CheriNodeOrigin, ProvenanceVertexData, EdgeOperation)
+    CheriNodeOrigin, ProvenanceVertexData, EdgeOperation, EventType)
 from cheriplot.provenance.visit import BFSGraphVisit
 
 logger = logging.getLogger(__name__)
@@ -122,14 +122,14 @@ class MmapStatsVisitor(BFSGraphVisit):
 
     def _get_deref_stats(self, events):
         n_deref_load = (
-            (events["type"] & ProvenanceVertexData.EventType.DEREF_LOAD) != 0).sum()
+            (events["type"] & EventType.DEREF_LOAD) != 0).sum()
         n_deref_store = (
-            (events["type"] & ProvenanceVertexData.EventType.DEREF_STORE) != 0).sum()
+            (events["type"] & EventType.DEREF_STORE) != 0).sum()
         self.stats["deref_load"] += n_deref_load
         self.stats["deref_store"] += n_deref_store
 
     def _get_memop_stats(self, events):
-        mem_store = (events["type"] & ProvenanceVertexData.EventType.STORE) != 0
+        mem_store = (events["type"] & EventType.STORE) != 0
         n_store = mem_store.sum()
         n_store_unq = len(events[mem_store]["addr"].unique())
 
@@ -140,7 +140,7 @@ class MmapStatsVisitor(BFSGraphVisit):
         stack_base = self.graph.gp.stack.base + self.graph.gp.stack.offset
         stack_bound = self.graph.gp.stack.bound
         n_args_stack_load = (
-            ((events["type"] & ProvenanceVertexData.EventType.LOAD) != 0) &
+            ((events["type"] & EventType.LOAD) != 0) &
             (events["addr"] >= stack_base) &
             (events["addr"] <= stack_bound)).sum()
         if n_args_stack_load > 0:
