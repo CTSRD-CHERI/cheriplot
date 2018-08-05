@@ -68,17 +68,28 @@ class GraphParserDriver(BaseTraceTaskDriver):
     display_name = Option(
         default=None,
         help="User-readable name of the dataset")
+    cheri_cap_size = Option(
+        default="256",
+        choices=("128", "256"),
+        help="Cheri capability size")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         default_outfile = "{}_graph.gt".format(self.config.trace)
         outfile = self.config.outfile or default_outfile
+        if self.config.cheri_cap_size == "128":
+            cap_size = 16
+        elif self.config.cheri_cap_size == "256":
+            cap_size = 32
+        else:
+            raise ValueError("Invalid capability size {}".format(self.config.cheri_cap_size))
 
         self.pgm = ProvenanceGraphManager(outfile)
         """Graph manager."""
 
         self._parser = CheriMipsModelParser(
-            self.pgm, trace_path=self.config.trace, threads=self.config.threads)
+            self.pgm, capability_size=cap_size, trace_path=self.config.trace,
+            threads=self.config.threads)
         """Graph parser strategy, depends on the architecture."""
 
     def run(self):

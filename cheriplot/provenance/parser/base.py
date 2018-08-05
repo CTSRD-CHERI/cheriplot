@@ -399,11 +399,14 @@ class CheriplotModelParser(MultiprocessCallbackParser):
     subgraph_merge_context_class = None
     """Subgraph merge strategy class, this is architecture-specific."""
 
-    def __init__(self, pgm, **kwargs):
+    def __init__(self, pgm, capability_size=32, **kwargs):
         super().__init__(**kwargs)
 
         self.pgm = ProvenanceGraphManager(None)
         """Local graph manager, holds the intermediate subgraph."""
+
+        self.capability_size = capability_size
+        """Size of a capability in bytes"""
 
         self.final_pgm = pgm
         """Result graph manager, this is where the final graph is produced."""
