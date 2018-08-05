@@ -37,7 +37,7 @@ from itertools import chain
 from cheriplot.core.parser import CheriMipsCallbacksManager
 from cheriplot.provenance.model import (
     CheriNodeOrigin, CheriCapPerm, ProvenanceVertexData,
-    CheriCap, CallVertexData, EdgeOperation)
+    CheriCap, CallVertexData, EdgeOperation, EventType)
 from cheriplot.provenance.visit import BFSGraphVisit
 from cheriplot.provenance.parser.base import (
     CheriplotModelParser, RegisterSet, VertexMemoryMap)
@@ -550,7 +550,7 @@ class MergePartialSubgraph(BFSGraphVisit):
         u_data = self.subgraph.vp.data[u]
         # get the length in constant memory instad of O(n) memory
         n_deref = sum(1 for etype in u_data.events["type"]
-                      if etype & ProvenanceVertexData.EventType.deref_mask())
+                      if etype & EventType.deref_mask())
         if n_deref:
             raise SubgraphMergeError("PARTIAL vertex was dereferenced "
                                      "but is merged to None")
@@ -1256,13 +1256,13 @@ class PointerProvenanceSubparser:
     the cheriplot graph.
     """
 
-    capability_size = 32
-    """Size in bytes of a capability."""
-
-    def __init__(self, pgm):
+    def __init__(self, pgm, capability_size=32):
 
         self.pgm = pgm
         """Provenance graph manager, proxy access to the provenance graph."""
+
+        self.capability_size = capability_size
+        """Size in bytes of a capability."""
 
         self.regset = RegisterSet(self.pgm)
         """
@@ -1813,10 +1813,10 @@ class PointerProvenanceSubparser:
 
         if entry.is_load:
             node_data.add_deref_load(entry.cycles, entry.memory_address,
-                                     is_cap)
+                                     entry.is_kernel(), is_cap)
         elif entry.is_store:
             node_data.add_deref_store(entry.cycles, entry.memory_address,
-                                      is_cap)
+                                      entry.is_kernel(), is_cap)
         else:
             if not inst.has_exception:
                 logger.warning("Dereference is neither a load or a store %s, "
@@ -1887,7 +1887,7 @@ class PointerProvenanceSubparser:
         if inst.opcode != "csc":
             # csc stores a new vertex, we do not have access to that
             # here, so handle that case separately in scan_csc
-            self.mem_overwrite(entry.cycles, entry.memory_address, None)
+            self.mem_overwrite(entry, entry.cycles, entry.memory_address, None)
         return False
 
     def scan_clc(self, inst, entry, regs, last_regs, idx, maybe_call=False):
@@ -1939,7 +1939,8 @@ class PointerProvenanceSubparser:
             assert (node_data.cap.permissions == \
                     CheriCapPerm(inst.op0.value.permissions)),\
                     "{} {}".format(node_data, inst)
-            node_data.add_mem_load(entry.cycles, entry.memory_address)
+            node_data.add_mem_load(entry.cycles, entry.memory_address,
+                                   entry.is_kernel())
             self.regset.set_reg(cd, node, entry.cycles)
         return False
 
@@ -1989,14 +1990,15 @@ class PointerProvenanceSubparser:
             else:
                 node = self.regset.get_reg(cd)
 
-            self.mem_overwrite(entry.cycles, entry.memory_address, node)
+            self.mem_overwrite(entry, entry.cycles, entry.memory_address, node)
             # if there is a node associated with the register that is
             # being stored, save it in the memory_map for the memory location
             # written by csc
             self.vertex_map.mem_store(entry.memory_address, node)
             # set the address attribute of the node vertex data property
             node_data = self.pgm.data[node]
-            node_data.add_mem_store(entry.cycles, entry.memory_address)
+            node_data.add_mem_store(entry.cycles, entry.memory_address,
+                                    entry.is_kernel())
 
         return False
 
@@ -2004,7 +2006,7 @@ class PointerProvenanceSubparser:
     scan_csci = scan_csc
     scan_cscbi = scan_csc
 
-    def mem_overwrite(self, time, addr, new_vertex):
+    def mem_overwrite(self, entry, time, addr, new_vertex):
         """
         Register the removal of anything contained at the given address,
         if the address is not capability-size aligned, it is aligned here.
@@ -2017,7 +2019,7 @@ class PointerProvenanceSubparser:
         v = self.vertex_map.vertex_at(addr)
         if v != None and v != new_vertex:
             v_data = self.pgm.data[v]
-            v_data.add_mem_del(time, addr)
+            v_data.add_mem_del(time, addr, entry.is_kernel())
             if v in self.regset.reg_nodes or v_data.has_active_memory():
                 return
             else:
@@ -2120,7 +2122,8 @@ class PointerProvenanceSubparser:
         if (pdata.cap.valid and data.cap.valid and (
                 pdata.cap.base > data.cap.base or pdata.cap.bound < data.cap.bound or
                 data.cap.permissions & ~pdata.cap.permissions)):
-            logger.error("Monotonicity violation: %s -> %s", pdata, data)
+            logger.error("Monotonicity violation @ %d: %s -> %s",
+                         entry.cycles, pdata, data)
             raise UnexpectedOperationError("Monotonicity violation")
         # create the vertex in the graph and assign the data to it
         vertex = self.pgm.graph.add_vertex()
@@ -2441,9 +2444,9 @@ class CallgraphSubparser:
         self.pgm.edge_addr[edge] = entry.pc
         # update state
         self.call_stack.append((vertex, link_addr))
-        self._link_visible_vertices(vertex, entry, regs)
+        self._link_visible_vertices(vertex, entry, regs, EdgeOperation.VISIBLE)
 
-    def _link_visible_vertices(self, vertex, entry, regs):
+    def _link_visible_vertices(self, vertex, entry, regs, operation):
         """
         Attach provenance vertices from the register set to the
         given call vertex to signal the vertices visible from the
@@ -2485,8 +2488,8 @@ class CallgraphSubparser:
             # make new edge prov-vertex -> call
             edge = self.pgm.graph.add_edge(u, vertex)
             visible_edges[(u, offset)] = edge
-            self.pgm.edge_operation[edge] = EdgeOperation.VISIBLE
-            self.pgm.edge_time[edge] = reg_idx
+            self.pgm.edge_operation[edge] = operation
+            self.pgm.edge_time[edge] = entry.cycles
             self.pgm.edge_addr[edge] = offset
             self.pgm.edge_regs[edge].append(reg_idx)
 
@@ -2554,16 +2557,17 @@ class CallgraphSubparser:
         data = self.pgm.data[curr_frame]
         data.t_return = entry.cycles
         data.addr_return = entry.pc
-        if self.regset.get_reg(3) is not None:
-            if regs.valid_caps[3]:
-                offset = regs.cap_reg[3].offset
-            else:
-                offset = None
-            # capability in the return register
-            edge = self.pgm.graph.add_edge(self.regset.get_reg(3), curr_frame)
-            self.pgm.edge_time[edge] = entry.cycles
-            self.pgm.edge_addr[edge] = offset
-            self.pgm.edge_operation[edge] = EdgeOperation.RETURN
+        self._link_visible_vertices(curr_frame, entry, regs, EdgeOperation.RETURN)
+        # if self.regset.get_reg(3) is not None:
+        #     if regs.valid_caps[3]:
+        #         offset = regs.cap_reg[3].offset
+        #     else:
+        #         offset = None
+        #     # capability in the return register
+        #     edge = self.pgm.graph.add_edge(self.regset.get_reg(3), curr_frame)
+        #     self.pgm.edge_time[edge] = entry.cycles
+        #     self.pgm.edge_addr[edge] = offset
+        #     self.pgm.edge_operation[edge] = EdgeOperation.RETURN
         if curr_frame == self.root:
             # return from the root, we do not know what there is before that
             # so create a new vertex in place of the root
@@ -2589,7 +2593,7 @@ class CheriMipsModelParser(CheriplotModelParser):
         super().__init__(pgm, **kwargs)
 
         if self.is_worker:
-            self._provenance = PointerProvenanceSubparser(self.pgm)
+            self._provenance = PointerProvenanceSubparser(self.pgm, self.capability_size)
             self._initial_stack = InitialStackAccessSubparser(
                 self.pgm, self._provenance)
             self._cap_branch = CapabilityBranchSubparser(
