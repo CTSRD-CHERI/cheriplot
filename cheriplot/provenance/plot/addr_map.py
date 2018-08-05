@@ -46,7 +46,7 @@ from cheriplot.core import (
     ASAxesPlotBuilderNoTitle, ASAxesPatchBuilder, PickablePatchBuilder,
     Option)
 from cheriplot.provenance.model import (
-    CheriCapPerm, CheriNodeOrigin, ProvenanceVertexData)
+    CheriCapPerm, CheriNodeOrigin, ProvenanceVertexData, EventType)
 from cheriplot.provenance.plot import VMMapPlotDriver
 
 logger = logging.getLogger(__name__)
@@ -259,8 +259,8 @@ class DerefPatchBuilder(BaseColorCodePatchBuilder):
     def inspect(self, vertex):
         """Create a patch for every dereference in the node."""
         data = self._pgm.data[vertex]
-        load = data.event_tbl["type"] == ProvenanceVertexData.EventType.DEREF_LOAD
-        store = data.event_tbl["type"] == ProvenanceVertexData.EventType.DEREF_STORE
+        load = data.event_tbl["type"] == EventType.DEREF_LOAD
+        store = data.event_tbl["type"] == EventType.DEREF_STORE
         deref = load | store
         if not deref.any():
             # no dereferences, skip
@@ -322,8 +322,8 @@ class AccessLocationPatchBuilder(BaseColorCodePatchBuilder):
     def inspect(self, vertex):
         """Create a point for every load/store in the vertex."""
         data = self._pgm.data[vertex]
-        load = data.event_tbl["type"] == ProvenanceVertexData.EventType.LOAD
-        store = data.event_tbl["type"] == ProvenanceVertexData.EventType.STORE
+        load = data.event_tbl["type"] == EventType.LOAD
+        store = data.event_tbl["type"] == EventType.STORE
         access = load | store
         if not access.any():
             # no dereferences, skip

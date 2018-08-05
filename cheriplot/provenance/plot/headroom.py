@@ -41,7 +41,7 @@ from cheriplot.core import (
     Option, Argument)
 
 from cheriplot.provenance.model import (
-    CheriCapPerm, CheriNodeOrigin, ProvenanceVertexData)
+    CheriCapPerm, CheriNodeOrigin, ProvenanceVertexData, EventType)
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +81,8 @@ class PtrHeadroom:
             if not self._pgm.layer_prov[v]:
                 continue
             data = self._pgm.data[v]
-            access = ((data.event_tbl["type"] == ProvenanceVertexData.EventType.DEREF_LOAD) |
-                      (data.event_tbl["type"] == ProvenanceVertexData.EventType.DEREF_STORE))
+            access = ((data.event_tbl["type"] == EventType.DEREF_LOAD) |
+                      (data.event_tbl["type"] == EventType.DEREF_STORE))
             if not access.any():
                 continue
             min_addr = data.event_tbl[access]["addr"].min()
@@ -96,7 +96,7 @@ class PtrHeadroom:
             # not the last address loaded. If we are loading a word, the real max address
             # will be max_addr + sizeof(word). Correct for this.
             access_max = data.event_tbl[data.event_tbl["addr"] == max_addr]
-            if (access_max["type"] & ProvenanceVertexData.EventType.DEREF_IS_CAP).any():
+            if (access_max["type"] & EventType.DEREF_IS_CAP).any():
                 # XXX-AM assume CHERI-256 here!
                 max_addr += 32
             else:
