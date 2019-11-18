@@ -4,8 +4,13 @@
 
 Helper library for parsing and plotting CHERI instruction traces.
 
-## Build
+## Documentation
 
+Sphinx documentation for the library can be built using the makefile in the docs directory.
+
+## Quick start
+
+### Build
 
 Install the dependencies listed in requirements.txt
 ```
@@ -14,51 +19,68 @@ pip install -r requirements.txt
 
 ### Additional Requirements
 
-Cheritrace must also be installed, it can be found at [this repository](https://github.com/CTSRD-CHERI/cheritrace.git). If a virtualenv is used, pycheritrace has to be installed manually in the virtualenv by using the cheritrace_build/Python/setup.py script from the virtualenv.
+Cheritrace must also be installed, it can be found at [this repository](https://github.com/CTSRD-CHERI/cheritrace.git).
+If a virtualenv is used, pycheritrace has to be installed manually in the virtualenv by using the cheritrace_build/Python/setup.py script from the virtualenv.
 
-Python graph-tool is needed for the provenance graph, it is not available in pip but it can be installed from most package managers as python-graph-tool
+Python [graph-tool](https://graph-tool.skewed.de) is needed for the provenance graph,
+it is not available in pip but it can be installed from most package managers as python-graph-tool.
 
-## Documentation
+The [cheribuild](https://github.com/CTSRD-CHERI/cheribuild) tool, used to build most CHERI-related artifacts.
 
-Sphinx documentation for the library can be built using the makefile in the docs directory.
+### Manually tracing programs
 
-## Quick start
-
-This sections is a walkthrough to start working with the cheriplot tools. The next two sections cover taking qemu traces and using the traces to produce various types of plots.
-
-### Tracing programs
-
-To start producing traces with qemu the following are required:
-
-- patch the CheriBSD kernel to solve a bug in trace termination when using the sysctl hw.qemu_trace_perthread, the patched kernel is at https://github.com/qwattash/cheribsd.git (branch user/qwattash).
-  The patch will be merged upstream asap.
-- use the vmmap_dump utility to dump the memory map of a process (found in the same branch). At some point this will be superseded by dynamically extracting mapping events from the trace.
-
-Run qemu-system-cheri selecting the type of output trace as "cvtrace" using the _-trace_ command line option. The trace file can be selected with the _-D_ option or the
-_logfile_ command from the qemu console.
-
-Once the qemu instance is booted the selected process VM map can be dumped to a CSV file with vmmap_dump as:
-`vmmap_dump <executable>`
-This will create a vm_map_<pid>.csv file with the input for cheriplot tools.
-
-In order to avoid including output from other processes in the trace the sysctl `hw.qemu_trace_perthread` should be set. When this is enabled tracing is paused whenever there is a context switch
-to another thread that is not being traced.
-
-To capture a trace the qtrace tool is used. The trace will be saved to the qemu log-file.
-
-Below there is a complete example for helloworld.
-
+1. Build qemu
+```shell
+% cheribuild.py qemu
 ```
-(qemu-console) logfile /my/home/traces/helloworld.cvtrace
-root@qemu # sysctl hw.qemu_trace_perthread=1
-root@qemu # vmmap_dump helloworld
-Hello World!
-Pid 596 - extracting vm map to vm_map_000596.csv
-root@qemu # qtrace exec helloworld
-Hello World!
 
-qwattash@host $ xz helloworld.cvtrace # (optionally compress trace to save space)
+2. Build cheribsd
+```shell
+% cheribuild.py cheribsd-purecap
+% cheribuild.py disk-image-purecap
 ```
+
+3. Boot cheribsd on qemu, configure qemu to generate a binary trace in $WORKDIR/trace.cvtrace
+```shell
+% cheribuild.py run-purecap --run-purecap/extra-options "\-D $WORKDIR/trace.cvtrace -cheri-trace-format cvtrace"
+```
+
+4. (optional) Enable per-thread tracing, this will pause tracing when the traced thread is preempted, avoiding to capture instructions from other threads.
+```shell
+% sysctl hw.qemu_trace_perthread=1
+```
+
+5. Run program to trace. `qtrace` can also be used to start and stop tracing manually from the command line.
+```shell
+% qtrace exec my-test-program
+```
+
+6. Process trace and build the provenance/call graphs.
+```shell
+% cheriplot-provenance --outfile trace_graph.gt --display-name "My Test Trace" --cheri-cap-size 128 trace_file.cvtrace
+```
+
+6. Example processing: dump all the capabilities with length less than 8 bytes and show the capabilities they are children of.
+```shell
+% cheriplot-treedump --layer prov --size 0-8 --predecessors trace_graph.gt
+```
+
+**Extracting the memory map of a process**
+This is useful to detect the mapped memory regions and resolve symbol addresses in shared libraries.
+
+a. Use `procstat` on a running process.
+```shell
+% procstat -v $PID
+```
+
+b. Use vmmap_dump tool. Currently not in mainline cheribsd, see [fork](https://github.com/qwattash/cheribsd.git#user/qwattash) in `usr.bin/vmmap\_dump`.
+This will run the program under test and stop at the exit system call to extract the VM map to a csv file.
+```shell
+% vmmap\_dump my-test-program
+```
+
+### Automatically tracing programs
+XXX TODO
 
 ### Tools description
 
@@ -68,12 +90,8 @@ The following tools are provided in cheriplot:
   Inspection tool for binary traces. It can dump and filter trace entries based on various parameters (e.g. $pc or memory ranges, register used...).
 - **cheriplot-provenance**
   Main tool for plots that use the pointer provenance graph. Produce address-map, cdf, capability-size and dereference plots.
-- **cheriplot-tracecmp**
-  Tool that compares binary and text traces to find differences.
 - **cheriplot-treedump**
   Inspection tool for the provenance graph. It is similar to cheriplot-tracedump but reads data from the provenance graph instead of the raw trace.
-- **cheriplot-backtrace**
-  Produces backtraces and call-graphs from cheri binary traces.
 
 ## License
 
