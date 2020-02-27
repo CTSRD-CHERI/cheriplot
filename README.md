@@ -27,6 +27,23 @@ it is not available in pip but it can be installed from most package managers as
 
 The [cheribuild](https://github.com/CTSRD-CHERI/cheribuild) tool, used to build most CHERI-related artifacts.
 
+### Building Graph Tool for FreeBSD
+The [graph-tool](https://git.skewed.de/count0/graph-tool/-/wikis/installation-instructions#manual-compilation) lists the dependencies and
+steps requred in general.
+Building of FreeBSD 12 is known to work with the following packages (where XX is the python version, e.g. 37 for python3.7):
+- boost-all
+- cgal
+- sparsehash
+- cairomm
+- pyXX-cairo
+- pyXX-numpy
+
+The configuration step requires extra options to find the libraries:
+```shell
+export LDFLAGS=-L/usr/local/lib
+./configure --prefix=cheri/sdk --with-boost-libdir=/usr/local/lib --with-boost-iostreams=boost_iostreams --with-boost-python=boost_python37
+```
+
 ### Manually tracing programs
 
 1. Build qemu
