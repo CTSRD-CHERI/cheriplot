@@ -40,9 +40,13 @@ Building of FreeBSD 12 is known to work with the following packages (where XX is
 
 The configuration step requires extra options to find the libraries:
 ```shell
+export CC=clang
+export CXX=clang++
 export LDFLAGS=-L/usr/local/lib
 ./configure --prefix=cheri/sdk --with-boost-libdir=/usr/local/lib --with-boost-iostreams=boost_iostreams --with-boost-python=boost_python37
 ```
+
+Note: building with LLVM is not strictly required, but there have been issues in configuring CGAL when using g++.
 
 ### Manually tracing programs
 
