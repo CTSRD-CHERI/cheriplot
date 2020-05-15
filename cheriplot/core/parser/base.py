@@ -584,8 +584,20 @@ class CallbackTraceParser(TraceParser):
         # _scan call is too expensive
         progress_points = list(range(start, end, int((end - start) / 100) + 1))
         progress_points.append(end)
-
         def _scan(entry, regs, idx):
+            # cap = entry.reg_value_cap()
+            # value = "[b:0x%x, o:0x%x, l:0x%x, p:%x, v:%d, s:%d]" % (
+            #             cap.base, cap.offset,
+            #             cap.length, cap.permissions,
+            #             cap.valid, cap.unsealed)
+            # print("caphwreg_number():" + str(entry.caphwreg_number()) + 
+            #       ",capreg_number():" + str(entry.capreg_number()) + 
+            #       ",gpr_number(): " + str(entry.gpr_number()) + 
+            #        ",reg_value_cap(): " + value + 
+            #       ",reg_value_gp(): " + str(hex(entry.reg_value_gp())) + 
+            #       ",register_number():" + str(entry.register_number())
+            # )
+            
             if idx >= progress_points[0]:
                 progress_points.pop(0)
                 self.progress.advance(to=idx)
@@ -601,7 +613,7 @@ class CallbackTraceParser(TraceParser):
                 self._last_instr = disasm
             except Exception as e:
                 self._last_instr = disasm
-                return self._parse_exception(e, entry, nregs, disasm, idx)
+                return self._parse_exception(e, entry, regs, disasm, idx)
 
             ret = False
             try:

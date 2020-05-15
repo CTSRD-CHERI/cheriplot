@@ -16,5 +16,6 @@ setup(name="cheriplot",
               "cheriplot-treedump = tools.treedump:main",
               "cheriplot-backtrace = tools.backtrace:main",
               "cheriplot-runner = tools.action:main",
+              "cheriplot-cheriverify = tools.cheriverify:main"
           ]
       })
