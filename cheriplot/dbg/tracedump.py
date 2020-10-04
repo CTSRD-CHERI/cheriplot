@@ -180,6 +180,7 @@ class TraceDumpParser(MultiprocessCallbackParser, ConfigurableComponent):
                 self.dump_cap(regs.cap_reg[idx])))
 
     def dump_instr(self, inst, entry, idx):
+        # self.out.write(str(inst))
         if entry.exception != 31:
             exception = "except:%x" % entry.exception
         else:

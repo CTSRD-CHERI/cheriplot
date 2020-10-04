@@ -1511,11 +1511,10 @@ class PointerProvenanceSubparser:
         hwreg_num = op_hwr.caphw_index + 32
         src_data = self.pgm.data[self.regset.get_reg(hwreg_num)]
         dst = op_dst.value
-
+        # print(">>>>>>>>>>>>>>>>>>>>>>>>Destination: b->{}, l->{}, permission->{}".format(str(dst.base), str(dst.length), str(CheriCapPerm(dst.permissions))))
         if dst is None and src_data.origin == CheriNodeOrigin.PARTIAL:
             logger.debug("Unknown register content unchanged %s", inst)
             return
-
         if not self.regset.has_reg(hwreg_num, op_dst.value, entry.cycles,
                                    allow_root=True):
             # no node was ever created for the register, it contained something
@@ -1555,7 +1554,10 @@ class PointerProvenanceSubparser:
         """
         if not self.regset.has_reg(op_src.cap_index, op_src.value,
                                    entry.cycles, allow_root=True):
-            node = self.make_root_node(entry, op_hwr.value, time=entry.cycles)
+            try:
+                node = self.make_root_node(entry, op_hwr.value, time=entry.cycles)
+            except ValueError as e:
+                return
             self.regset.set_reg(op_src.cap_index, node, entry.cycles)
             logger.debug("cpreg_set: new node from $chwr<%d> %s",
                          op_hwr.caphw_index, self.pgm.data[node])
@@ -1820,7 +1822,7 @@ class PointerProvenanceSubparser:
         else:
             if not inst.has_exception:
                 logger.warning("Dereference is neither a load or a store %s, "
-                               "not committed", inst)
+                               "not committed. version: %u", inst, entry.version)
 
     def scan_cap_load(self, inst, entry, regs, last_regs, idx, maybe_call=False):
         """
@@ -2040,6 +2042,8 @@ class PointerProvenanceSubparser:
         :return: the newly created node
         :rtype: :class:`graph_tool.Vertex`
         """
+        if not cap:
+            raise ValueError("Cap is None")
         data = ProvenanceVertexData()
         data.cap = CheriCap(cap)
         # if pc is 0 indicate that we do not have a specific
