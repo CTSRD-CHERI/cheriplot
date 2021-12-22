@@ -52,7 +52,7 @@ class CheriMipsCallbacksManager(CallbacksManager):
         IClass.I_CAP_CAST: [
             "ctoptr", "cfromptr", "cfromddc"],
         IClass.I_CAP_ARITH: [
-            "cincoffset", "csetoffset", "csub", "cmove"],
+            "cincoffset", "csetoffset", "csub", "cmove", "csetaddr"],
         IClass.I_CAP_BOUND: [
             "csetbounds", "csetboundsexact", "candperm"],
         IClass.I_CAP_FLOW: [
